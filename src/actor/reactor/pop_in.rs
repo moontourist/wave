@@ -561,6 +561,7 @@ fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
                         .then(|| capture(wsid, CLOSE_CAPTURE_OPTIONS))
                         .flatten()
                         .map(|image| (wid, image));
+                    debug!(?wid, captured = picture.is_some(), "close picture refreshed");
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -576,8 +577,9 @@ fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
                 if pending == Some(wid) {
                     pending = None;
                 }
-                if let Some((_, image)) = picture.take_if(|(w, _)| *w == wid) {
-                    shrink_away(frame, &image, duration, easing);
+                match picture.take_if(|(w, _)| *w == wid) {
+                    Some((_, image)) => shrink_away(frame, &image, duration, easing),
+                    None => debug!(?wid, "close not animated: no picture of this window"),
                 }
             }
         }

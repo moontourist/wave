@@ -1815,6 +1815,11 @@ impl Reactor {
                     ?source,
                     "Preserving logical window after AX element invalidation"
                 );
+                // Outside churn this is usually a close (Finder's arrives this way), and the
+                // neighbors start closing the gap now, so the closing picture starts now too.
+                if !self.refreshes_blocked() {
+                    self.animate_close(wid);
+                }
                 self.state.windows.invalidate_ax_identity(wid);
                 return Ok(EventOutcome::focus_changed(None, should_update_notifications)
                     .with_layout_event(LayoutEvent::WindowSuspended(wid))
