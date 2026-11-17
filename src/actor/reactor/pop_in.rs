@@ -67,6 +67,8 @@ const CLOSE_CAPTURE_OPTIONS: u32 = (1 << 11) | (1 << 9);
 /// Refresh the closing picture once focus has rested this long, so sweeping the
 /// mouse across windows (focus follows mouse) costs one capture, not one per window.
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
+/// A closed window's picture holds its spot at most this long, waiting for the neighbors' slide.
+const COVER_TIMEOUT: Duration = Duration::from_millis(300);
 /// A closing window shrinks to this fraction of its tile as it fades.
 const CLOSE_SCALE: f64 = 0.85;
 
@@ -501,6 +503,7 @@ enum CloseMsg {
         duration: Duration,
         easing: AnimationEasing,
     },
+    SlideStarted,
 }
 
 /// Keeps one picture of the focused tiled window, so it can shrink away when it closes.
@@ -544,58 +547,102 @@ impl Closer {
         }
         _ = self.tx.send(CloseMsg::Closed { wid, frame, duration, easing });
     }
+
+    /// The neighbors started sliding: a closed window's picture now shrinks with them.
+    pub fn slide_started(&self) { _ = self.tx.send(CloseMsg::SlideStarted); }
 }
 
 fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
     use crossbeam_channel::RecvTimeoutError;
     let mut picture: Option<(WindowId, CFRetained<CGImage>)> = None;
-    let mut pending: Option<WindowId> = None;
+    // The focused window to capture once focus has rested until the deadline.
+    let mut pending: Option<(WindowId, Instant)> = None;
+    let mut covering: Option<Cover> = None;
     loop {
-        let msg = match pending {
-            Some(wid) => match rx.recv_timeout(WATCH_DEBOUNCE) {
-                Ok(msg) => msg,
-                Err(RecvTimeoutError::Timeout) => {
-                    pending = None;
+        let deadline = [
+            pending.map(|(_, at)| at),
+            covering.as_ref().map(|c| c.deadline),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let msg = match deadline {
+            Some(at) => rx.recv_deadline(at),
+            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match msg {
+            Err(RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Timeout) => {
+                let now = Instant::now();
+                if covering.as_ref().is_some_and(|c| c.deadline <= now) {
+                    debug!("close slide never came; shrinking anyway");
+                    covering.take().map(Cover::shrink);
+                }
+                if let Some((wid, _)) = pending.take_if(|(_, at)| *at <= now) {
                     let wsid = WindowServerId::new(wid.idx.get());
                     picture = CGPreflightScreenCaptureAccess()
                         .then(|| capture(wsid, CLOSE_CAPTURE_OPTIONS))
                         .flatten()
                         .map(|image| (wid, image));
                     debug!(?wid, captured = picture.is_some(), "close picture refreshed");
-                    continue;
                 }
-                Err(RecvTimeoutError::Disconnected) => return,
-            },
-            None => match rx.recv() {
-                Ok(msg) => msg,
-                Err(_) => return,
-            },
-        };
-        match msg {
-            CloseMsg::Watch(wid) => pending = Some(wid),
-            CloseMsg::Closed { wid, frame, duration, easing } => {
-                if pending == Some(wid) {
-                    pending = None;
-                }
+            }
+            Ok(CloseMsg::Watch(wid)) => pending = Some((wid, Instant::now() + WATCH_DEBOUNCE)),
+            Ok(CloseMsg::Closed { wid, frame, duration, easing }) => {
+                pending.take_if(|(w, _)| *w == wid);
+                covering.take().map(Cover::shrink);
                 match picture.take_if(|(w, _)| *w == wid) {
-                    Some((_, image)) => shrink_away(frame, &image, duration, easing),
+                    Some((_, image)) => covering = Cover::new(frame, &image, duration, easing),
                     None => debug!(?wid, "close not animated: no picture of this window"),
+                }
+            }
+            Ok(CloseMsg::SlideStarted) => {
+                if let Some(cover) = covering.take() {
+                    debug!("close picture shrinking with the neighbors' slide");
+                    cover.shrink();
                 }
             }
         }
     }
 }
 
-fn shrink_away(frame: CGRect, image: &CGImage, duration: Duration, easing: AnimationEasing) {
-    let overlay = match Overlay::new(frame, frame, image, None) {
-        Ok(overlay) => overlay,
-        Err(error) => {
-            debug!(?error, "close animation skipped: overlay failed");
-            return;
+/// A closed window's picture, holding its spot at full size until the neighbors move.
+struct Cover {
+    overlay: Overlay,
+    frame: CGRect,
+    duration: Duration,
+    easing: AnimationEasing,
+    /// Shrink by now even if no slide starts (the last window on a workspace closed).
+    deadline: Instant,
+}
+
+impl Cover {
+    fn new(
+        frame: CGRect,
+        image: &CGImage,
+        duration: Duration,
+        easing: AnimationEasing,
+    ) -> Option<Self> {
+        match Overlay::new(frame, frame, image, None) {
+            Ok(overlay) => Some(Self {
+                overlay,
+                frame,
+                duration,
+                easing,
+                deadline: Instant::now() + COVER_TIMEOUT,
+            }),
+            Err(error) => {
+                debug!(?error, "close animation skipped: overlay failed");
+                None
+            }
         }
-    };
-    overlay.animate(scaled_about_center(frame, CLOSE_SCALE), 0.0, duration, easing);
-    thread::sleep(duration);
+    }
+
+    fn shrink(self) {
+        let to = scaled_about_center(self.frame, CLOSE_SCALE);
+        self.overlay.animate(to, 0.0, self.duration, self.easing);
+        thread::sleep(self.duration);
+    }
 }
 
 fn scaled_about_center(rect: CGRect, scale: f64) -> CGRect {

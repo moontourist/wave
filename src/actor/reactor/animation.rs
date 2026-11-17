@@ -1144,6 +1144,9 @@ impl AnimationManager {
     }
 
     fn send(reactor: &Reactor, anim: Animation, animate: bool) {
+        if let Some(closer) = &reactor.closer {
+            closer.slide_started();
+        }
         let Some(tx) = &reactor.animation_tx else {
             anim.skip_to_end();
             return;
