@@ -1013,6 +1013,7 @@ impl AnimationManager {
         allow_animation: bool,
     ) -> bool {
         reactor.retire_presentations();
+        Self::release_held_animation(reactor);
         let setting = reactor.layout_manager.layout_engine.layout_specific_animate_settings(space);
         let animate_camera = allow_animation
             && !is_resize
@@ -1045,6 +1046,7 @@ impl AnimationManager {
         anim.display = screen.id.as_u32();
         let bounds = scrolling_bounds(reactor, space);
         let mut any_frame_changed = camera;
+        let mut popping: Option<WindowId> = None;
 
         for &(wid, target_frame) in layout {
             if presented.contains(&wid) {
@@ -1057,6 +1059,10 @@ impl AnimationManager {
                     ?wid,
                     "Skipping animated layout update for window currently being dragged"
                 );
+                continue;
+            }
+            if reactor.pop_ins.is_active(wid) {
+                anim.mark_handled(wid);
                 continue;
             }
 
@@ -1079,17 +1085,26 @@ impl AnimationManager {
                 .map(|wsid| reactor.transaction_manager.generate_next_txid(wsid))
                 .unwrap_or_default();
 
-            let Some(app_state) = &reactor.app_manager.apps.get(&wid.pid) else {
+            if !reactor.app_manager.apps.contains_key(&wid.pid) {
                 debug!(?wid, "Skipping for window - app no longer exists");
                 continue;
-            };
+            }
 
             let is_active = reactor.state.windows.workspace_for_window(wid) == Some(active_ws);
 
             if let Some(wsid) = window_server_id {
                 reactor.transaction_manager.update_txid_entries([(wsid, txid, target_frame)]);
             }
-            if is_active {
+            // Scrolling layouts constrain frames per display tick, so they keep the slide.
+            let popping_in = is_active
+                && animate_camera
+                && bounds.is_none()
+                && super::pop_in::try_start(reactor, space, wid, txid, target_frame);
+            let app_state = &reactor.app_manager.apps[&wid.pid];
+            if popping_in {
+                anim.mark_handled(wid);
+                popping.get_or_insert(wid);
+            } else if is_active {
                 trace!(?wid, ?current_frame, ?target_frame, "Animating visible window");
                 let handle = app_state.handle.with_scrolling_bounds(
                     bounds
@@ -1118,28 +1133,50 @@ impl AnimationManager {
         }
 
         if !anim.is_empty() {
-            if let Some(tx) = &reactor.animation_tx {
-                let message = if !animate_camera {
-                    Message::SkipToEnd(anim)
-                } else {
-                    Message::Replace(anim)
-                };
-                if let Err(err) = tx.send(message) {
-                    match err.0 {
-                        Message::Replace(animation) => animation.skip_to_end(),
-                        Message::SkipToEnd(animation) => animation.skip_to_end(),
-                        Message::Stop(..)
-                        | Message::Camera(_)
-                        | Message::StopCamera(_)
-                        | Message::Displays(_) => {}
-                    }
-                }
-            } else {
-                anim.skip_to_end();
+            match popping {
+                // The neighbors wait for the new window's picture, so both start on the same frame.
+                Some(wid) => reactor.pop_ins.hold(wid, anim),
+                None => Self::send(reactor, anim, animate_camera),
             }
         }
 
         any_frame_changed
+    }
+
+    fn send(reactor: &Reactor, anim: Animation, animate: bool) {
+        let Some(tx) = &reactor.animation_tx else {
+            anim.skip_to_end();
+            return;
+        };
+        let message = if animate {
+            Message::Replace(anim)
+        } else {
+            Message::SkipToEnd(anim)
+        };
+        if let Err(err) = tx.send(message) {
+            match err.0 {
+                Message::Replace(animation) => animation.skip_to_end(),
+                Message::SkipToEnd(animation) => animation.skip_to_end(),
+                Message::Stop(..)
+                | Message::Camera(_)
+                | Message::StopCamera(_)
+                | Message::Displays(_) => {}
+            }
+        }
+    }
+
+    /// Starts the neighbors' slide that was waiting for `wid`'s pop-in picture.
+    pub fn release_animation_held_for(reactor: &mut Reactor, wid: WindowId) {
+        if let Some(anim) = reactor.pop_ins.take_held_for(wid) {
+            Self::send(reactor, anim, true);
+        }
+    }
+
+    /// A newer layout must not overtake a slide still waiting on a pop-in; start it now.
+    fn release_held_animation(reactor: &mut Reactor) {
+        if let Some(anim) = reactor.pop_ins.take_held() {
+            Self::send(reactor, anim, true);
+        }
     }
 
     pub fn instant_layout(
@@ -1183,6 +1220,7 @@ impl AnimationManager {
         position_only: bool,
         force_frames: bool,
     ) -> bool {
+        Self::release_held_animation(reactor);
         reactor.cancel_window_presentations(layout.iter().map(|(wid, _)| *wid).collect());
         let bounds = scrolling_bounds(reactor, space);
         let active = reactor.layout_manager.layout_engine.workspaces().active_workspace(space);
@@ -1193,6 +1231,14 @@ impl AnimationManager {
             if skip_wid == Some(wid) {
                 trace!(?wid, "Skipping layout update for window currently being dragged");
                 continue;
+            }
+            if reactor.pop_ins.is_active(wid) {
+                // Still popping into this tile: let it finish. Anywhere else (a workspace
+                // switch hides it, a display change moves it) takes the window back now.
+                if !force_frames && reactor.pop_ins.is_heading_to(wid, target_frame.round()) {
+                    continue;
+                }
+                reactor.pop_ins.cancel(wid);
             }
 
             let constrained = bounds.is_some()
@@ -1464,7 +1510,7 @@ impl ActiveAnimation {
 }
 
 impl Animation {
-    fn new(fps: f64, duration: f64, easing: AnimationEasing) -> Self {
+    pub(super) fn new(fps: f64, duration: f64, easing: AnimationEasing) -> Self {
         let interval = Duration::from_secs_f64(1.0 / fps);
         Self {
             interval,
@@ -1601,7 +1647,7 @@ fn contain_transition_frame(from: CGRect, to: CGRect, mut frame: CGRect) -> CGRe
 /// Maps time progress `t` (0..=1) to distance progress using the curves from
 /// easings.net. Each family is defined once as its "in" curve; "out" and
 /// "in-out" are derived from it. `EaseInOut` is rift's original curve.
-fn ease(easing: AnimationEasing, t: f64) -> f64 {
+pub(super) fn ease(easing: AnimationEasing, t: f64) -> f64 {
     use AnimationEasing::*;
     let t = t.clamp(0.0, 1.0);
     let ease_out = |ease_in: fn(f64) -> f64| 1.0 - ease_in(1.0 - t);

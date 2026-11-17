@@ -12,6 +12,7 @@ pub(crate) use crate::layout_engine::WorkspaceDropRequest as OverviewDrop;
 mod main_window;
 mod managers;
 mod native_tabs;
+mod pop_in;
 mod query;
 mod replay;
 pub mod transaction_manager;
@@ -385,6 +386,11 @@ pub enum Event {
         sequence_id: u64,
     },
 
+    /// A window's pop-in picture is ready (or the pop-in gave up); start the held slide.
+    PopInReady(WindowId),
+    /// A window's pop-in animation ended and the window is in its tile.
+    PopInFinished(WindowId),
+
     #[serde(skip)]
     Query(query::QueryRequest),
 
@@ -455,6 +461,9 @@ pub struct Reactor {
     pub animation_tx: Option<AnimationSender>,
     viewport_gesture: Option<gesture::ViewportSession>,
     presentations: HashMap<SpaceId, animation::ViewportHandle>,
+    pop_ins: pop_in::PopIns,
+    /// Started on first use; keeps a picture of the focused window for its closing animation.
+    closer: Option<pop_in::Closer>,
     #[cfg(test)]
     event_outcome_phase_trace: Vec<&'static str>,
     #[cfg(test)]
@@ -598,6 +607,8 @@ impl Reactor {
             animation_tx: None,
             viewport_gesture: None,
             presentations: HashMap::default(),
+            pop_ins: Default::default(),
+            closer: None,
             #[cfg(test)]
             event_outcome_phase_trace: Vec::new(),
             #[cfg(test)]
@@ -1335,6 +1346,9 @@ impl Reactor {
         } else {
             self.handle_event_traced(event);
         }
+        if self.config.settings.window_open_close_animation {
+            self.watch_focused_window();
+        }
     }
 
     #[instrument(name = "reactor::handle_event", skip(self), fields(event=?event))]
@@ -1730,6 +1744,9 @@ impl Reactor {
                         window_server_info: ws_info,
                     },
                 )?;
+                if self.config.settings.window_open_close_animation {
+                    self.pop_ins.note_created(wid);
+                }
                 outcome.focused_window = raised_window;
                 return Ok(outcome);
             }
@@ -1746,6 +1763,7 @@ impl Reactor {
                     return Ok(EventOutcome::default());
                 }
 
+                self.animate_close(wid);
                 let mut outcome = window_workflow::handle_window_destroyed(
                     &mut self.state,
                     &self.transaction_manager,
@@ -1765,6 +1783,7 @@ impl Reactor {
                 }
                 // This is a native window close, unlike AX identity destruction.
                 self.state.windows.restore_window_from_native_fullscreen(wid);
+                self.animate_close(wid);
                 let mut outcome = window_workflow::handle_window_destroyed(
                     &mut self.state,
                     &self.transaction_manager,
@@ -1843,6 +1862,14 @@ impl Reactor {
                 );
             }
             Event::WindowServerAppeared(wsid, sid, kind) => {
+                // A window can open without an AX creation event; the inventory refresh
+                // that follows adds it, so mark it as opening here too.
+                if self.config.settings.window_open_close_animation
+                    && matches!(kind, SpaceEventKind::User)
+                    && !self.state.windows.knows_window_server_id(wsid)
+                {
+                    self.pop_ins.note_appeared(wsid);
+                }
                 let resolved = self.resolve_native_space(wsid, Some(sid));
                 let queried = window_server::get_window_with_transient(wsid);
                 if let Some((info, native)) = queried {
@@ -2473,6 +2500,19 @@ impl Reactor {
             }
             Event::RaiseTimeout { sequence_id } => {
                 return Ok(system_workflow::handle_raise_timeout(sequence_id)?);
+            }
+            Event::PopInReady(wid) => {
+                animation::AnimationManager::release_animation_held_for(self, wid);
+                return Ok(EventOutcome::no_change());
+            }
+            Event::PopInFinished(wid) => {
+                animation::AnimationManager::release_animation_held_for(self, wid);
+                // Arrange again in case the layout moved on while the window was popping in.
+                return Ok(if self.pop_ins.finish(wid) {
+                    EventOutcome::layout_changed(false)
+                } else {
+                    EventOutcome::no_change()
+                });
             }
             Event::ConfigUpdated(new_cfg) => {
                 if new_cfg.virtual_workspaces.mode == crate::common::config::WorkspaceMode::Global
@@ -6302,6 +6342,38 @@ impl Reactor {
     }
 
     pub(crate) fn main_window(&self) -> Option<WindowId> { self.main_window_tracker.main_window() }
+
+    /// Keeps the close-animation picture on the focused tiled window, at its current frame.
+    fn watch_focused_window(&mut self) {
+        let Some(wid) = self.main_window() else { return };
+        if self.layout_manager.layout_engine.is_window_floating(wid) {
+            return;
+        }
+        let Some(frame) = self.state.windows.window(wid).map(|w| w.frame_monotonic) else {
+            return;
+        };
+        self.closer.get_or_insert_with(pop_in::Closer::spawn).watch(wid, frame);
+    }
+
+    /// Shrinks a closing tiled window's picture away; call before the window is forgotten.
+    fn animate_close(&mut self, wid: WindowId) {
+        let settings = &self.config.settings;
+        if !settings.window_open_close_animation
+            || self.layout_manager.layout_engine.is_window_floating(wid)
+        {
+            return;
+        }
+        let (Some(closer), Some(window)) = (&mut self.closer, self.state.windows.window(wid))
+        else {
+            return;
+        };
+        closer.closed(
+            wid,
+            window.frame_monotonic,
+            Duration::from_secs_f64(settings.animation_duration),
+            settings.animation_easing,
+        );
+    }
 
     fn main_window_space(&self) -> Option<SpaceId> {
         // TODO: Optimize this with a cache or something.

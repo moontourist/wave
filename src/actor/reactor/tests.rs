@@ -442,6 +442,33 @@ fn it_sends_writes_when_stale_read_state_looks_same_as_written_state() {
 }
 
 #[test]
+fn layout_leaves_a_popping_window_alone_until_its_pop_in_finishes() {
+    let (mut apps, mut reactor) = test_context();
+    reactor.handle_event(space_state_event(
+        vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+        vec![Some(SpaceId::new(1))],
+    ));
+    reactor.handle_events(apps.make_app(1, make_windows(1)));
+    apps.simulate_until_quiet(&mut reactor);
+    let popping = WindowId::new(1, 1);
+    let full_tile = apps.windows[&popping].frame;
+    reactor.pop_ins.begin(popping, full_tile);
+
+    // A second window shrinks the first one's tile, but the pop-in owns its frame for now.
+    reactor.handle_events(apps.make_app(2, make_windows(1)));
+    apps.simulate_until_quiet(&mut reactor);
+    assert_eq!(apps.windows[&popping].frame, full_tile);
+    assert!(reactor.pop_ins.is_active(popping));
+
+    // Finishing arranges again, so the window catches up with the layout it missed.
+    reactor.handle_event(Event::PopInFinished(popping));
+    apps.simulate_until_quiet(&mut reactor);
+    assert!(!reactor.pop_ins.is_active(popping));
+    assert_ne!(apps.windows[&popping].frame, full_tile);
+    assert!(apps.windows[&popping].frame.size.width < full_tile.size.width);
+}
+
+#[test]
 fn it_manages_windows_on_enabled_spaces() {
     let (mut apps, mut reactor) = test_context();
     let full_screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
@@ -3428,6 +3455,48 @@ fn non_workspace_instant_layout_keeps_full_frame_batch() {
             Request::SetWindowFrames(_, _, crate::actor::app::FrameMode::Position, _, _)
         )),
         "the workspace-switch-only request escaped into an ordinary instant layout: {requests:?}"
+    );
+}
+
+#[test]
+fn workspace_switch_takes_a_popping_window_back_but_its_own_tile_does_not() {
+    let (mut apps, mut reactor) = test_context();
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let wid = WindowId::new(1, 1);
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(1));
+    let tile = apps.windows[&wid].frame;
+    let cancelled = reactor.pop_ins.begin(wid, tile);
+    let _ = apps.requests();
+
+    // Re-laying out the same tile leaves the pop-in running.
+    super::animation::AnimationManager::workspace_switch_layout(
+        &mut reactor,
+        space,
+        &[(wid, tile)],
+        None,
+    );
+    assert!(reactor.pop_ins.is_active(wid));
+    assert!(apps.requests().is_empty());
+
+    // Switching away moves the window now and stops the pop-in from placing it later.
+    let hidden = CGRect::new(CGPoint::new(999., 999.), tile.size);
+    assert!(super::animation::AnimationManager::workspace_switch_layout(
+        &mut reactor,
+        space,
+        &[(wid, hidden)],
+        None,
+    ));
+    assert!(*cancelled.lock());
+    assert!(!reactor.pop_ins.is_active(wid));
+    let requests = apps.requests();
+    assert!(
+        requests.iter().any(|request| matches!(
+            request,
+            Request::SetWindowFrames(frames, ..)
+                if frames.iter().any(|(w, f)| *w == wid && f.same_as(hidden))
+        )),
+        "the switch must write the hidden frame itself: {requests:?}"
     );
 }
 

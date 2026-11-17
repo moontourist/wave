@@ -518,6 +518,12 @@ pub struct Settings {
     // )]
     #[setting(ignore)]
     pub animation_easing: AnimationEasing,
+    #[serde(default)]
+    /// New tiled windows fly from where they open into their tile, and closing
+    /// tiled windows shrink and fade away, in step with the layout's slide. Needs
+    /// `animate` and Screen Recording permission; without it windows move directly.
+    #[setting(ignore)]
+    pub window_open_close_animation: bool,
     #[serde(default = "yes")]
     /// Start Rift with automatic tiling turned off.
     #[setting(
