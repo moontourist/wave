@@ -11,6 +11,7 @@ use crate::actor::app::{AppThreadHandle, FrameMode, FrameSource, Request, Window
 use crate::actor::gesture::{Context, Control};
 use crate::actor::reactor::Reactor;
 use crate::common::collections::{HashMap, HashSet};
+use crate::common::config::AnimationEasing;
 use crate::layout_engine::systems::scrolling::{
     CameraSpring, PresentedViewport, ViewportPresentation,
 };
@@ -154,6 +155,7 @@ struct ActiveAnimation {
 pub struct Animation {
     interval: Duration,
     duration: Duration,
+    easing: AnimationEasing,
     display: u32,
     windows: Vec<PresentedWindow>,
     handled_windows: Vec<WindowId>,
@@ -1035,6 +1037,7 @@ impl AnimationManager {
         let mut anim = Animation::new(
             reactor.config.settings.animation_fps,
             reactor.config.settings.animation_duration,
+            reactor.config.settings.animation_easing,
         );
         let Some(screen) = reactor.space_state.screen_by_space(space) else {
             return false;
@@ -1461,11 +1464,12 @@ impl ActiveAnimation {
 }
 
 impl Animation {
-    fn new(fps: f64, duration: f64) -> Self {
+    fn new(fps: f64, duration: f64, easing: AnimationEasing) -> Self {
         let interval = Duration::from_secs_f64(1.0 / fps);
         Self {
             interval,
             duration: Duration::from_secs_f64(duration),
+            easing,
             display: 0,
             windows: vec![],
             handled_windows: vec![],
@@ -1533,7 +1537,7 @@ impl Animation {
             &mut self.windows,
             Sample::Transition {
                 progress: t,
-                eased: ease(t),
+                eased: ease(self.easing, t),
                 set_size: (previous < 0.5 && t >= 0.5) || t == 1.0,
             },
             frames,
@@ -1548,7 +1552,9 @@ impl Animation {
 }
 
 #[cfg(test)]
-fn get_frame(a: CGRect, b: CGRect, t: f64) -> CGRect { interpolate_frame(a, b, ease(t)) }
+fn get_frame(a: CGRect, b: CGRect, t: f64) -> CGRect {
+    interpolate_frame(a, b, ease(AnimationEasing::default(), t))
+}
 
 fn interpolate_frame(a: CGRect, b: CGRect, s: f64) -> CGRect {
     CGRect {
@@ -1592,13 +1598,60 @@ fn contain_transition_frame(from: CGRect, to: CGRect, mut frame: CGRect) -> CGRe
     frame
 }
 
-fn ease(t: f64) -> f64 {
-    if t < 0.5 {
-        (1.0 - f64::sqrt(1.0 - f64::powi(2.0 * t, 2))) / 2.0
-    } else {
-        (f64::sqrt(1.0 - f64::powi(-2.0 * t + 2.0, 2)) + 1.0) / 2.0
+/// Maps time progress `t` (0..=1) to distance progress using the curves from
+/// easings.net. Each family is defined once as its "in" curve; "out" and
+/// "in-out" are derived from it. `EaseInOut` is rift's original curve.
+fn ease(easing: AnimationEasing, t: f64) -> f64 {
+    use AnimationEasing::*;
+    let t = t.clamp(0.0, 1.0);
+    let ease_out = |ease_in: fn(f64) -> f64| 1.0 - ease_in(1.0 - t);
+    let ease_in_out = |ease_in: fn(f64) -> f64| {
+        if t < 0.5 {
+            ease_in(2.0 * t) / 2.0
+        } else {
+            1.0 - ease_in(2.0 - 2.0 * t) / 2.0
+        }
+    };
+    match easing {
+        Linear => t,
+        EaseInSine => sine(t),
+        EaseOutSine => ease_out(sine),
+        EaseInOutSine => ease_in_out(sine),
+        EaseInQuad => quad(t),
+        EaseOutQuad => ease_out(quad),
+        EaseInOutQuad => ease_in_out(quad),
+        EaseInCubic => cubic(t),
+        EaseOutCubic => ease_out(cubic),
+        EaseInOutCubic => ease_in_out(cubic),
+        EaseInQuart => quart(t),
+        EaseOutQuart => ease_out(quart),
+        EaseInOutQuart => ease_in_out(quart),
+        EaseInQuint => quint(t),
+        EaseOutQuint => ease_out(quint),
+        EaseInOutQuint => ease_in_out(quint),
+        EaseInExpo => expo(t),
+        EaseOutExpo => ease_out(expo),
+        EaseInOutExpo => ease_in_out(expo),
+        EaseInCirc => circ(t),
+        EaseOutCirc => ease_out(circ),
+        EaseInOut | EaseInOutCirc => ease_in_out(circ),
     }
 }
+
+fn sine(t: f64) -> f64 { 1.0 - (t * std::f64::consts::FRAC_PI_2).cos() }
+fn quad(t: f64) -> f64 { t.powi(2) }
+fn cubic(t: f64) -> f64 { t.powi(3) }
+fn quart(t: f64) -> f64 { t.powi(4) }
+fn quint(t: f64) -> f64 { t.powi(5) }
+// 2^(10t - 10) is 1/1024 at t = 0, so pin the start to exactly zero.
+fn expo(t: f64) -> f64 {
+    if t == 0.0 {
+        0.0
+    } else {
+        2f64.powf(10.0 * t - 10.0)
+    }
+}
+fn circ(t: f64) -> f64 { 1.0 - (1.0 - t * t).sqrt() }
 
 fn blend(a: f64, b: f64, s: f64) -> f64 { (1.0 - s) * a + s * b }
 
@@ -1614,7 +1667,86 @@ mod tests {
 
     fn empty_animation() -> Animation {
         let settings = crate::common::config::Config::default().settings;
-        Animation::new(settings.animation_fps, settings.animation_duration)
+        Animation::new(
+            settings.animation_fps,
+            settings.animation_duration,
+            settings.animation_easing,
+        )
+    }
+
+    const ALL_EASINGS: [AnimationEasing; 23] = {
+        use AnimationEasing::*;
+        [
+            EaseInOut,
+            Linear,
+            EaseInSine,
+            EaseOutSine,
+            EaseInOutSine,
+            EaseInQuad,
+            EaseOutQuad,
+            EaseInOutQuad,
+            EaseInCubic,
+            EaseOutCubic,
+            EaseInOutCubic,
+            EaseInQuart,
+            EaseOutQuart,
+            EaseInOutQuart,
+            EaseInQuint,
+            EaseOutQuint,
+            EaseInOutQuint,
+            EaseInExpo,
+            EaseOutExpo,
+            EaseInOutExpo,
+            EaseInCirc,
+            EaseOutCirc,
+            EaseInOutCirc,
+        ]
+    };
+
+    #[test]
+    fn every_easing_starts_at_zero_ends_at_one_and_never_reverses() {
+        for easing in ALL_EASINGS {
+            assert!(ease(easing, 0.0).abs() < 1e-12, "{easing:?} start");
+            assert!((ease(easing, 1.0) - 1.0).abs() < 1e-12, "{easing:?} end");
+            let mut previous = 0.0;
+            for step in 1..=100 {
+                let eased = ease(easing, step as f64 / 100.0);
+                assert!(eased >= previous - 1e-12, "{easing:?} reversed at step {step}");
+                previous = eased;
+            }
+        }
+    }
+
+    #[test]
+    fn ease_out_curves_lead_and_ease_in_curves_lag() {
+        use AnimationEasing::*;
+        for easing in [
+            EaseOutSine,
+            EaseOutQuad,
+            EaseOutCubic,
+            EaseOutQuint,
+            EaseOutExpo,
+        ] {
+            assert!(ease(easing, 0.25) > 0.25, "{easing:?}");
+        }
+        for easing in [EaseInSine, EaseInQuad, EaseInCubic, EaseInQuint, EaseInExpo] {
+            assert!(ease(easing, 0.25) < 0.25, "{easing:?}");
+        }
+        assert_eq!(ease(Linear, 0.25), 0.25);
+        assert_eq!(ease(EaseOutCubic, 0.5), 0.875);
+    }
+
+    #[test]
+    fn default_easing_is_the_original_circular_curve() {
+        for step in 0..=20 {
+            let t = step as f64 / 20.0;
+            let original = if t < 0.5 {
+                (1.0 - (1.0 - (2.0 * t).powi(2)).sqrt()) / 2.0
+            } else {
+                ((1.0 - (-2.0 * t + 2.0).powi(2)).sqrt() + 1.0) / 2.0
+            };
+            assert!((ease(AnimationEasing::default(), t) - original).abs() < 1e-12);
+        }
     }
 
     fn animation(handle: &AppThreadHandle, wid: WindowId, from: CGRect, to: CGRect) -> Animation {
@@ -1754,7 +1886,7 @@ mod tests {
         for fps in [60.0, 120.0] {
             let (tx, mut rx) = crate::actor::channel();
             let handle = AppThreadHandle::new_for_test(tx);
-            let mut a = Animation::new(fps, 0.3);
+            let mut a = Animation::new(fps, 0.3, AnimationEasing::default());
             a.add_window(
                 &handle,
                 WindowId::new(1, 1),
@@ -1791,7 +1923,7 @@ mod tests {
         let start = Instant::now();
         for (fps, expected) in [(60.0, 60), (30.0, 30)] {
             let (handle, mut rx) = AppThreadHandle::channel();
-            let mut a = Animation::new(fps, 1.0);
+            let mut a = Animation::new(fps, 1.0, AnimationEasing::default());
             let wid = WindowId::new(1, 1);
             a.add_window(
                 &handle,
