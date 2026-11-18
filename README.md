@@ -18,12 +18,12 @@ A tiling window manager for macOS, with smooth animations and a codebase that st
 ## Install
 wave builds from source for now (macOS only).
 
-1. `cargo build --release`
+1. `cargo build --release && scripts/bundle.sh` builds `target/release/wave.app`. Move it to `/Applications`.
 2. Copy `wave.default.toml` to `~/.config/wave/config.toml` and edit it to taste.
-3. `./target/release/wave service install`, then `./target/release/wave service start`.
-4. Give it Accessibility permission when macOS asks. Open and close animations also need Screen Recording.
+3. `/Applications/wave.app/Contents/MacOS/wave service install`, then the same with `service start`.
+4. Give it Accessibility permission when macOS asks. The overview and the open and close animations also need Screen Recording.
 
-`wave service restart` picks up a new build.
+To use `wave-cli` from anywhere, link it onto your PATH: `ln -s /Applications/wave.app/Contents/MacOS/wave-cli /usr/local/bin/wave-cli`. `wave service restart` picks up a new build.
 
 ## Configure
 Every setting is in [`wave.default.toml`](wave.default.toml), with a comment explaining it. `wave-cli settings` opens the native Settings window.
@@ -45,7 +45,7 @@ Rust, using macOS's private SkyLight APIs for speed and Core Animation for the o
 ## Develop
 - `cargo test --workspace` runs the tests.
 - `scripts/audit.sh` checks a change against the code rules: no panics outside tests, documented single-operation `unsafe`, no unchecked casts. It prints nothing when the change is clean.
-- `scripts/sign-dev.sh` signs a release build with a local certificate, so macOS keeps wave's Accessibility and Screen Recording permissions across rebuilds. Make the certificate once: in Keychain Access, Certificate Assistant → Create a Certificate, name it `wave`, identity type Self Signed Root, certificate type Code Signing. The first signing asks for your login password: choose Always Allow.
+- `scripts/bundle.sh` packs the release build into `wave.app` with its icon and signs it. With a local certificate, macOS keeps wave's Accessibility and Screen Recording permissions across rebuilds; without one, it asks again after each build. Make the certificate once: in Keychain Access, Certificate Assistant → Create a Certificate, name it `wave`, identity type Self Signed Root, certificate type Code Signing. The first signing asks for your login password: choose Always Allow.
 - Format changed files with nightly rustfmt only: `rustfmt +nightly --edition 2024 <files>`. Stable `cargo fmt` skips the repo's unstable options and reformats everything.
 
 ## Roadmap
