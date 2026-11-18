@@ -45,7 +45,7 @@ Rust, using macOS's private SkyLight APIs for speed and Core Animation for the o
 ## Develop
 - `cargo test --workspace` runs the tests.
 - `scripts/audit.sh` checks a change against the code rules: no panics outside tests, documented single-operation `unsafe`, no unchecked casts. It prints nothing when the change is clean.
-- `scripts/sign-dev.sh` signs a release build with a local certificate, so macOS keeps wave's Accessibility and Screen Recording permissions across rebuilds. Make the certificate once: in Keychain Access, Certificate Assistant → Create a Certificate, name it `wave dev`, identity type Self Signed Root, certificate type Code Signing.
+- `scripts/sign-dev.sh` signs a release build with a local certificate, so macOS keeps wave's Accessibility and Screen Recording permissions across rebuilds. Make the certificate once: in Keychain Access, Certificate Assistant → Create a Certificate, name it `wave`, identity type Self Signed Root, certificate type Code Signing. The first signing asks for your login password: choose Always Allow.
 - Format changed files with nightly rustfmt only: `rustfmt +nightly --edition 2024 <files>`. Stable `cargo fmt` skips the repo's unstable options and reformats everything.
 
 ## Roadmap
@@ -53,13 +53,13 @@ Done:
 - [x] Animations that follow your easing curve and display refresh rate, and animate windows opening and closing
 - [x] No panics outside tests, and every `unsafe` block documented and doing one thing
 - [x] wave's own name, identity and config folder
+- [x] Memory given back: about 17 MB idle and 20 MB after using the overview, down from 153 MB
 
 Next:
-- [ ] **Give memory back.** The overview and the open animation keep two screen-sized buffers after they finish (about 126 MB on a 7680×2160 display). Free them when they're done.
 - [ ] **Window borders, built in.** An outline around each window, like JankyBorders, but moving in the same animation frame as its window instead of trailing behind. Colors for focused and unfocused windows, and the color fades when focus changes.
 - [ ] **Accordion on any tile.** Fold a group of windows into one tile in any layout, not only the stack layout.
 
-Every feature is held to a memory budget: wave idles at about 18 MB, moving windows adds nothing measurable, and new features are measured against that.
+Every feature is held to a memory budget: wave idles at about 17 MB and returns there after the overview, moving windows adds nothing measurable, and new features are measured against that.
 
 ## Credits
 wave is a modified version of [rift](https://github.com/acsandmann/rift) by acsandmann, which includes code from glide-wm by tmandry. Licensed under Apache 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE).

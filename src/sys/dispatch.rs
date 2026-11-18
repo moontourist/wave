@@ -86,8 +86,6 @@ unsafe extern "C" {
     ) -> *mut c_void;
 
     fn dispatch_queue_create(label: *const i8, attr: *mut c_void) -> *mut Unmanaged;
-
-    fn malloc_zone_pressure_relief(zone: *mut c_void, goal: usize) -> usize;
 }
 
 #[inline]
@@ -128,19 +126,6 @@ impl DispatchExt for Unmanaged {
         // once.
         unsafe { self.after_f(when, ctx, trampoline::<T>) };
     }
-}
-
-/// Gives malloc's cached free memory back to the system, `delay` from now.
-///
-/// malloc keeps a freed large block, such as the overview's 63 MB desktop image, in its cache, where
-/// it still counts against wave. The delay lets Core Animation drop its references first. Runs on
-/// the reaper queue, which is idle almost all the time.
-pub fn release_free_memory_after(delay: std::time::Duration) {
-    let nanos = i64::try_from(delay.as_nanos()).unwrap_or(i64::MAX);
-    reaper_queue().after_f_s(Time::NOW.new_after(nanos), (), |()| {
-        // SAFETY: A null zone means every zone, and a goal of 0 asks for as much as possible.
-        unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
-    });
 }
 
 /// Runs `exited` once on the reaper queue when `pid` exits; the watch lasts for this process.
