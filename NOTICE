@@ -1,0 +1,10 @@
+wave
+Copyright 2026 moontourist
+
+wave is a modified version of rift (https://github.com/acsandmann/rift),
+copyright acsandmann, 2025, which includes code from glide-wm, copyright
+tmandry, 2025. Both are licensed under the Apache License, Version 2.0.
+
+wave started from rift commit 165e29a, plus the changes on moontourist's
+feat/animation-easing branch up to 3629b32. Files changed since then are
+listed in this repository's git history.

@@ -1,72 +1,58 @@
-<div align="center">
+# wave
 
-# rift
-  <p>rift is a tiling window manager for macOS that focuses on performance and usability. </p>
-  <img src="assets/demo.gif" alt="Rift demo" />
+![wave: a tiling window manager for macOS, built on rift](assets/logo.png)
 
-  <p>
-    <a href="https://github.com/acsandmann/rift/actions/workflows/rust.yml">
-      <img src="https://img.shields.io/github/actions/workflow/status/acsandmann/rift/rust.yml?style=flat-square" alt="Rust CI Status" />
-    </a>
-    <a href="https://github.com/acsandmann/rift/commits/main">
-      <img src="https://img.shields.io/github/last-commit/acsandmann/rift?style=flat-square" alt="Last Commit" />
-    </a>
-    <a href="https://github.com/acsandmann/rift/issues">
-      <img src="https://img.shields.io/github/issues/acsandmann/rift?style=flat-square" alt="Open Issues" />
-    </a>
-    <a href="https://github.com/acsandmann/rift/stargazers">
-      <img src="https://img.shields.io/github/stars/acsandmann/rift?style=flat-square" alt="GitHub stars" />
-    </a>
-    <a href="https://matrix.to/#/%23rift:matrix.org">
-      <img src="https://img.shields.io/matrix/rift%3Amatrix.org?style=flat-square" alt="Matrix" />
-    </a>
-  </p>
-</div>
+A tiling window manager for macOS, built on [rift](https://github.com/acsandmann/rift).
 
-## features
-- multiple layout styles
-  - tiling (i3/sway-like)
-  - binary space partitioning (bspwm-like)
-  - floating (independent window frames with optional stacks)
-  - master-stack (dwm-like)
-  - scrolling columns (niri-style)
-  - stack (accordion)
-- menubar icon that opens a menu for switching workspaces, changing layouts, and accessing quick rift controls <details> <summary><sup>click to see the menu bar icon</sup></summary><img src="assets/menu_menu.png" alt="Rift menu bar icon" /></details>
-- save and restore layouts from the menu bar or CLI, with reusable layouts listed from a configurable folder <details> <summary><sup>click to see the menu</sup></summary><img src="assets/menu_layouts.png" alt="Rift menu for restoring layouts" /></details>
-- niri-style mission control for viewing workspaces and dragging windows between them
- <!--<details><summary><sup>click to see mission control</sup></summary><img src="assets/mission_control.png" alt="Rift Mission Control view" /></details> -->
-- focus follows the mouse with auto raise
-<!-- - drag windows over one another to swap positions -->
-- does **not** require disabling SIP
-- native macOS tab support
-- performant animations <sup>(as seen in the [demo](#rift))</sup>
-- switch to next/previous workspace with trackpad gestures <sup>(just like native macOS)</sup>
-- hot reloadable configuration
-- mach port based IPC for communicating with rift from <a href="https://acsandmann.github.io/rift-docs/ecosystem/plugins/">third-party programs</a> (sketchybar, etc)
-- works with "Displays have separate Spaces" enabled (unlike all other major WMs)
+wave starts from rift 0.8.3 and keeps everything rift does. It adds smoother animations and a hardened codebase, and its own features come next.
 
-## quick start
-Get up and running via the docs:
-<br>
+## What it does
+- **Many layouts.** Tiling (like i3), binary space partitioning (like bspwm), master-stack (like dwm), scrolling columns (like niri), stacks and floating windows.
+- **Smooth motion.** Windows ease into place on the curve you pick, at your slowest display's refresh rate. New windows fly into their tile and closed ones shrink away with their neighbors.
+- **No SIP changes.** Works with System Integrity Protection on, and with "Displays have separate Spaces" turned on.
+- **Workspaces you can see.** A niri-style overview for dragging windows between workspaces, and trackpad swipes between them like native macOS.
+- **Menu bar menu.** Switch workspaces and layouts, and save or restore layouts.
+- **Focus follows the mouse,** with auto raise.
+- **Live config.** Edit the TOML file and the change applies when you save.
+- **Scriptable.** A Mach-port IPC lets other programs (sketchybar and others) query wave and react to its events.
 
-[<kbd><br>config<br></kbd>][config_link]
+## What's different from rift
+- `animation_easing` works: pick any curve listed in `rift.default.toml`, such as `ease_out_cubic`.
+- `animation_fps = 0.0` matches your slowest connected display.
+- `window_open_close_animation` animates tiled windows opening and closing.
+- Panics are replaced with errors and logged fallbacks throughout, so one bad message or missing window can't crash the window manager.
+- Every `unsafe` block does one thing and says why it's sound. That work found and fixed several memory bugs.
 
-[<kbd><br>quick start<br></kbd>][quick_start]
-<br>
+## Install
+wave builds from source for now (macOS only). The programs are still called `rift` and `rift-cli` until the rename lands.
 
-## community
+1. `cargo build --release`
+2. Copy `rift.default.toml` to `~/.config/rift/config.toml` and edit it to taste.
+3. `./target/release/rift-cli service install`, then `./target/release/rift-cli service start`.
+4. Give it Accessibility permission when macOS asks. Open and close animations also need Screen Recording.
 
-Join [#rift:matrix.org](https://matrix.to/#/#rift:matrix.org) for discussion, support, and development.
+`rift-cli service restart` picks up a new build.
 
-## support
+## Configure
+Every setting is in [`rift.default.toml`](rift.default.toml), with a comment explaining it. `rift-cli settings` opens the native Settings window, and rift's [configuration reference](https://acsandmann.github.io/rift-docs/reference/configuration/) covers the rest.
 
-If rift is part of your daily workflow, consider [sponsoring its development](https://github.com/sponsors/acsandmann).
+## How it's built
+Rust, using macOS's private SkyLight APIs for speed and Core Animation for the overlays.
 
-## motivation
-Aerospace worked well for me, but I missed animations and the ability to use fullscreen on one display while working on the other. I also prefer leveraging private/undocumented APIs as they tend to be more reliable (due to the OS being built on them and all the public APIs) and performant.
-<sup><sup>for more on why rift exists and what rift strives to do, see the [manifesto](manifesto.md)</sup></sup>
+| Path | What it is |
+|---|---|
+| `src/bin/rift.rs` | the window manager |
+| `src/bin/rift-cli.rs` | the command line: query, execute, subscribe, service |
+| `src/actor/` | one thread per job: the reactor (layout decisions), apps, animation, input |
+| `src/layout_engine/` | the layouts |
+| `src/sys/` | the macOS layer: AX, SkyLight, Mach ports, event taps |
+| `src/ui/` | the menu bar, the workspace overview and Settings |
+| `crates/rift-client/` | a Rust library for talking to wave over IPC |
+| `assets/` | the banner above (`node assets/render.mjs` redraws it) and the app's Info.plist |
 
-<!---------------------------------------------------------------------------->
+## Develop
+- `cargo test --workspace` runs the tests.
+- Format changed files with nightly rustfmt only: `rustfmt +nightly --edition 2024 <files>`. Stable `cargo fmt` skips the repo's unstable options and reformats everything.
 
-[config_link]: https://acsandmann.github.io/rift-docs/reference/configuration/
-[quick_start]: https://acsandmann.github.io/rift-docs/quick-start/
+## Credits
+wave is a modified version of [rift](https://github.com/acsandmann/rift) by acsandmann, which includes code from glide-wm by tmandry. Licensed under Apache 2.0, the same as rift: see [LICENSE](LICENSE) and [NOTICE](NOTICE).
