@@ -300,7 +300,6 @@ impl MissionControlActor {
             drop(session);
         }
         self.backgrounds.clear();
-        crate::sys::dispatch::release_free_memory_after(std::time::Duration::from_secs(1));
         self.input_tx
             .send(super::input::Request::SetMissionControlActive(false, Vec::new()));
         self.stack_line_tx.send(super::stack_line::Event::OverviewBounds(Vec::new()));

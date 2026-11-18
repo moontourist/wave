@@ -158,6 +158,8 @@ fn plist_contents() -> io::Result<String> {
         <string>{path_env}</string>
         <key>RUST_LOG</key>
         <string>error,warn,info</string>
+        <key>MallocLargeCache</key>
+        <string>0</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -303,6 +305,26 @@ fn plist_arg(path: &Path) -> io::Result<&str> {
     })
 }
 
+/// Unloads the job and waits until launchd has finished removing it.
+///
+/// launchd tears a job down after `bootout` returns. Until it's gone, `print` still finds it and
+/// `bootstrap` fails, so loading it again right away would skip the load or fail.
+fn bootout(target: &str) -> io::Result<()> {
+    let code = run_launchctl(&["bootout", target], false)?;
+    if code != 0 {
+        return Err(io::Error::other(format!("bootout failed (exit {code})")));
+    }
+    for _ in 0..50 {
+        if run_launchctl(&["print", target], true).unwrap_or(1) != 0 {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err(io::Error::other(
+        "launchd did not unload the job within 5 seconds",
+    ))
+}
+
 pub fn service_start() -> io::Result<()> {
     let plist_path = plist_path()?;
     if !plist_path.is_file() {
@@ -330,10 +352,7 @@ pub fn service_start() -> io::Result<()> {
 
     let is_bootstrapped = run_launchctl(&["print", &service_target], true).unwrap_or(1) == 0;
     if is_bootstrapped && plist_changed {
-        let code = run_launchctl(&["bootout", &service_target], false)?;
-        if code != 0 {
-            return Err(io::Error::other(format!("bootout failed (exit {code})")));
-        }
+        bootout(&service_target)?;
     }
     if !is_bootstrapped || plist_changed {
         let _ = run_launchctl(&["enable", &service_target], true);
@@ -363,10 +382,7 @@ pub fn service_restart() -> io::Result<()> {
         // launchd caches ProgramArguments; kickstart alone does not reload them.
         let target = format!("gui/{}/{}", getuid(), WAVE_PLIST);
         if service_is_running()? {
-            let code = run_launchctl(&["bootout", &target], false)?;
-            if code != 0 {
-                return Err(io::Error::other(format!("bootout failed (exit {code})")));
-            }
+            bootout(&target)?;
         }
         return service_start();
     }
