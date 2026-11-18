@@ -4,3 +4,4 @@ wave.toml
 src/bin/dev.rs
 .claude/
 .DS_Store
+PLAN.md
