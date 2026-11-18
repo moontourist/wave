@@ -4,6 +4,8 @@
 
 A tiling window manager for macOS, with smooth animations and a codebase that stays up when something goes wrong.
 
+![Three windows tiled across an ultrawide display](assets/screenshots/tiled.png)
+
 ## What it does
 - **Many layouts.** Tiling (like i3), binary space partitioning (like bspwm), master-stack (like dwm), scrolling columns (like niri), stacks and floating windows.
 - **Smooth motion.** Windows ease into place on the curve you pick (`animation_easing`, such as `ease_out_cubic`), at your slowest display's refresh rate (`animation_fps = 0.0`). With `window_open_close_animation`, new windows fly into their tile and closed ones shrink away with their neighbors.
@@ -15,15 +17,21 @@ A tiling window manager for macOS, with smooth animations and a codebase that st
 - **Scriptable.** A Mach-port IPC lets other programs (sketchybar and others) query wave and react to its events.
 - **Hard to crash.** Unexpected input becomes an error or a logged fallback, never a panic, and every `unsafe` block does one thing and says why it's sound.
 
+| A new window flying into its tile | The workspace overview |
+|---|---|
+| ![A new Finder window growing into the bottom tile while the others slide up](assets/screenshots/opening.png) | ![The overview showing workspace 6 with four windows](assets/screenshots/overview.png) |
+
+<img src="assets/screenshots/menu.png" alt="The menu bar menu: layout, workspaces, saved layouts, settings" width="320">
+
 ## Install
 wave builds from source for now (macOS only).
 
 1. `cargo build --release`
 2. Copy `wave.default.toml` to `~/.config/wave/config.toml` and edit it to taste.
-3. `./target/release/wave-cli service install`, then `./target/release/wave-cli service start`.
+3. `./target/release/wave service install`, then `./target/release/wave service start`.
 4. Give it Accessibility permission when macOS asks. Open and close animations also need Screen Recording.
 
-`wave-cli service restart` picks up a new build.
+`wave service restart` picks up a new build.
 
 ## Configure
 Every setting is in [`wave.default.toml`](wave.default.toml), with a comment explaining it. `wave-cli settings` opens the native Settings window.
@@ -33,8 +41,8 @@ Rust, using macOS's private SkyLight APIs for speed and Core Animation for the o
 
 | Path | What it is |
 |---|---|
-| `src/bin/wave.rs` | the window manager |
-| `src/bin/wave-cli.rs` | the command line: query, execute, subscribe, service |
+| `src/bin/wave.rs` | the window manager, and `wave service` to install and run it |
+| `src/bin/wave-cli.rs` | the command line: query, execute, subscribe |
 | `src/actor/` | one thread per job: the reactor (layout decisions), apps, animation, input |
 | `src/layout_engine/` | the layouts |
 | `src/sys/` | the macOS layer: AX, SkyLight, Mach ports, event taps |
@@ -54,10 +62,11 @@ Done:
 - [x] wave's own name, identity and config folder
 
 Next:
+- [ ] **Give memory back.** The overview and the open animation keep two screen-sized buffers after they finish (about 126 MB on a 7680×2160 display). Free them when they're done.
 - [ ] **Window borders, built in.** An outline around each window, like JankyBorders, but moving in the same animation frame as its window instead of trailing behind. Colors for focused and unfocused windows, and the color fades when focus changes.
 - [ ] **Accordion on any tile.** Fold a group of windows into one tile in any layout, not only the stack layout.
 
-Every feature is held to a memory budget: wave idles at about 24 MB, and new features are measured against that.
+Every feature is held to a memory budget: wave idles at about 18 MB, moving windows adds nothing measurable, and new features are measured against that.
 
 ## Credits
 wave is a modified version of [rift](https://github.com/acsandmann/rift) by acsandmann, which includes code from glide-wm by tmandry. Licensed under Apache 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE).
