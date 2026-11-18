@@ -1,10 +1,8 @@
-# wave
+# [~] wave
 
-![wave: a tiling window manager for macOS](assets/logo.png)
+![[~] wave: a tiling window manager for macOS](assets/logo.png)
 
 A tiling window manager for macOS, with smooth animations and a codebase that stays up when something goes wrong.
-
-![Three windows tiled across an ultrawide display](assets/screenshots/tiled.png)
 
 ## What it does
 - **Many layouts.** Tiling (like i3), binary space partitioning (like bspwm), master-stack (like dwm), scrolling columns (like niri), stacks and floating windows.
@@ -16,12 +14,6 @@ A tiling window manager for macOS, with smooth animations and a codebase that st
 - **Live config.** Edit the TOML file and the change applies when you save.
 - **Scriptable.** A Mach-port IPC lets other programs (sketchybar and others) query wave and react to its events.
 - **Hard to crash.** Unexpected input becomes an error or a logged fallback, never a panic, and every `unsafe` block does one thing and says why it's sound.
-
-| A new window flying into its tile | The workspace overview |
-|---|---|
-| ![A new Finder window growing into the bottom tile while the others slide up](assets/screenshots/opening.png) | ![The overview showing workspace 6 with four windows](assets/screenshots/overview.png) |
-
-<img src="assets/screenshots/menu.png" alt="The menu bar menu: layout, workspaces, saved layouts, settings" width="320">
 
 ## Install
 wave builds from source for now (macOS only).
