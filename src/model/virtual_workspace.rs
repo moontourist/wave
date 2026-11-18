@@ -46,8 +46,13 @@ pub(crate) struct WorkspaceTarget {
 /// or permuting those unconstrained runs cannot improve the transition count.
 fn distribute(displays: usize, mut pins: Vec<Option<usize>>) -> Vec<usize> {
     let mut pinned = vec![0; displays];
-    pins.iter().flatten().for_each(|&d| pinned[d] += 1);
-    let mut bare: Vec<_> = (0..displays).filter(|&d| pinned[d] == 0).collect();
+    for &d in pins.iter().flatten() {
+        if let Some(count) = pinned.get_mut(d) {
+            *count += 1;
+        }
+    }
+    let mut bare: Vec<_> =
+        pinned.iter().enumerate().filter(|&(_, &n)| n == 0).map(|(d, _)| d).collect();
     let free = pins.iter().filter(|pin| pin.is_none()).count();
     pins.resize(
         (pins.len() + bare.len().saturating_sub(free)).min(MAX_WORKSPACES),
@@ -74,20 +79,20 @@ fn distribute(displays: usize, mut pins: Vec<Option<usize>>) -> Vec<usize> {
                 return result.clone();
             }
             let mut best = None;
-            for owner in 0..self.pinned.len() {
+            for (owner, &owner_pins) in self.pinned.iter().enumerate() {
                 if owner == previous {
                     continue;
                 }
-                let unpinned = self.pinned[owner] == 0;
+                let unpinned = owner_pins == 0;
                 if unpinned && self.bare.get(used) != Some(&owner) {
                     continue;
                 }
                 let mut pins_in_run = 0;
-                for end in start..self.pins.len() {
-                    if self.pins[end].is_some_and(|pin| pin != owner) {
+                for (end, pin) in self.pins.iter().enumerate().skip(start) {
+                    if pin.is_some_and(|pin| pin != owner) {
                         break;
                     }
-                    pins_in_run += usize::from(self.pins[end].is_some());
+                    pins_in_run += usize::from(pin.is_some());
                     let Some((runs, balance, tail)) =
                         self.solve(end + 1, used + usize::from(unpinned), owner)
                     else {
@@ -99,7 +104,7 @@ fn distribute(displays: usize, mut pins: Vec<Option<usize>>) -> Vec<usize> {
                     owners.extend(tail);
                     let candidate = (
                         runs + 1,
-                        balance + len * len + 2 * len * (self.pinned[owner] - pins_in_run),
+                        balance + len * len + 2 * len * (owner_pins - pins_in_run),
                         owners,
                     );
                     if best.as_ref().is_none_or(|best| &candidate < best) {
@@ -118,8 +123,17 @@ fn distribute(displays: usize, mut pins: Vec<Option<usize>>) -> Vec<usize> {
         memo: HashMap::default(),
     }
     .solve(0, 0, displays)
-    .expect("pins and appended empty slots admit a distribution")
-    .2
+    .map_or_else(
+        || {
+            error!(
+                displays,
+                ?pins,
+                "no workspace distribution; placing all on the first display"
+            );
+            vec![0; pins.len()]
+        },
+        |(_, _, owners)| owners,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,10 +418,18 @@ fn deserialize_workspace_order<'de, D: serde::Deserializer<'de>>(
 impl std::ops::Index<VirtualWorkspaceId> for WorkspaceStore {
     type Output = VirtualWorkspace;
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Index panics on a stale id by contract, like SlotMap's own; use get() to probe"
+    )]
     fn index(&self, id: VirtualWorkspaceId) -> &Self::Output { &self.workspaces[id] }
 }
 
 impl std::ops::IndexMut<VirtualWorkspaceId> for WorkspaceStore {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "IndexMut panics on a stale id by contract, like SlotMap's own; use get_mut() to probe"
+    )]
     fn index_mut(&mut self, id: VirtualWorkspaceId) -> &mut Self::Output {
         &mut self.workspaces[id]
     }
@@ -587,7 +609,9 @@ impl WorkspaceStore {
                 .is_some_and(|activation| activation.remembered == Some(id))
         {
             self.set_active_workspace(target, id);
-            self.active_workspace_per_space.get_mut(&target).unwrap().remembered = None;
+            if let Some(activation) = self.active_workspace_per_space.get_mut(&target) {
+                activation.remembered = None;
+            }
         }
         self.repair_activation(source);
         self.repair_activation(target);
@@ -604,7 +628,7 @@ impl WorkspaceStore {
     fn normalize_names(&mut self, shared: bool) {
         for (index, &id) in self.order.iter().enumerate() {
             let workspace = &self[id];
-            let duplicate = self.order[..index].iter().any(|&other| {
+            let duplicate = self.order.iter().take(index).any(|&other| {
                 (shared || self[other].space == workspace.space)
                     && self[other].name == workspace.name
             });
@@ -615,7 +639,9 @@ impl WorkspaceStore {
                     workspace.name.clone()
                 };
                 let name = self.available_name(workspace.space, base);
-                self.workspaces[id].name = name;
+                if let Some(workspace) = self.workspaces.get_mut(id) {
+                    workspace.name = name;
+                }
             }
         }
     }
@@ -628,8 +654,9 @@ impl WorkspaceStore {
                 })
             {
                 activation.remembered = Some(id);
-                activation.current =
-                    self.order.iter().copied().find(|id| self.workspaces[*id].space == space);
+                activation.current = self.order.iter().copied().find(|&id| {
+                    self.workspaces.get(id).is_some_and(|workspace| workspace.space == space)
+                });
             }
             if activation.previous == activation.current {
                 activation.previous = None;
@@ -750,7 +777,10 @@ impl WorkspaceStore {
         }
         for id in self.catalog() {
             let workspace = &self[id];
-            let index = scope_ids(workspace.space).position(|candidate| candidate == id).unwrap();
+            let Some(index) = scope_ids(workspace.space).position(|candidate| candidate == id)
+            else {
+                continue;
+            };
             let configured = restoring && index < config.workspace_names.len();
             let mut name = if mode_changed {
                 workspace.name.clone()
@@ -844,7 +874,7 @@ impl WorkspaceStore {
     ) -> VirtualWorkspaceId {
         let size = self
             .workspaces_on(space)
-            .find_map(|id| self.workspaces[id].layout_state.active_size());
+            .find_map(|id| self.workspaces.get(id)?.layout_state.active_size());
         let mut workspace = VirtualWorkspace::new(name, space, mode, &self.layout_settings);
         workspace.preferred_display = self
             .workspaces
@@ -907,12 +937,12 @@ impl WorkspaceStore {
         display_count: usize,
         rule_space: impl Fn(&[String]) -> Option<SpaceId>,
     ) {
-        if spaces.is_empty() {
+        let Some(&first_space) = spaces.first() else {
             return;
-        }
+        };
         self.update_display_count(display_count);
         if self.effective_mode() == WorkspaceMode::Global
-            && self.scope_ids(spaces[0]).next().is_none()
+            && self.scope_ids(first_space).next().is_none()
         {
             let count = self.settings.default_workspace_count.max(spaces.len()).min(MAX_WORKSPACES);
             let pins: Vec<_> = (0..count)
@@ -926,7 +956,9 @@ impl WorkspaceStore {
                 })
                 .collect();
             for (index, owner) in distribute(spaces.len(), pins).into_iter().enumerate() {
-                let space = spaces[owner];
+                let Some(&space) = spaces.get(owner) else {
+                    continue;
+                };
                 let id = self.append_default_workspace(space);
                 if index == self.settings.default_workspace
                     || !self.active_workspace_per_space.contains_key(&space)
@@ -1176,7 +1208,9 @@ impl WorkspaceStore {
             (1..=MAX_WORKSPACES + 1)
                 .map(|index| format!("Workspace {index}"))
                 .find(|name| !self.name_exists(space, name))
-                .expect("a bounded catalog always has an available generated name")
+                .ok_or_else(|| {
+                    WorkspaceError::InconsistentState("no free generated workspace name".into())
+                })?
         };
 
         let idx = self.scope_ids(space).count();
@@ -1215,7 +1249,9 @@ impl WorkspaceStore {
             return false;
         }
         if self.effective_mode() == WorkspaceMode::Global && source != target {
-            self.active_workspace_per_space.get_mut(&target).unwrap().previous = previous;
+            if let Some(activation) = self.active_workspace_per_space.get_mut(&target) {
+                activation.previous = previous;
+            }
         }
         true
     }
