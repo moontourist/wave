@@ -76,6 +76,8 @@ impl TryFrom<&AXUIElement> for WindowServerId {
 
     fn try_from(element: &AXUIElement) -> Result<Self, Self::Error> {
         let mut id = 0;
+        // SAFETY: `element` keeps its AXUIElement alive for the call, and `id` is a live local the
+        // function writes.
         let res = unsafe { _AXUIElementGetWindow(element.raw_ptr().as_ptr(), &mut id) };
         if res != AXError::Success {
             return Err(AxError::Ax(res));
@@ -147,11 +149,16 @@ impl WindowIterator {
 
     /// `flags` controls optional result decoding; bit 0 requests window titles.
     fn new_from_cfarray(cf_numbers: *mut CFArray<CFNumber>, flags: c_int) -> Option<Self> {
+        // SAFETY: G_CONNECTION is the process's SkyLight connection, and `cf_numbers` is a CFArray
+        // the caller keeps alive for the call.
         let query = unsafe { SLSWindowQueryWindows(*G_CONNECTION, cf_numbers, flags) };
         if query.is_null() {
             return None;
         }
+        // SAFETY: `query` is a non-null query result checked above; the call returns a +1 iterator
+        // or null.
         let iter = unsafe { SLSWindowQueryResultCopyWindows(query) };
+        // SAFETY: `query` came from SLSWindowQueryWindows with a +1 reference and isn't used again.
         unsafe { CFRelease(query) };
         if iter.is_null() {
             return None;
@@ -171,10 +178,14 @@ impl WindowIterator {
     }
 
     #[inline]
-    pub fn count(&self) -> i32 { unsafe { SLSWindowIteratorGetCount(self.iter) } }
+    pub fn count(&self) -> i32 {
+        // SAFETY: `self.iter` is the owned, non-null iterator this WindowIterator holds until drop.
+        unsafe { SLSWindowIteratorGetCount(self.iter) }
+    }
 
     #[inline]
     pub fn advance<'a>(&'a self) -> Option<&'a Self> {
+        // SAFETY: `self.iter` is the owned, non-null iterator this WindowIterator holds until drop.
         if unsafe { SLSWindowIteratorAdvance(self.iter) } {
             return Some(self);
         }
@@ -183,39 +194,66 @@ impl WindowIterator {
     }
 
     #[inline]
-    pub fn window_id(&self) -> u32 { unsafe { SLSWindowIteratorGetWindowID(self.iter) } }
+    pub fn window_id(&self) -> u32 {
+        // SAFETY: `self.iter` is the owned, non-null iterator this WindowIterator holds until drop.
+        unsafe { SLSWindowIteratorGetWindowID(self.iter) }
+    }
 
     #[inline]
-    pub fn level(&self) -> i32 { unsafe { SLSWindowIteratorGetLevel(self.iter) } }
+    pub fn level(&self) -> i32 {
+        // SAFETY: `self.iter` is the owned, non-null iterator this WindowIterator holds until drop.
+        unsafe { SLSWindowIteratorGetLevel(self.iter) }
+    }
 
     #[inline]
-    pub fn pid(&self) -> i32 { unsafe { SLSWindowIteratorGetPID(self.iter) } }
+    pub fn pid(&self) -> i32 {
+        // SAFETY: `self.iter` is the owned, non-null iterator this WindowIterator holds until drop.
+        unsafe { SLSWindowIteratorGetPID(self.iter) }
+    }
 
     #[inline]
-    pub fn parent_id(&self) -> u32 { unsafe { SLSWindowIteratorGetParentID(self.iter) } }
+    pub fn parent_id(&self) -> u32 {
+        // SAFETY: `self.iter` is the owned, non-null iterator this WindowIterator holds until drop.
+        unsafe { SLSWindowIteratorGetParentID(self.iter) }
+    }
 
     #[inline]
-    pub fn bounds(&self) -> CGRect { unsafe { SLSWindowIteratorGetBounds(self.iter) } }
+    pub fn bounds(&self) -> CGRect {
+        // SAFETY: `self.iter` is the owned, non-null iterator this WindowIterator holds until drop.
+        unsafe { SLSWindowIteratorGetBounds(self.iter) }
+    }
 
     #[inline]
-    pub fn alpha(&self) -> f32 { unsafe { SLSWindowIteratorGetAlpha(self.iter) } }
+    pub fn alpha(&self) -> f32 {
+        // SAFETY: `self.iter` is the owned, non-null iterator this WindowIterator holds until drop.
+        unsafe { SLSWindowIteratorGetAlpha(self.iter) }
+    }
 
     #[inline]
     #[allow(dead_code)]
-    pub fn tags(&self) -> u64 { unsafe { SLSWindowIteratorGetTags(self.iter) } }
+    pub fn tags(&self) -> u64 {
+        // SAFETY: `self.iter` is the owned, non-null iterator this WindowIterator holds until drop.
+        unsafe { SLSWindowIteratorGetTags(self.iter) }
+    }
 
     #[inline]
     #[allow(dead_code)]
-    pub fn attributes(&self) -> u64 { unsafe { SLSWindowIteratorGetAttributes(self.iter) } }
+    pub fn attributes(&self) -> u64 {
+        // SAFETY: `self.iter` is the owned, non-null iterator this WindowIterator holds until drop.
+        unsafe { SLSWindowIteratorGetAttributes(self.iter) }
+    }
 
     #[inline]
     pub fn constraints(&self) -> (CGSize, CGSize) {
         let mut min = CGSize::ZERO;
         let mut max = CGSize::ZERO;
         let mut cur = CGSize::ZERO;
+        // SAFETY: `self.iter` is the owned iterator, and the three out-pointers are live locals.
         unsafe { SLSWindowIteratorGetConstraints(self.iter, &mut min, &mut max, &mut cur) };
 
         if min.width == 0.0 && min.height == 0.0 && max.width == 0.0 && max.height == 0.0 {
+            // SAFETY: G_CONNECTION is the process's SkyLight connection, and the three out-pointers
+            // are live locals.
             unsafe {
                 SLSPackagesGetWindowConstraints(
                     *G_CONNECTION,
@@ -238,12 +276,19 @@ pub fn window_title(id: WindowServerId) -> Option<(i32, String)> {
     if query.window_id() != id.as_u32() {
         return None;
     }
+    // SAFETY: `query.iter` is a live iterator advanced onto `id`; the call returns a +1 title or
+    // null.
     let title = NonNull::new(unsafe { SLSWindowIteratorCopyTitle(query.iter) })?;
+    // SAFETY: SLSWindowIteratorCopyTitle follows the Copy rule, so this call owns the non-null
+    // title.
     Some((query.pid(), unsafe { CFRetained::from_raw(title) }.to_string()))
 }
 
 impl Drop for WindowIterator {
-    fn drop(&mut self) { unsafe { CFRelease(self.iter) } }
+    fn drop(&mut self) {
+        // SAFETY: `self.iter` holds the iterator's +1 reference, released exactly once here.
+        unsafe { CFRelease(self.iter) }
+    }
 }
 
 /// Server-side filter for `SLSWindowQueryRun`.
@@ -272,10 +317,12 @@ struct WindowQueryKeys {
 }
 
 fn resolve_window_query_key(name: &CStr) -> Option<usize> {
+    // SAFETY: `name` is a NUL-terminated C string, and RTLD_DEFAULT searches every loaded image.
     let slot = unsafe { dlsym(RTLD_DEFAULT, name.as_ptr()) };
     if slot.is_null() {
         return None;
     }
+    // SAFETY: `slot` is the non-null address of an exported SkyLight `CFStringRef` constant.
     let key = unsafe { *(slot.cast::<*mut CFString>()) };
     (!key.is_null()).then_some(key as usize)
 }
@@ -296,6 +343,8 @@ static WINDOW_QUERY_KEYS: Lazy<Option<WindowQueryKeys>> = Lazy::new(|| {
 
 unsafe fn set_window_query_value<T: Type>(query: *mut CFType, key: usize, value: &CFRetained<T>) {
     if key != 0 {
+        // SAFETY: `query` is a live query from SLSWindowQueryCreate, `key` is a resolved SkyLight
+        // key, and `value` outlives the call, which retains it.
         unsafe {
             SLSWindowQuerySetValue(
                 query,
@@ -316,6 +365,8 @@ fn window_query_run(filter: &WindowQueryFilter<'_>) -> Option<WindowIterator> {
         return None;
     }
 
+    // SAFETY: A null allocator selects the default CF allocator; the call returns a +1 query or
+    // null.
     let query = unsafe { SLSWindowQueryCreate(std::ptr::null_mut()) };
     if query.is_null() {
         return None;
@@ -326,6 +377,7 @@ fn window_query_run(filter: &WindowQueryFilter<'_>) -> Option<WindowIterator> {
     let exclude_tags = CFNumber::new_i64(filter.exclude_tags as i64);
     let window_options =
         (keys.window_options != 0).then(|| CFNumber::new_i32(filter.window_list_options));
+    // SAFETY: `query` is non-null, checked above, and every key comes from WINDOW_QUERY_KEYS.
     unsafe {
         set_window_query_value(query, keys.owner, &owner);
         set_window_query_value(query, keys.include_tags, &include_tags);
@@ -338,6 +390,7 @@ fn window_query_run(filter: &WindowQueryFilter<'_>) -> Option<WindowIterator> {
     let space_array = uses_explicit_spaces.then(|| cf_array_from_u64s(filter.spaces));
     let space_options =
         (!uses_explicit_spaces).then(|| CFNumber::new_i32(filter.space_list_options));
+    // SAFETY: `query` is non-null, checked above, and every key comes from WINDOW_QUERY_KEYS.
     unsafe {
         if let Some(space_array) = &space_array {
             set_window_query_value(query, keys.spaces, space_array);
@@ -346,12 +399,17 @@ fn window_query_run(filter: &WindowQueryFilter<'_>) -> Option<WindowIterator> {
         }
     }
 
+    // SAFETY: G_CONNECTION is the process's SkyLight connection, and `query` is a live, configured
+    // query.
     let result = unsafe { SLSWindowQueryRun(*G_CONNECTION, query, filter.query_flags) };
     let iterator = if result.is_null() {
         std::ptr::null_mut()
     } else {
+        // SAFETY: `result` is a non-null query result; the call returns a +1 iterator or null.
         unsafe { SLSWindowQueryResultCopyWindows(result) }
     };
+    // SAFETY: `result` (when non-null) and `query` each hold a +1 reference that nothing else
+    // releases.
     unsafe {
         if !result.is_null() {
             CFRelease(result);
@@ -399,10 +457,12 @@ pub fn mission_control_dock_overlay_visible() -> bool {
     get_visible_windows_raw::<CFDictionary<CFString, CFType>>()
         .iter()
         .any(|window| {
+            // SAFETY: kCGWindowName is an immutable CoreGraphics constant.
             if window.get(unsafe { kCGWindowName }).is_some() {
                 return false;
             }
 
+            // SAFETY: kCGWindowOwnerName is an immutable CoreGraphics constant.
             let Some(owner_name) = get_string(&window, unsafe { kCGWindowOwnerName }) else {
                 return false;
             };
@@ -410,6 +470,7 @@ pub fn mission_control_dock_overlay_visible() -> bool {
                 return false;
             }
 
+            // SAFETY: kCGWindowLayer is an immutable CoreGraphics constant.
             get_num(&window, unsafe { kCGWindowLayer }) == Some(MISSION_CONTROL_DOCK_LAYER)
         })
 }
@@ -434,12 +495,15 @@ pub fn window_parent(id: WindowServerId) -> Option<WindowServerId> {
 
 pub fn window_is_sticky(id: WindowServerId) -> bool {
     let cf_windows = cf_array_from_ids(&[id]);
+    // SAFETY: G_CONNECTION is the process's SkyLight connection, and `cf_windows` outlives the
+    // call.
     let space_list_ref = unsafe {
         SLSCopySpacesForWindows(*G_CONNECTION, 0x7, CFRetained::as_ptr(&cf_windows).as_ptr())
     };
     let Some(space_list_ref) = NonNull::new(space_list_ref) else {
         return false;
     };
+    // SAFETY: SLSCopySpacesForWindows follows the Copy rule and returns an array of CFNumbers.
     let spaces_cf: CFRetained<CFArray<CFNumber>> = unsafe { CFRetained::from_raw(space_list_ref) };
     spaces_cf.len() > 1
 }
@@ -453,6 +517,8 @@ pub fn window_spaces(id: WindowServerId) -> Vec<crate::sys::screen::SpaceId> {
     }
 
     let cf_windows = cf_array_from_ids(&[id]);
+    // SAFETY: G_CONNECTION is the process's SkyLight connection, and `cf_windows` outlives the
+    // call.
     let space_list_ref = unsafe {
         SLSCopySpacesForWindows(*G_CONNECTION, 0x7, CFRetained::as_ptr(&cf_windows).as_ptr())
     };
@@ -460,6 +526,7 @@ pub fn window_spaces(id: WindowServerId) -> Vec<crate::sys::screen::SpaceId> {
         return Vec::new();
     };
 
+    // SAFETY: SLSCopySpacesForWindows follows the Copy rule and returns an array of CFNumbers.
     let spaces_cf: CFRetained<CFArray<CFNumber>> = unsafe { CFRetained::from_raw(space_list_ref) };
     spaces_cf
         .iter()
@@ -493,6 +560,7 @@ pub fn window_ordered_in(id: WindowServerId) -> Option<bool> {
     }
 
     let mut ordered: u8 = 0;
+    // SAFETY: G_CONNECTION is the process's SkyLight connection, and `ordered` is a live local.
     if let Ok(_) = cg_ok(unsafe { SLSWindowIsOrderedIn(*G_CONNECTION, id.as_u32(), &mut ordered) })
     {
         return Some(ordered != 0);
@@ -511,6 +579,7 @@ pub(crate) fn stacking_order() -> Vec<WindowServerId> {
         kCGNullWindowID,
     );
     list.iter()
+        // SAFETY: kCGWindowNumber is an immutable CoreGraphics constant.
         .filter_map(|entry| get_num(&entry, unsafe { objc2_core_graphics::kCGWindowNumber }))
         .filter_map(|id| u32::try_from(id).ok())
         .map(WindowServerId::new)
@@ -521,9 +590,10 @@ fn get_windows_raw<T: Type>(
     options: CGWindowListOption,
     relative_to_window: CGWindowID,
 ) -> CFRetained<CFArray<T>> {
+    // SAFETY: CGWindowListCopyWindowInfo returns an array of window-info dictionaries, and callers
+    // pick `T` to match that element type.
     unsafe {
         // TODO: cgwindowlistcopywindowinfo does not appear to order windows properly
-        // SAFETY: this will almost always return (pre objc2 was not a result and just a cfarray)
         if let Some(windows) = CGWindowListCopyWindowInfo(options, relative_to_window) {
             CFRetained::cast_unchecked(windows)
         } else {
@@ -587,11 +657,13 @@ pub fn focus_desktop_window(screen: &ScreenInfo) -> bool {
     };
     let uuid = CFString::from_str(display_uuid);
     let displays = CFArray::from_objects(&[&*uuid]);
+    // SAFETY: G_CONNECTION is the process's SkyLight connection, and `displays` outlives the call.
     let Some(windows) = NonNull::new(unsafe {
         SLSManagedDisplaysCopyRoleWindows(*G_CONNECTION, CFRetained::as_ptr(&displays).as_ptr(), 1)
     }) else {
         return false;
     };
+    // SAFETY: SLSManagedDisplaysCopyRoleWindows follows the Copy rule, so this call owns `windows`.
     let windows = unsafe { CFRetained::from_raw(windows) };
     windows.iter().any(|number| {
         let Some(id) = number.as_i64().and_then(|id| u32::try_from(id).ok()) else {
@@ -686,6 +758,8 @@ fn find_window_at_point(point: &mut CGPoint, below_window_id: Option<u32>) -> Op
         None => (0, 1),
     };
 
+    // SAFETY: G_CONNECTION is the process's SkyLight connection, and every out-pointer is a live
+    // local.
     unsafe {
         SLSFindWindowAndOwner(
             *G_CONNECTION,
@@ -755,6 +829,7 @@ pub fn current_cursor_location() -> Result<CGPoint, CGError> {
         return Ok(point);
     }
     let mut point = CGPoint::new(0.0, 0.0);
+    // SAFETY: G_CONNECTION is the process's SkyLight connection, and `point` is a live local.
     cg_ok(unsafe { SLSGetCurrentCursorLocation(*G_CONNECTION, &mut point) })?;
     Ok(point)
 }
@@ -773,10 +848,14 @@ pub fn window_level(wid: u32) -> Option<NSWindowLevel> {
     Some(query.advance()?.level() as NSWindowLevel)
 }
 
-pub fn window_sub_level(wid: u32) -> c_int { unsafe { mach_get_window_sub_level(wid) } }
+pub fn window_sub_level(wid: u32) -> c_int {
+    // SAFETY: mach_get_window_sub_level only reads the window id it's given.
+    unsafe { mach_get_window_sub_level(wid) }
+}
 
 /// Returns the typed Skylight tags exposed by a window-query iterator.
 fn iterator_window_tags(iterator: *mut CFType) -> SLSWindowTags {
+    // SAFETY: `iterator` is a live SLS window iterator the caller owns for this call.
     SLSWindowTags::from_bits_retain(unsafe { SLSWindowIteratorGetTags(iterator) })
 }
 
@@ -788,6 +867,7 @@ fn tags_match_app_window_role(tags: SLSWindowTags) -> bool {
 /// Returns whether the iterator points at a top-level application window.
 fn iterator_window_suitable(iterator: *mut CFType) -> bool {
     let tags = iterator_window_tags(iterator);
+    // SAFETY: `iterator` is a live SLS window iterator the caller owns for this call.
     let parent_wid = unsafe { SLSWindowIteratorGetParentID(iterator) };
 
     // Previous Rust filter also required attribute/high-bit hints plus
@@ -847,6 +927,8 @@ pub fn try_space_window_list_for_connection(
     let mut clear_tags: u64 = 0;
     let options: u32 = if include_minimized { 0x7 } else { 0x2 };
 
+    // SAFETY: G_CONNECTION is the process's SkyLight connection; `cf_space_array` outlives the call
+    // and the tag pointers are live locals.
     let window_list_ref = unsafe {
         SLSCopyWindowsWithOptionsAndTags(
             *G_CONNECTION,
@@ -862,13 +944,18 @@ pub fn try_space_window_list_for_connection(
         return None;
     }
 
+    // SAFETY: `window_list_ref` is a non-null CFArray, checked above, owned until the release
+    // below.
     let expected = (unsafe { &*window_list_ref }).len() as i32;
     if expected == 0 {
+        // SAFETY: `window_list_ref` holds a +1 reference from the Copy call and isn't used again.
         unsafe { CFRelease(window_list_ref as *mut CFType) };
         return Some(Vec::new());
     }
 
     let iterator = WindowIterator::new_from_cfarray(window_list_ref, 0);
+    // SAFETY: `window_list_ref` holds a +1 reference; the iterator took its own copy of the
+    // windows.
     unsafe { CFRelease(window_list_ref as *mut CFType) };
     let iterator = iterator?;
 
@@ -901,11 +988,13 @@ pub fn try_space_window_list_for_connection(
 pub fn key_focused_window(space: SpaceId) -> Option<WindowId> {
     let mut psn = ProcessSerialNumber::default();
     let mut fallback = 0u8;
+    // SAFETY: Both out-pointers are live locals.
     if cg_ok(unsafe { SLPSGetKeyFocusProcess(&mut psn, &mut fallback) }).is_err() {
         return None;
     }
 
     let mut owner = 0;
+    // SAFETY: G_CONNECTION is the process's SkyLight connection; `psn` and `owner` are live locals.
     if unsafe { SLSGetConnectionIDForPSN(*G_CONNECTION, &psn, &mut owner) } != 0 || owner == 0 {
         return None;
     }
@@ -954,7 +1043,10 @@ fn key_window_in_z_order(
 }
 
 /// The space on the display currently holding WindowServer focus.
-pub fn active_space() -> SpaceId { SpaceId::new(unsafe { CGSGetActiveSpace(*G_CONNECTION) }) }
+pub fn active_space() -> SpaceId {
+    // SAFETY: G_CONNECTION is the process's SkyLight connection.
+    SpaceId::new(unsafe { CGSGetActiveSpace(*G_CONNECTION) })
+}
 
 #[cfg(test)]
 pub fn set_space_window_list_for_connection_override(ids: Option<Vec<u32>>) {
@@ -1016,8 +1108,14 @@ pub fn app_window_suitable(id: WindowServerId) -> bool {
     app_window_suitability(id).unwrap_or(false)
 }
 
-pub fn space_is_user(sid: u64) -> bool { unsafe { SLSSpaceGetType(*G_CONNECTION, sid) == 0 } }
-pub fn space_is_fullscreen(sid: u64) -> bool { unsafe { SLSSpaceGetType(*G_CONNECTION, sid) == 4 } }
+pub fn space_is_user(sid: u64) -> bool {
+    // SAFETY: G_CONNECTION is the process's SkyLight connection.
+    unsafe { SLSSpaceGetType(*G_CONNECTION, sid) == 0 }
+}
+pub fn space_is_fullscreen(sid: u64) -> bool {
+    // SAFETY: G_CONNECTION is the process's SkyLight connection.
+    unsafe { SLSSpaceGetType(*G_CONNECTION, sid) == 4 }
+}
 
 // credit: https://github.com/Hammerspoon/hammerspoon/issues/370#issuecomment-545545468
 pub fn make_key_window(pid: pid_t, wsid: WindowServerId) -> Result<(), CGError> {
@@ -1036,6 +1134,8 @@ pub fn make_key_window(pid: pid_t, wsid: WindowServerId) -> Result<(), CGError> 
 
     let psn = ProcessSerialNumber::for_pid(pid)?;
 
+    // SAFETY: `psn` is a live process serial number, and both event records are 0x100-byte buffers,
+    // larger than the 0xf8 bytes the record header declares.
     unsafe {
         cg_ok(_SLPSSetFrontProcessWithOptions(&psn, wsid.0, kCPSUserGenerated))?;
         cg_ok(SLPSPostEventRecordTo(&psn, event1.as_ptr()))?;
@@ -1047,8 +1147,11 @@ pub fn make_key_window(pid: pid_t, wsid: WindowServerId) -> Result<(), CGError> 
 pub fn allow_hide_mouse() -> Result<(), CGError> {
     let cid = main_connection();
     let property = CFString::from_str("SetsCursorInBackground");
+    // SAFETY: kCFBooleanTrue is a CoreFoundation constant that is always set once the framework
+    // loads.
     let value = CFBoolean::retain(unsafe { kCFBooleanTrue.unwrap_unchecked() });
 
+    // SAFETY: `cid` is the main SkyLight connection, and `property` and `value` outlive the call.
     cg_ok(unsafe {
         CGSSetConnectionProperty(
             cid,
@@ -1061,9 +1164,8 @@ pub fn allow_hide_mouse() -> Result<(), CGError> {
 
 // fast space switching with no animations
 // credit: https://gist.github.com/amaanq/6991c7054b6c9816fafa9e29814b1509
-#[allow(unsafe_op_in_unsafe_fn)]
-pub unsafe fn switch_space(direction: crate::layout_engine::Direction) {
-    unsafe { crate::sys::space_switch::switch_space(direction) };
+pub fn switch_space(direction: crate::layout_engine::Direction) {
+    crate::sys::space_switch::switch_space(direction);
 }
 
 #[cfg(test)]

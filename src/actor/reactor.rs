@@ -3237,7 +3237,7 @@ impl Reactor {
         }
 
         if let Some(direction) = outcome.switch_native_space {
-            unsafe { window_server::switch_space(direction) };
+            window_server::switch_space(direction);
         }
 
         for (pid, window) in outcome.make_key_windows {

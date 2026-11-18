@@ -167,15 +167,15 @@ struct IOHIDVelocityEventData {
     velocity_z: i32,
 }
 
-pub unsafe fn switch_space(direction: Direction) {
+pub fn switch_space(direction: Direction) {
     if *IS_MACOS_27_OR_NEWER {
-        unsafe { switch_space_macos_27(direction) };
+        switch_space_macos_27(direction);
     } else {
-        unsafe { switch_space_legacy(direction) };
+        switch_space_legacy(direction);
     }
 }
 
-unsafe fn switch_space_legacy(direction: Direction) {
+fn switch_space_legacy(direction: Direction) {
     let Some(magnitude) = horizontal_direction_value(direction, -2.25, 2.25) else {
         return;
     };
@@ -196,7 +196,7 @@ unsafe fn switch_space_legacy(direction: Direction) {
     );
 }
 
-unsafe fn switch_space_macos_27(direction: Direction) {
+fn switch_space_macos_27(direction: Direction) {
     let Some(gesture_sign) = horizontal_direction_value(direction, 1.0, -1.0) else {
         return;
     };
