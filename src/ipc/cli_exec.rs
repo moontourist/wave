@@ -230,7 +230,9 @@ impl DefaultCliExecutor {
             env_storage.iter_mut().map(|s| s.as_ptr() as *mut c_char).collect();
         envp.push(ptr::null_mut());
 
+        // SAFETY: posix_spawnattr_t is a plain C struct that posix_spawnattr_init initializes next.
         let mut attr: posix_spawnattr_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `attr` is a live local.
         let rc_init = unsafe { posix_spawnattr_init(&mut attr) };
         if rc_init != 0 {
             return Err(std::io::Error::from_raw_os_error(rc_init));
@@ -239,25 +241,34 @@ impl DefaultCliExecutor {
         let mut flags: i16 = 0;
         flags |= POSIX_SPAWN_CLOEXEC_DEFAULT as i16; // close-on-exec default
         flags |= POSIX_SPAWN_SETPGROUP as i16; // child in its own process group
+        // SAFETY: `attr` was initialized above.
         let rc_flags = unsafe { posix_spawnattr_setflags(&mut attr, flags) };
         if rc_flags != 0 {
+            // SAFETY: `attr` was initialized above and is destroyed once on this path.
             let _ = unsafe { posix_spawnattr_destroy(&mut attr) };
             return Err(std::io::Error::from_raw_os_error(rc_flags));
         }
 
+        // SAFETY: `attr` was initialized above.
         let rc_pgrp = unsafe { posix_spawnattr_setpgroup(&mut attr, 0) };
         if rc_pgrp != 0 {
+            // SAFETY: `attr` was initialized above and is destroyed once on this path.
             let _ = unsafe { posix_spawnattr_destroy(&mut attr) };
             return Err(std::io::Error::from_raw_os_error(rc_pgrp));
         }
 
+        // SAFETY: posix_spawn_file_actions_t is a plain C struct that posix_spawn_file_actions_init
+        // initializes next.
         let mut fa: posix_spawn_file_actions_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `fa` is a live local.
         let rc_fa = unsafe { posix_spawn_file_actions_init(&mut fa) };
         if rc_fa != 0 {
+            // SAFETY: `attr` was initialized above and is destroyed once on this path.
             let _ = unsafe { posix_spawnattr_destroy(&mut attr) };
             return Err(std::io::Error::from_raw_os_error(rc_fa));
         }
         let devnull = c"/dev/null";
+        // SAFETY: `fa` was initialized above, and `devnull` is a static NUL-terminated path.
         unsafe {
             let _ = posix_spawn_file_actions_addopen(&mut fa, 0, devnull.as_ptr(), O_RDONLY, 0);
             let _ = posix_spawn_file_actions_addopen(&mut fa, 1, devnull.as_ptr(), O_WRONLY, 0);
@@ -271,6 +282,8 @@ impl DefaultCliExecutor {
             ));
         };
         let mut child_pid: pid_t = 0;
+        // SAFETY: `program`, `argv` and `envp` point into CStrings that outlive the call, and both
+        // arrays end in a null pointer. `fa` and `attr` are initialized.
         let rc = unsafe {
             posix_spawnp(
                 &mut child_pid as *mut pid_t,
@@ -282,7 +295,9 @@ impl DefaultCliExecutor {
             )
         };
 
+        // SAFETY: `fa` was initialized above and is destroyed once here.
         let _ = unsafe { posix_spawn_file_actions_destroy(&mut fa) };
+        // SAFETY: `attr` was initialized above and is destroyed once here.
         let _ = unsafe { posix_spawnattr_destroy(&mut attr) };
 
         if rc != 0 {

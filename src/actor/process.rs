@@ -52,8 +52,9 @@ fn session_event_for_front_app(info: &AppInfo) -> spaces::Event {
     }
 }
 
-unsafe fn pid_for_psn(psn: &ProcessSerialNumber) -> Option<pid_t> {
+fn pid_for_psn(psn: &ProcessSerialNumber) -> Option<pid_t> {
     let mut pid: pid_t = 0;
+    // SAFETY: `psn` and `pid` are live for the call.
     if unsafe { GetProcessPID(psn, &mut pid) } == NO_ERR && pid != 0 {
         Some(pid)
     } else {
@@ -80,6 +81,8 @@ impl ProcessActor {
 
         let wm_sender = sender.clone();
         let listener = CarbonListener::application(&types, move |ev: Event| {
+            // SAFETY: This runs inside the Carbon handler for `ev`, and
+            // typeProcessSerialNumber is laid out as ProcessSerialNumber.
             let psn = match unsafe {
                 ev.parameter::<ProcessSerialNumber>(
                     K_EVENT_PARAM_PROCESS_ID,
@@ -90,7 +93,7 @@ impl ProcessActor {
                 None => return NO_ERR,
             };
 
-            let pid = match unsafe { pid_for_psn(&psn) } {
+            let pid = match pid_for_psn(&psn) {
                 Some(pid) => pid,
                 None => return NO_ERR,
             };

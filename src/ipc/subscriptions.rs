@@ -83,15 +83,22 @@ impl ServerState {
             old & !(lease as u8)
         };
         if old == 0 && new != 0 {
+            // SAFETY: `port` names a send right the client gave us, and the lease map keeps retain
+            // and release paired.
             if !unsafe { mach_retain_send_right(port) } {
                 return false;
             }
+            // SAFETY: `port` holds the send right retained just above.
             if !unsafe { mach_watch_send_right(port) } {
+                // SAFETY: This releases the reference retained just above, once.
                 let _ = unsafe { mach_release_send_right(port) };
                 return false;
             }
         } else if old != 0 && new == 0 {
+            // SAFETY: The watch was set when this port's first lease was taken.
             unsafe { mach_unwatch_send_right(port) };
+            // SAFETY: This releases the reference retained when this port's first lease was taken,
+            // once.
             let _ = unsafe { mach_release_send_right(port) };
         }
         if new == 0 {
@@ -283,6 +290,8 @@ impl ServerState {
 
     fn send_event_to_client(client_port: ClientPort, c_message: &CString) {
         let bytes = c_message.as_bytes_with_nul();
+        // SAFETY: `c_message` is a NUL-terminated buffer of `bytes.len()` bytes that outlives the
+        // call.
         let sent = unsafe {
             mach_try_send_message(
                 client_port,

@@ -188,6 +188,7 @@ enum Recovery {
 }
 
 unsafe fn drop_input_ctx(ptr: *mut std::ffi::c_void) {
+    // SAFETY: `ptr` is the CallbackCtx box create_tap leaked, and EventTap calls this dropper once.
     unsafe { drop(Box::from_raw(ptr as *mut CallbackCtx)) };
 }
 
@@ -258,6 +259,9 @@ impl Input {
         });
         let ctx_ptr = Box::into_raw(ctx) as *mut std::ffi::c_void;
 
+        // SAFETY: The callbacks match EventTap's contract for a CallbackCtx `user_info`, and
+        // `drop_input_ctx` frees it once. `this` points at the Input inside the pinned actor
+        // future, which owns the tap and outlives it.
         let tap = unsafe {
             crate::sys::event_tap::EventTap::new(
                 CGTapLoc::HIDEventTap,
@@ -272,6 +276,8 @@ impl Input {
         };
 
         if tap.is_none() {
+            // SAFETY: EventTap::new failed, so the caller still owns `ctx_ptr` and frees it once
+            // here.
             unsafe { drop(Box::from_raw(ctx_ptr as *mut CallbackCtx)) };
         }
 
@@ -1323,12 +1329,15 @@ unsafe extern "C-unwind" fn input_callback(
     if user_info.is_null() {
         return event_ref.as_ptr();
     }
+    // SAFETY: A non-null `user_info` is the CallbackCtx box the tap owns until it drops.
     let ctx = unsafe { &*(user_info as *const CallbackCtx) };
+    // SAFETY: The tap passes an event that stays valid for this callback.
     let event = unsafe { event_ref.as_ref() };
 
     // Keep rejected high-frequency mouse events out of catch_unwind and the
     // actor/state path. Edge crossings are checked before sampling so a quick
     // movement cannot stall at the edge.
+    // SAFETY: `ctx.this` points at the Input that owns this tap, alive while the tap can call back.
     let this = unsafe { &*ctx.this };
     let mouse_point = if event_type == CGEventType::MouseMoved {
         let warped = if this.mission_control_active.get() {
@@ -1369,8 +1378,11 @@ unsafe extern "C-unwind" fn event_tap_reenabled(user_info: *mut std::ffi::c_void
     if user_info.is_null() {
         return;
     }
+    // SAFETY: A non-null `user_info` is the CallbackCtx box the tap owns until it drops.
     let ctx = unsafe { &*(user_info as *const CallbackCtx) };
     if std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: `ctx.this` points at the Input that owns this tap, alive while the tap can call
+        // back.
         unsafe { &*ctx.this }.reconcile_after_tap_reenabled()
     }))
     .is_err()
@@ -1383,6 +1395,7 @@ unsafe extern "C-unwind" fn event_tap_invalidated(user_info: *mut std::ffi::c_vo
     if user_info.is_null() {
         return;
     }
+    // SAFETY: A non-null `user_info` is the CallbackCtx box the tap owns until it drops.
     let ctx = unsafe { &*(user_info as *const CallbackCtx) };
     let _ = ctx.recovery_tx.send(Recovery::TapInvalidated(ctx.tap_generation));
 }
@@ -1514,6 +1527,7 @@ fn mouse_move_sampling_profile(low_power_mode: bool) -> u64 {
         fn mach_timebase_info(info: *mut Timebase) -> i32;
     }
     let mut timebase = Timebase { numer: 0, denom: 0 };
+    // SAFETY: `timebase` is a live local the call writes.
     let status = unsafe { mach_timebase_info(&mut timebase) };
     assert!(status == 0 && timebase.numer != 0 && timebase.denom != 0);
     interval_in_ticks(interval_ns, timebase.numer, timebase.denom)
@@ -2686,6 +2700,8 @@ impl Input {
                 if let Some(proxy) = proxy {
                     // The proxy is valid only during this tap callback. Held events
                     // must reach downstream taps before the current event returns.
+                    // SAFETY: `proxy` comes from the tap callback that is still running, and `held`
+                    // is a live event.
                     unsafe { CGEvent::tap_post_event(proxy, Some(held)) };
                 } else {
                     CGEvent::post(CGTapLoc::SessionEventTap, Some(held));

@@ -122,6 +122,8 @@ pub(crate) fn install_mach_server(reactor: Rc<RefCell<reactor::Reactor>>, reques
             config_jobs,
         });
         let context = Box::into_raw(handler);
+        // SAFETY: The handler box is leaked into `context` for the life of the server, and both
+        // callbacks match the expected ABI.
         if !unsafe {
             mach_server_install(
                 context.cast(),
@@ -129,6 +131,8 @@ pub(crate) fn install_mach_server(reactor: Rc<RefCell<reactor::Reactor>>, reques
                 handle_mach_client_disconnect_c,
             )
         } {
+            // SAFETY: Installation failed, so the server holds no copy of `context` and this frees
+            // the box once.
             unsafe { drop(Box::from_raw(context)) };
             return Err("Failed to install Mach IPC on the reactor run loop".into());
         }
@@ -275,6 +279,7 @@ impl IpcRequestHandler {
     }
 
     fn dispatch_config_request(&self, request: RiftRequest, header: &mut mach_msg_header_t) {
+        // SAFETY: `header` is the live request header this handler was given.
         let Some(destination) = (unsafe { OwnedMachReply::retain(header) }) else {
             send_error_response(header, "Failed to retain IPC reply port");
             return;
@@ -548,7 +553,11 @@ unsafe extern "C" fn handle_mach_request_c(
         return;
     }
 
+    // SAFETY: A non-null `context` is the IpcRequestHandler box leaked when the server was
+    // installed.
     let handler = unsafe { &*(context as *const IpcRequestHandler) };
+    // SAFETY: The Mach server passes `len` readable bytes at the non-null `message` for this
+    // callback.
     let message_slice = unsafe { std::slice::from_raw_parts(message as *const u8, len as usize) };
 
     // The bytes before the first NUL, or all of them.
@@ -558,7 +567,10 @@ unsafe extern "C" fn handle_mach_request_c(
         message_slice
     };
 
+    // SAFETY: `original_msg` is a non-null header the server owns for this callback.
     let client_port = unsafe { (*original_msg).msgh_remote_port };
+    // SAFETY: `original_msg` is a non-null header the server owns for this callback, with no other
+    // reference to it.
     handler.handle_message(trimmed_slice, client_port, unsafe { &mut *original_msg });
 }
 
@@ -571,6 +583,8 @@ unsafe extern "C" fn handle_mach_client_disconnect_c(
         return;
     }
 
+    // SAFETY: A non-null `context` is the IpcRequestHandler box leaked when the server was
+    // installed.
     let handler = unsafe { &*(context as *const IpcRequestHandler) };
     handler.server_state.remove_client(client_port);
     // Subscription-only clients never claimed anything; leave the reactor alone.
@@ -615,7 +629,7 @@ fn encode_response<T: Serialize>(response: &RiftResponse<T>) -> Vec<u8> {
     response_json
 }
 
-fn send_encoded_response(original_msg: *mut mach_msg_header_t, response_json: &[u8]) {
+fn send_encoded_response(original_msg: &mut mach_msg_header_t, response_json: &[u8]) {
     // An unsendable reply would leave the client waiting; report the size instead.
     if response_json.len() > MAX_RESPONSE_SIZE {
         let message = format!("Response exceeds the {MAX_RESPONSE_SIZE}-byte IPC limit");
@@ -624,20 +638,17 @@ fn send_encoded_response(original_msg: *mut mach_msg_header_t, response_json: &[
             &encode_error(serde_json::json!({ "message": message })),
         );
     }
-    unsafe {
-        if !send_mach_reply(
+    let msgh_id = original_msg.msgh_id;
+    // SAFETY: `original_msg` is a live request header, and `response_json` is a readable
+    // buffer of the given length that send_mach_reply only reads.
+    let sent = unsafe {
+        send_mach_reply(
             original_msg,
             response_json.as_ptr() as *mut c_char,
             response_json.len() as u32,
-        ) {
-            error!(
-                "Failed to send mach reply for message id {}",
-                if original_msg.is_null() {
-                    -1
-                } else {
-                    (*original_msg).msgh_id
-                }
-            );
-        }
+        )
+    };
+    if !sent {
+        error!("Failed to send mach reply for message id {msgh_id}");
     }
 }

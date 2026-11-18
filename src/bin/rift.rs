@@ -166,6 +166,7 @@ fn main() {
         NSApplication::load();
     }
 
+    // SAFETY: A null delegate clears SkyLight's window-management bridge delegate.
     unsafe { SLSWindowManagementBridgeSetDelegate(std::ptr::null_mut()) };
 
     ensure_accessibility_permission();
@@ -394,6 +395,7 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
         );
     }
 
+    // SAFETY: The system-wide element is a live AXUIElement for the call.
     unsafe { AXUIElement::new_system_wide().set_messaging_timeout(1.0) };
 
     CGSetLocalEventsSuppressionInterval(0.0);
