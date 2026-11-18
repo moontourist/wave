@@ -10,7 +10,7 @@ Five goals from Matt (2026-11-18), done in batches from easiest to hardest:
 
 Order: Phase 0 (setup) → 1 rename → 2 README → 3 borders → 4 accordion. Memory (goal 4) is a check inside every phase, not a phase of its own.
 
-Status: Phases 0–1 done (1.7 waits for Matt). Phase 2 in progress.
+Status: Phases 0–1 done and 2.1 done. 1.7, 2.2 and 2.3 wait for one screen session with Matt; that session also runs the 20-window-move memory test from 0.2.
 
 ---
 
@@ -103,7 +103,7 @@ Memory: no change expected; confirm after 1.7.
 
 ## Phase 2: README and roadmap (small, needs Matt's screen once)
 
-- [ ] **2.1 Roadmap:** a "Roadmap" section in the README with done / in progress / next, starting with this plan's phases. It's kept current at the end of every phase.
+- [x] **2.1 Roadmap:** a "Roadmap" section in the README with done / in progress / next, starting with this plan's phases. It's kept current at the end of every phase.
 - [ ] **2.2 Screenshots:**
   - A tiled workspace, the workspace overview, the menu bar menu, and a window opening mid-animation.
   - Taken with `screencapture` when Matt says it's a good time. They're saved as PNGs in `assets/screenshots/`, cropped and kept small.
