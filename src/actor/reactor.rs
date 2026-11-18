@@ -505,6 +505,10 @@ impl Reactor {
         reactor.communication_manager.stack_line_tx = Some(stack_line_tx);
         reactor.communication_manager.events_tx = Some(events_tx_clone.clone());
         let query_handle = ReactorQueryHandle::new(events_tx_clone.clone());
+        #[expect(
+            clippy::unwrap_used,
+            reason = "rift cannot run without its reactor thread; a failed spawn at startup is fatal and launchd restarts the process"
+        )]
         thread::Builder::new()
             .name("reactor".to_string())
             .spawn(move || {
@@ -1060,6 +1064,10 @@ impl Reactor {
         };
         let reactor_task = Self::run_reactor_loop(reactor, events);
         let raise_manager_task = RaiseManager::run(raise_manager_rx, events_tx, input_tx);
+        #[expect(
+            clippy::expect_used,
+            reason = "animations need the presenter thread; a failed spawn at startup is fatal and launchd restarts the process"
+        )]
         let presenter = std::thread::Builder::new()
             .name("rift-presenter".into())
             .spawn(move || animation::AnimationManager::run(animation_rx))
@@ -2312,25 +2320,23 @@ impl Reactor {
                         .layout_engine
                         .relocate_window_with_drop(&mut self.state.windows, &intent);
                 let _ = reply.send(changed);
-                if !changed {
+                // `changed` implies `valid`, which required both.
+                let (true, Some(source), Some(destination)) = (changed, source, destination) else {
                     return Ok(EventOutcome::no_change());
-                }
-                let source_space =
-                    self.layout_manager.layout_engine.workspaces()[source.unwrap()].space;
-                let destination = destination.unwrap();
+                };
+                let source_space = self.layout_manager.layout_engine.workspaces()[source].space;
                 let mut outcome = EventOutcome::layout_changed(false);
                 outcome = outcome.with_arrange_space_scope(Some(destination));
                 if source_space != destination {
                     outcome.arrange.secondary_space_scope = Some(source_space);
                 }
                 if source_space != destination {
-                    let frame = intent.frame.unwrap_or_else(|| {
+                    let frame = intent.frame.or_else(|| {
                         let destination = self
                             .space_state
                             .screens
                             .iter()
-                            .find(|s| s.space == Some(destination))
-                            .unwrap()
+                            .find(|s| s.space == Some(destination))?
                             .frame;
                         let source = self
                             .space_state
@@ -2339,12 +2345,15 @@ impl Reactor {
                             .find(|s| s.space == Some(source_space))
                             .map(|s| s.frame)
                             .unwrap_or(destination);
-                        let mut frame =
-                            self.state.windows.window(intent.window).unwrap().frame_monotonic;
+                        let mut frame = self.state.windows.window(intent.window)?.frame_monotonic;
                         frame.origin.x += destination.origin.x - source.origin.x;
                         frame.origin.y += destination.origin.y - source.origin.y;
-                        frame
+                        Some(frame)
                     });
+                    let Some(frame) = frame else {
+                        warn!(window = ?intent.window, "overview drop lost its window or screen");
+                        return Ok(outcome);
+                    };
                     outcome.absorb(command_workflow::request_window_transfer(
                         &mut self.state,
                         &mut self.layout_manager,
@@ -3530,10 +3539,8 @@ impl Reactor {
                     }) {
                         continue;
                     }
-                    if membership.len() == 1 {
-                        self.state
-                            .windows
-                            .note_fullscreen_exit(record.current_window_id, membership[0]);
+                    if let &[space] = membership.as_slice() {
+                        self.state.windows.note_fullscreen_exit(record.current_window_id, space);
                     }
                 }
             }
@@ -4176,10 +4183,13 @@ impl Reactor {
                                 .display_space_ids
                                 .get(display)
                                 .is_some_and(|spaces| !spaces.contains(&space));
-                        (screens[target].space == Some(space) || returned).then_some(target)
+                        (screens.get(target).is_some_and(|screen| screen.space == Some(space))
+                            || returned)
+                            .then_some(target)
                     });
-                    let rehome =
-                        home_target.filter(|&target| screens[target].space != workspace.home_space);
+                    let rehome = home_target.filter(|&target| {
+                        screens.get(target).is_some_and(|s| s.space != workspace.home_space)
+                    });
                     let ruled = engine
                         .workspaces()
                         .matching_rules(index, &workspace.name)
@@ -4199,7 +4209,8 @@ impl Reactor {
                         });
                     let placement = if let Some(target) = ruled {
                         ((resolve_pins || desktop_lost)
-                            && (native_owner.or(owner) != screens[target].display_uuid_opt()
+                            && (native_owner.or(owner)
+                                != screens.get(target).and_then(|s| s.display_uuid_opt())
                                 || desktop_lost))
                             .then_some((
                                 target,
@@ -4209,9 +4220,9 @@ impl Reactor {
                                     WorkspaceTransferReason::Restoration
                                 },
                             ))
-                    } else if let Some(target) =
-                        home_target.filter(|&target| screens[target].space != Some(workspace.space))
-                    {
+                    } else if let Some(target) = home_target.filter(|&target| {
+                        screens.get(target).is_some_and(|s| s.space != Some(workspace.space))
+                    }) {
                         Some((target, WorkspaceTransferReason::Restoration))
                     } else if pins_only.is_none()
                         && (desktop_lost
@@ -4240,12 +4251,13 @@ impl Reactor {
         // Commit ownership and remembered presentation together, then dispatch
         // native effects through the same boundary as commands and app rules.
         for (id, rehome, placement) in placements {
-            if let Some(target) = rehome {
+            if let Some(target) = rehome
+                && let Some(target) = self.space_state.screens.get(target).and_then(|s| s.space)
+            {
                 let workspaces = self.layout_manager.layout_engine.workspaces_mut();
-                let old = workspaces[id].home_space.unwrap();
-                let target = self.space_state.screens[target].space.unwrap();
-                workspaces[id].home_space = Some(target);
-                if let Some(activation) = workspaces.active_workspace_per_space.get_mut(&old)
+                let old = workspaces[id].home_space.replace(target);
+                if let Some(old) = old
+                    && let Some(activation) = workspaces.active_workspace_per_space.get_mut(&old)
                     && activation.remembered.or(activation.current) == Some(id)
                 {
                     activation.remembered = None;
@@ -4261,8 +4273,14 @@ impl Reactor {
                 }
             }
             let Some((target, reason)) = placement else { continue };
-            let screen = &self.space_state.screens[target];
-            let target = screen.space.unwrap();
+            let Some((screen, target)) = self
+                .space_state
+                .screens
+                .get(target)
+                .and_then(|screen| Some((screen, screen.space?)))
+            else {
+                continue;
+            };
             let source = self.layout_manager.layout_engine.workspaces()[id].space;
             let source_frame = previous_screens
                 .iter()
@@ -4498,7 +4516,10 @@ impl Reactor {
                     // user Space. Do not let the generic user-Space preference
                     // turn contradictory evidence into a completed exit.
                     let spaces = window_server::window_spaces(wsid);
-                    let live = (spaces.len() == 1).then(|| spaces[0]);
+                    let live = match spaces.as_slice() {
+                        &[only] => Some(only),
+                        _ => None,
+                    };
                     if let Some(space) = live.filter(|space| {
                         self.is_fullscreen_space(*space)
                             || self
@@ -4526,7 +4547,7 @@ impl Reactor {
                 .windows
                 .record(wid)
                 .and_then(|record| record.window_server_id())
-                .and_then(|wsid| native_spaces[&wsid]);
+                .and_then(|wsid| native_spaces.get(&wsid).copied().flatten());
             assigned.is_some() && native.is_some() && assigned != native
         }) {
             self.request_space_snapshot();
@@ -4541,7 +4562,7 @@ impl Reactor {
                     .windows
                     .record(*wid)
                     .and_then(|record| record.window_server_id())
-                    .and_then(|wsid| native_spaces[&wsid]);
+                    .and_then(|wsid| native_spaces.get(&wsid).copied().flatten());
                 native
                     .or_else(|| self.assigned_space_for_window_id(*wid))
                     .is_some_and(|space| !self.is_space_active(space))
@@ -4584,8 +4605,11 @@ impl Reactor {
         }
         for (wid, info) in &new {
             if let Some(id) = info.sys_id
-                && let Some(space) =
-                    native_spaces[&id].or_else(|| self.best_space_for_frame(&info.frame))
+                && let Some(space) = native_spaces
+                    .get(&id)
+                    .copied()
+                    .flatten()
+                    .or_else(|| self.best_space_for_frame(&info.frame))
             {
                 self.transient_focus.ax(id, wid.pid, info, space);
             }
@@ -4644,7 +4668,7 @@ impl Reactor {
                     .windows
                     .record(wid)
                     .and_then(|record| record.window_server_id())
-                    .and_then(|wsid| native_spaces[&wsid]);
+                    .and_then(|wsid| native_spaces.get(&wsid).copied().flatten());
                 (wid, self.discovery_spaces_for_window(wid, native))
             })
             .collect();
@@ -5337,9 +5361,15 @@ impl Reactor {
                 .layout_engine
                 .workspaces()
                 .workspace_for_window(&self.state.windows, placement.space, placement.window)
-                && self.layout_manager.layout_engine.workspaces().workspaces[workspace]
-                    .layout_mode()
-                    == crate::common::config::LayoutMode::Floating
+                && self
+                    .layout_manager
+                    .layout_engine
+                    .workspaces()
+                    .workspaces
+                    .get(workspace)
+                    .is_some_and(|ws| {
+                        ws.layout_mode() == crate::common::config::LayoutMode::Floating
+                    })
             {
                 self.layout_manager.layout_engine.store_floating_position(
                     workspace,
@@ -6613,11 +6643,11 @@ impl Reactor {
         if engine.workspaces().settings.mode != crate::common::config::WorkspaceMode::Global {
             return;
         }
-        let Some(target_screen) = window_server::current_cursor_location()
+        let Some(target_space) = window_server::current_cursor_location()
             .ok()
             .and_then(|point| self.screen_for_point(point))
-            .filter(|screen| screen.space.is_some_and(|s| s != space && self.is_space_active(s)))
-            .cloned()
+            .and_then(|screen| screen.space)
+            .filter(|&s| s != space && self.is_space_active(s))
         else {
             return;
         };
@@ -6635,7 +6665,7 @@ impl Reactor {
         }) {
             return;
         }
-        let outcome = self.move_window_to_display(window, space, target_screen.space.unwrap());
+        let outcome = self.move_window_to_display(window, space, target_space);
         self.apply_event_outcome(outcome);
     }
 
