@@ -355,11 +355,12 @@ impl AXUIElement {
     #[allow(unused)]
     pub fn element_at_position(point: CGPoint) -> Option<Self> {
         let mut out_ptr: *const RawAXUIElement = std::ptr::null();
-        // SAFETY: The system-wide element lives to the end of the statement, and `out_ptr` is a
-        // live local.
+        // SAFETY: AXUIElementCreateSystemWide takes no arguments.
+        let system_wide = unsafe { RawAXUIElement::new_system_wide() };
+        // SAFETY: `system_wide` lives to the end of the function, and `out_ptr` is a live local.
         let status = unsafe {
             RawAXUIElement::copy_element_at_position(
-                &*RawAXUIElement::new_system_wide(),
+                &system_wide,
                 point.x as f32,
                 point.y as f32,
                 std::ptr::NonNull::from(&mut out_ptr),

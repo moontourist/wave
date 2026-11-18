@@ -269,11 +269,14 @@ impl DefaultCliExecutor {
         }
         let devnull = c"/dev/null";
         // SAFETY: `fa` was initialized above, and `devnull` is a static NUL-terminated path.
-        unsafe {
-            let _ = posix_spawn_file_actions_addopen(&mut fa, 0, devnull.as_ptr(), O_RDONLY, 0);
-            let _ = posix_spawn_file_actions_addopen(&mut fa, 1, devnull.as_ptr(), O_WRONLY, 0);
-            let _ = posix_spawn_file_actions_addopen(&mut fa, 2, devnull.as_ptr(), O_WRONLY, 0);
-        }
+        let _ =
+            unsafe { posix_spawn_file_actions_addopen(&mut fa, 0, devnull.as_ptr(), O_RDONLY, 0) };
+        // SAFETY: As above.
+        let _ =
+            unsafe { posix_spawn_file_actions_addopen(&mut fa, 1, devnull.as_ptr(), O_WRONLY, 0) };
+        // SAFETY: As above.
+        let _ =
+            unsafe { posix_spawn_file_actions_addopen(&mut fa, 2, devnull.as_ptr(), O_WRONLY, 0) };
 
         let Some(program) = argv_storage.first().map(|program| program.as_ptr()) else {
             return Err(std::io::Error::new(

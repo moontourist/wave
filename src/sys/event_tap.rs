@@ -199,12 +199,11 @@ impl EventTap {
         };
 
         // SAFETY: `tramp_ptr` is the live TrampolineCtx box; no callback runs until the run
-        // loop does, so this write doesn't race. `port_invalidated` reads that same box.
-        unsafe {
-            let tramp_ctx = &mut *(tramp_ptr as *mut TrampolineCtx);
-            tramp_ctx.port_ptr = Some(core::ptr::NonNull::from(&*event_tap.port));
-            event_tap.port.set_invalidation_call_back(Some(port_invalidated));
-        }
+        // loop does, so this write doesn't race.
+        let tramp_ctx = unsafe { &mut *(tramp_ptr as *mut TrampolineCtx) };
+        tramp_ctx.port_ptr = Some(core::ptr::NonNull::from(&*event_tap.port));
+        // SAFETY: `port_invalidated` has the callback signature and reads the box set above.
+        unsafe { event_tap.port.set_invalidation_call_back(Some(port_invalidated)) };
 
         Some(event_tap)
     }

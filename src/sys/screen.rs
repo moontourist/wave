@@ -362,24 +362,26 @@ fn dock_rect_with_reason() -> (CGRect, i32) {
 }
 
 fn dock_display_id() -> Option<u32> {
-    // SAFETY: Each Copy/Create result is null-checked before use and released exactly once on every
-    // path.
-    unsafe {
-        let dock = dock_rect();
-        let uuid_ref = CGSCopyBestManagedDisplayForRect(*G_CONNECTION, dock);
-        if uuid_ref.is_null() {
-            return None;
-        }
-        let uuid = CFUUIDCreateFromString(std::ptr::null_mut(), uuid_ref);
-        if uuid.is_null() {
-            CFRelease(uuid_ref as *mut _);
-            return None;
-        }
-        let did = CGDisplayGetDisplayIDFromUUID(uuid);
-        CFRelease(uuid as *mut _);
-        CFRelease(uuid_ref as *mut _);
-        if did == 0 { None } else { Some(did) }
+    let dock = dock_rect();
+    // SAFETY: G_CONNECTION is the process's SkyLight connection.
+    let uuid_ref = unsafe { CGSCopyBestManagedDisplayForRect(*G_CONNECTION, dock) };
+    if uuid_ref.is_null() {
+        return None;
     }
+    // SAFETY: `uuid_ref` is a live, non-null CFString.
+    let uuid = unsafe { CFUUIDCreateFromString(std::ptr::null_mut(), uuid_ref) };
+    if uuid.is_null() {
+        // SAFETY: `uuid_ref` holds the Copy call's +1 reference, released once here.
+        unsafe { CFRelease(uuid_ref as *mut _) };
+        return None;
+    }
+    // SAFETY: `uuid` is a live, non-null CFUUID.
+    let did = unsafe { CGDisplayGetDisplayIDFromUUID(uuid) };
+    // SAFETY: `uuid` holds the Create call's +1 reference, released once here.
+    unsafe { CFRelease(uuid as *mut _) };
+    // SAFETY: `uuid_ref` holds the Copy call's +1 reference, released once here.
+    unsafe { CFRelease(uuid_ref as *mut _) };
+    if did == 0 { None } else { Some(did) }
 }
 
 fn rects_intersect(a: &CGRect, b: &CGRect) -> bool {
@@ -524,19 +526,20 @@ impl System for Actual {
         const MAX_SCREENS: usize = 64;
         let mut ids: MaybeUninit<[CGDirectDisplayID; MAX_SCREENS]> = MaybeUninit::uninit();
         let mut count: u32 = 0;
-        // SAFETY: `ids` has room for MAX_SCREENS ids. CGGetActiveDisplayList writes `count` of
-        // them, at most MAX_SCREENS, so the slice covers only initialized ids.
-        let ids = unsafe {
-            let err = CGGetActiveDisplayList(
+        // SAFETY: `ids` has room for MAX_SCREENS ids, and `count` is a live local.
+        let err = unsafe {
+            CGGetActiveDisplayList(
                 MAX_SCREENS as u32,
                 ids.as_mut_ptr() as *mut CGDirectDisplayID,
                 &mut count,
-            );
-            if err != CGError::Success {
-                return Err(err);
-            }
-            std::slice::from_raw_parts(ids.as_ptr() as *const u32, count as usize)
+            )
         };
+        if err != CGError::Success {
+            return Err(err);
+        }
+        // SAFETY: CGGetActiveDisplayList wrote `count` ids, at most MAX_SCREENS, so the slice
+        // covers only initialized ids.
+        let ids = unsafe { std::slice::from_raw_parts(ids.as_ptr() as *const u32, count as usize) };
         Ok(ids
             .iter()
             .map(|&cg_id| CGScreenInfo {
@@ -547,36 +550,39 @@ impl System for Actual {
     }
 
     fn display_uuid(&self, screen: &CGScreenInfo) -> CFRetained<CFString> {
-        // SAFETY: Each Create/Copy result is null-checked; the UUID is released after its string
-        // copy, and the strings pass their +1 reference to CFRetained.
-        unsafe {
-            if let Some(uuid) = NonNull::new(CGDisplayCreateUUIDFromDisplayID(screen.cg_id.0)) {
-                let uuid_str = CFUUIDCreateString(std::ptr::null_mut(), uuid.as_ptr());
-                CFRelease(uuid.as_ptr());
-                if let Some(uuid_str) = NonNull::new(uuid_str) {
-                    return CFRetained::from_raw(uuid_str);
-                } else {
-                    warn!(
-                        "CGDisplayCreateUUIDFromDisplayID returned invalid string for {:?}",
-                        screen
-                    );
-                }
+        // SAFETY: The call takes any display id and returns a +1 UUID or null.
+        let uuid = unsafe { CGDisplayCreateUUIDFromDisplayID(screen.cg_id.0) };
+        if let Some(uuid) = NonNull::new(uuid) {
+            // SAFETY: `uuid` is a live, non-null CFUUID.
+            let uuid_str = unsafe { CFUUIDCreateString(std::ptr::null_mut(), uuid.as_ptr()) };
+            // SAFETY: `uuid` holds the Create call's +1 reference, released once here.
+            unsafe { CFRelease(uuid.as_ptr()) };
+            if let Some(uuid_str) = NonNull::new(uuid_str) {
+                // SAFETY: The Create call's +1 reference passes to CFRetained.
+                return unsafe { CFRetained::from_raw(uuid_str) };
             } else {
                 warn!(
-                    "CGDisplayCreateUUIDFromDisplayID returned null for display {:?}",
-                    screen.cg_id
+                    "CGDisplayCreateUUIDFromDisplayID returned invalid string for {:?}",
+                    screen
                 );
             }
-            let managed = CGSCopyBestManagedDisplayForRect(main_connection(), screen.bounds);
-            if let Some(managed) = NonNull::new(managed) {
-                CFRetained::from_raw(managed)
-            } else {
-                warn!(
-                    "CGSCopyBestManagedDisplayForRect returned null for display {:?}",
-                    screen.cg_id
-                );
-                CFString::from_str("")
-            }
+        } else {
+            warn!(
+                "CGDisplayCreateUUIDFromDisplayID returned null for display {:?}",
+                screen.cg_id
+            );
+        }
+        // SAFETY: main_connection is the process's SkyLight connection.
+        let managed = unsafe { CGSCopyBestManagedDisplayForRect(main_connection(), screen.bounds) };
+        if let Some(managed) = NonNull::new(managed) {
+            // SAFETY: The Copy call's +1 reference passes to CFRetained.
+            unsafe { CFRetained::from_raw(managed) }
+        } else {
+            warn!(
+                "CGSCopyBestManagedDisplayForRect returned null for display {:?}",
+                screen.cg_id
+            );
+            CFString::from_str("")
         }
     }
 
@@ -661,16 +667,10 @@ pub fn get_active_space_number() -> Option<SpaceId> {
 }
 
 pub fn active_menu_bar_display_uuid() -> Option<String> {
-    Some(
-        // SAFETY: SLSCopyActiveMenuBarDisplayIdentifier follows the Copy rule, and `?` rejects a
-        // null result before from_raw.
-        unsafe {
-            CFRetained::<CFString>::from_raw(NonNull::new(SLSCopyActiveMenuBarDisplayIdentifier(
-                main_connection(),
-            ))?)
-        }
-        .to_string(),
-    )
+    // SAFETY: main_connection is the process's SkyLight connection.
+    let uuid = NonNull::new(unsafe { SLSCopyActiveMenuBarDisplayIdentifier(main_connection()) })?;
+    // SAFETY: The Copy call's +1 reference passes to CFRetained.
+    Some(unsafe { CFRetained::<CFString>::from_raw(uuid) }.to_string())
 }
 
 pub fn set_active_menu_bar_display_uuid(display_uuid: &str) -> bool {
@@ -694,12 +694,11 @@ pub fn set_active_menu_bar_display_uuid(display_uuid: &str) -> bool {
             warn!(?error, display_uuid, "Failed to activate menu-bar display");
             return false;
         }
-        // SAFETY: SLSCopyActiveMenuBarDisplayIdentifier follows the Copy rule; a non-null result
-        // passes its +1 reference to CFRetained.
-        let active = unsafe {
-            NonNull::new(SLSCopyActiveMenuBarDisplayIdentifier(main_connection()))
-                .map(|ptr| CFRetained::<CFString>::from_raw(ptr))
-        };
+        // SAFETY: main_connection is the process's SkyLight connection.
+        let active =
+            NonNull::new(unsafe { SLSCopyActiveMenuBarDisplayIdentifier(main_connection()) })
+                // SAFETY: A non-null Copy result passes its +1 reference to CFRetained.
+                .map(|ptr| unsafe { CFRetained::<CFString>::from_raw(ptr) });
         let confirmed = active.as_deref().is_some_and(|active| active == &*uuid);
         if !confirmed {
             debug!(display_uuid, "Menu-bar display activation was not confirmed");
@@ -765,57 +764,61 @@ pub fn order_visible_spaces_by_position(
 
 pub fn managed_display_space_ids() -> HashMap<String, Vec<SpaceId>> {
     let mut out: HashMap<String, Vec<SpaceId>> = HashMap::default();
-    // SAFETY: CGSCopyManagedDisplaySpaces follows the Copy rule and returns an array of display
-    // dictionaries; the null case returns early, and each element is downcast before use.
-    unsafe {
-        let raw = CGSCopyManagedDisplaySpaces(main_connection());
-        if raw.is_null() {
-            return out;
+    // SAFETY: main_connection is the process's SkyLight connection.
+    let raw = unsafe { CGSCopyManagedDisplaySpaces(main_connection()) };
+    let Some(raw) = NonNull::new(raw.cast::<CFArray<CFType>>()) else {
+        return out;
+    };
+    // SAFETY: The Copy call's +1 reference to a CFArray passes to CFRetained.
+    let displays = unsafe { CFRetained::from_raw(raw) };
+    let display_id_key = CFString::from_static_str("Display Identifier");
+    let spaces_key = CFString::from_static_str("Spaces");
+    let managed_space_id_key = CFString::from_static_str("ManagedSpaceID");
+
+    for display_entry in displays.iter() {
+        let Ok(display_entry) = display_entry.downcast::<CFDictionary>() else {
+            continue;
+        };
+        // SAFETY: The dictionary is read only through `get` with CFString keys, and each value is
+        // downcast before use.
+        let display_entry =
+            unsafe { CFRetained::cast_unchecked::<CFDictionary<CFString, CFType>>(display_entry) };
+        let display_id = display_entry
+            .get(&display_id_key)
+            .and_then(|v| v.downcast::<CFString>().ok())
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        if display_id.is_empty() {
+            continue;
         }
 
-        let displays: CFRetained<CFArray<CFDictionary<CFString, CFType>>> =
-            CFRetained::from_raw(std::ptr::NonNull::new_unchecked(raw.cast()));
-        let display_id_key = CFString::from_static_str("Display Identifier");
-        let spaces_key = CFString::from_static_str("Spaces");
-        let managed_space_id_key = CFString::from_static_str("ManagedSpaceID");
-
-        for idx in 0..displays.len() {
-            let Some(display_entry) = displays.get(idx) else {
-                continue;
-            };
-            let display_id = display_entry
-                .get(&display_id_key)
-                .and_then(|v| v.downcast::<CFString>().ok())
-                .map(|v| v.to_string())
-                .unwrap_or_default();
-            if display_id.is_empty() {
-                continue;
-            }
-
-            let mut space_ids = Vec::new();
-            if let Some(spaces_value) = display_entry.get(&spaces_key) {
-                if let Ok(spaces) = spaces_value.downcast::<CFArray>() {
-                    let spaces = CFRetained::cast_unchecked::<CFArray<CFType>>(spaces);
-                    for space_entry in spaces.iter() {
-                        if let Ok(space_dict) = space_entry.downcast::<CFDictionary>() {
-                            let space_dict = CFRetained::cast_unchecked::<
-                                CFDictionary<CFString, CFType>,
-                            >(space_dict);
-                            let space_id = space_dict
-                                .get(&managed_space_id_key)
-                                .and_then(|v| v.downcast::<CFNumber>().ok())
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(0);
-                            if space_id != 0 {
-                                space_ids.push(SpaceId::new(space_id as u64));
-                            }
-                        }
-                    }
+        let mut space_ids = Vec::new();
+        if let Some(spaces_value) = display_entry.get(&spaces_key)
+            && let Ok(spaces) = spaces_value.downcast::<CFArray>()
+        {
+            // SAFETY: CFArray<CFType> holds any CF object, and each element is downcast before use.
+            let spaces = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(spaces) };
+            for space_entry in spaces.iter() {
+                let Ok(space_dict) = space_entry.downcast::<CFDictionary>() else {
+                    continue;
+                };
+                // SAFETY: The dictionary is read only through `get` with CFString keys, and each
+                // value is downcast before use.
+                let space_dict = unsafe {
+                    CFRetained::cast_unchecked::<CFDictionary<CFString, CFType>>(space_dict)
+                };
+                let space_id = space_dict
+                    .get(&managed_space_id_key)
+                    .and_then(|v| v.downcast::<CFNumber>().ok())
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if space_id != 0 {
+                    space_ids.push(SpaceId::new(space_id as u64));
                 }
             }
-
-            out.insert(display_id, space_ids);
         }
+
+        out.insert(display_id, space_ids);
     }
 
     out

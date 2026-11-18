@@ -467,14 +467,10 @@ unsafe fn prepare_inline_send(
     // buffers don't overlap.
     unsafe { copy_nonoverlapping(payload.as_ptr(), data, payload.len()) };
     if aligned_len > payload.len() {
+        // SAFETY: `payload.len()` is at most MAX_MESSAGE_SIZE, so the offset stays inside `data`.
+        let padding = unsafe { data.add(payload.len()) };
         // SAFETY: MAX_MESSAGE_SIZE is a multiple of 4, so the aligned length still fits in `data`.
-        unsafe {
-            std::ptr::write_bytes(
-                data.add(payload.len()),
-                0,
-                aligned_len.saturating_sub(payload.len()),
-            )
-        };
+        unsafe { std::ptr::write_bytes(padding, 0, aligned_len.saturating_sub(payload.len())) };
     }
 
     header_ptr
@@ -487,7 +483,8 @@ struct MachPortLimits {
 
 #[link(name = "System", kind = "framework")]
 unsafe extern "C" {
-    fn mach_task_self() -> MachPort;
+    // Takes no arguments and returns this task's own port name.
+    safe fn mach_task_self() -> MachPort;
     fn task_get_special_port(task: MachPort, which: c_int, port: *mut MachPort) -> KernReturn;
     fn mach_port_allocate(task: MachPort, right: c_int, name: *mut MachPort) -> KernReturn;
     fn mach_port_insert_right(
@@ -547,51 +544,53 @@ impl Drop for ServicePort {
 
 impl ReplyPort {
     fn allocate(queue_limit: u32) -> Result<Self, ClientError> {
-        // SAFETY: Every out-pointer and the limits struct are live locals; each failure path
-        // releases what it allocated.
-        unsafe {
-            let task = mach_task_self();
-            let mut name = 0;
-            let result = mach_port_allocate(task, MACH_PORT_RIGHT_RECEIVE, &mut name);
-            if result != KERN_SUCCESS {
-                return Err(ClientError::Mach {
-                    operation: "mach_port_allocate",
-                    code: result,
-                });
-            }
+        let task = mach_task_self();
+        let mut name = 0;
+        // SAFETY: `name` is a live local the call writes.
+        let result = unsafe { mach_port_allocate(task, MACH_PORT_RIGHT_RECEIVE, &mut name) };
+        if result != KERN_SUCCESS {
+            return Err(ClientError::Mach {
+                operation: "mach_port_allocate",
+                code: result,
+            });
+        }
 
-            let limits = MachPortLimits { queue_limit };
-            let _ = mach_port_set_attributes(
+        let limits = MachPortLimits { queue_limit };
+        // SAFETY: `limits` is a live MachPortLimits, which is MACH_PORT_LIMITS_INFO_COUNT words.
+        let _ = unsafe {
+            mach_port_set_attributes(
                 task,
                 name,
                 MACH_PORT_LIMITS_INFO,
                 &limits as *const _ as *const c_void,
                 MACH_PORT_LIMITS_INFO_COUNT,
-            );
+            )
+        };
 
-            let result = mach_port_insert_right(task, name, name, MACH_MSG_TYPE_MAKE_SEND as c_int);
-            if result != KERN_SUCCESS {
-                let _ = mach_port_mod_refs(task, name, MACH_PORT_RIGHT_RECEIVE, -1);
-                let _ = mach_port_deallocate(task, name);
-                return Err(ClientError::Mach {
-                    operation: "mach_port_insert_right",
-                    code: result,
-                });
-            }
-            Ok(Self { name })
+        // SAFETY: `name` is the receive right allocated above.
+        let result =
+            unsafe { mach_port_insert_right(task, name, name, MACH_MSG_TYPE_MAKE_SEND as c_int) };
+        if result != KERN_SUCCESS {
+            // SAFETY: This releases the receive right allocated above, once.
+            let _ = unsafe { mach_port_mod_refs(task, name, MACH_PORT_RIGHT_RECEIVE, -1) };
+            // SAFETY: This releases the name itself, once.
+            let _ = unsafe { mach_port_deallocate(task, name) };
+            return Err(ClientError::Mach {
+                operation: "mach_port_insert_right",
+                code: result,
+            });
         }
+        Ok(Self { name })
     }
 }
 
 impl Drop for ReplyPort {
     fn drop(&mut self) {
-        // SAFETY: `self.name` is the receive and send right this ReplyPort allocated, released once
-        // here.
-        unsafe {
-            let task = mach_task_self();
-            let _ = mach_port_mod_refs(task, self.name, MACH_PORT_RIGHT_RECEIVE, -1);
-            let _ = mach_port_deallocate(task, self.name);
-        }
+        let task = mach_task_self();
+        // SAFETY: `self.name` holds the receive right this ReplyPort allocated, released once here.
+        let _ = unsafe { mach_port_mod_refs(task, self.name, MACH_PORT_RIGHT_RECEIVE, -1) };
+        // SAFETY: `self.name` holds the send right this ReplyPort inserted, released once here.
+        let _ = unsafe { mach_port_deallocate(task, self.name) };
     }
 }
 
@@ -701,12 +700,12 @@ fn send_request_with_id(
     if result == MACH_SEND_TIMED_OUT {
         // The kernel returns an unsent message's rights: mach_msg_destroy releases the
         // destination (remote) right but not the reply (local) right.
-        // SAFETY: The unsent message still carries its rights, so this releases the reply right and
-        // then the destination once each.
-        unsafe {
-            let _ = mach_port_deallocate(mach_task_self(), (*header_ptr).local_port);
-            mach_msg_destroy(header_ptr);
-        }
+        // SAFETY: `header_ptr` points at the header prepare_inline_send wrote.
+        let reply_port = unsafe { (*header_ptr).local_port };
+        // SAFETY: The unsent message still carries the reply right, released once here.
+        let _ = unsafe { mach_port_deallocate(mach_task_self(), reply_port) };
+        // SAFETY: The unsent message still carries the destination right, released once here.
+        unsafe { mach_msg_destroy(header_ptr) };
         return Err(ClientError::RequestTimedOut);
     }
     if result != KERN_SUCCESS {

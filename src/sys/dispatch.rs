@@ -25,12 +25,10 @@ unsafe impl Sync for SerialQueue {}
 
 impl SerialQueue {
     fn new(label: &CStr, qos: u32) -> Self {
-        // SAFETY: A null attr selects the default serial attributes, and `label` is a NUL-
-        // terminated C string.
-        let queue = unsafe {
-            let attr = dispatch_queue_attr_make_with_qos_class(std::ptr::null_mut(), qos, 0);
-            dispatch_queue_create(label.as_ptr(), attr)
-        };
+        // SAFETY: A null attr selects the default serial attributes.
+        let attr = unsafe { dispatch_queue_attr_make_with_qos_class(std::ptr::null_mut(), qos, 0) };
+        // SAFETY: `label` is a NUL-terminated C string, and `attr` came from the call above.
+        let queue = unsafe { dispatch_queue_create(label.as_ptr(), attr) };
         assert!(!queue.is_null(), "dispatch queue creation failed");
         Self(queue)
     }

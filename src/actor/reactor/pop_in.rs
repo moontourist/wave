@@ -462,9 +462,10 @@ impl Overlay {
             picture.setAnchorPoint(CGPoint::ZERO);
             picture.setFrame(local(spot, frame));
             picture.setContentsScale(CGImage::width(Some(image)) as f64 / spot.size.width);
-            // SAFETY: a CGImage is a CF type toll-free bridged to an Objective-C object, which
-            // is what CALayer.contents takes; the layer retains it.
-            unsafe { picture.setContents(Some(&*(image as *const CGImage as *const AnyObject))) };
+            // SAFETY: A CGImage is a CF type toll-free bridged to an Objective-C object.
+            let contents = unsafe { &*(image as *const CGImage as *const AnyObject) };
+            // SAFETY: CALayer.contents takes a CGImage, and the layer retains it.
+            unsafe { picture.setContents(Some(contents)) };
             root.addSublayer(&picture);
         });
         let surface = WindowSurface::new(window.id(), bounds, &root)?;

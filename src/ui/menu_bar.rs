@@ -1621,20 +1621,23 @@ mod layout_library_tests {
 
 fn build_text_attrs(font: &NSFont) -> Retained<NSDictionary<NSAttributedStringKey, AnyObject>> {
     let dict = NSMutableDictionary::<NSAttributedStringKey, AnyObject>::new();
-    // SAFETY: Both keys are immutable framework constants, and each value has the type its
-    // attribute expects: an NSFont and a boolean NSNumber.
+    // SAFETY: The key is an immutable framework constant, and its attribute takes an NSFont.
     unsafe {
         dict.setObject_forKeyedSubscript(
             Some(as_any_object(font)),
             ProtocolObject::from_ref(NSFontAttributeName),
-        );
+        )
+    };
+    // SAFETY: The key is an immutable framework constant, and its attribute takes a boolean
+    // NSNumber.
+    unsafe {
         dict.setObject_forKeyedSubscript(
             Some(as_any_object(&*NSNumber::numberWithBool(true))),
             ProtocolObject::from_ref::<NSString>(
                 kCTForegroundColorFromContextAttributeName.as_ref(),
             ),
-        );
-    }
+        )
+    };
     // SAFETY: The dictionary holds NSAttributedStringKey keys and object values, the target type's
     // layout.
     unsafe { Retained::cast_unchecked(dict) }

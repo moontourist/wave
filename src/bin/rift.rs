@@ -395,8 +395,10 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
         );
     }
 
-    // SAFETY: The system-wide element is a live AXUIElement for the call.
-    unsafe { AXUIElement::new_system_wide().set_messaging_timeout(1.0) };
+    // SAFETY: AXUIElementCreateSystemWide takes no arguments.
+    let system_wide = unsafe { AXUIElement::new_system_wide() };
+    // SAFETY: `system_wide` is a live AXUIElement for the call.
+    unsafe { system_wide.set_messaging_timeout(1.0) };
 
     CGSetLocalEventsSuppressionInterval(0.0);
     CGEnableEventStateCombining(false);

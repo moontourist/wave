@@ -377,26 +377,26 @@ fn window_query_run(filter: &WindowQueryFilter<'_>) -> Option<WindowIterator> {
     let exclude_tags = CFNumber::new_i64(filter.exclude_tags as i64);
     let window_options =
         (keys.window_options != 0).then(|| CFNumber::new_i32(filter.window_list_options));
-    // SAFETY: `query` is non-null, checked above, and every key comes from WINDOW_QUERY_KEYS.
-    unsafe {
-        set_window_query_value(query, keys.owner, &owner);
-        set_window_query_value(query, keys.include_tags, &include_tags);
-        set_window_query_value(query, keys.exclude_tags, &exclude_tags);
-        if let Some(window_options) = &window_options {
-            set_window_query_value(query, keys.window_options, window_options);
-        }
+    // SAFETY: `query` is non-null, checked above, and the key comes from WINDOW_QUERY_KEYS.
+    unsafe { set_window_query_value(query, keys.owner, &owner) };
+    // SAFETY: As above.
+    unsafe { set_window_query_value(query, keys.include_tags, &include_tags) };
+    // SAFETY: As above.
+    unsafe { set_window_query_value(query, keys.exclude_tags, &exclude_tags) };
+    if let Some(window_options) = &window_options {
+        // SAFETY: As above.
+        unsafe { set_window_query_value(query, keys.window_options, window_options) };
     }
 
     let space_array = uses_explicit_spaces.then(|| cf_array_from_u64s(filter.spaces));
     let space_options =
         (!uses_explicit_spaces).then(|| CFNumber::new_i32(filter.space_list_options));
-    // SAFETY: `query` is non-null, checked above, and every key comes from WINDOW_QUERY_KEYS.
-    unsafe {
-        if let Some(space_array) = &space_array {
-            set_window_query_value(query, keys.spaces, space_array);
-        } else if let Some(space_options) = &space_options {
-            set_window_query_value(query, keys.space_options, space_options);
-        }
+    if let Some(space_array) = &space_array {
+        // SAFETY: `query` is non-null, checked above, and the key comes from WINDOW_QUERY_KEYS.
+        unsafe { set_window_query_value(query, keys.spaces, space_array) };
+    } else if let Some(space_options) = &space_options {
+        // SAFETY: As above.
+        unsafe { set_window_query_value(query, keys.space_options, space_options) };
     }
 
     // SAFETY: G_CONNECTION is the process's SkyLight connection, and `query` is a live, configured
@@ -408,14 +408,12 @@ fn window_query_run(filter: &WindowQueryFilter<'_>) -> Option<WindowIterator> {
         // SAFETY: `result` is a non-null query result; the call returns a +1 iterator or null.
         unsafe { SLSWindowQueryResultCopyWindows(result) }
     };
-    // SAFETY: `result` (when non-null) and `query` each hold a +1 reference that nothing else
-    // releases.
-    unsafe {
-        if !result.is_null() {
-            CFRelease(result);
-        }
-        CFRelease(query);
+    if !result.is_null() {
+        // SAFETY: `result` holds a +1 reference that nothing else releases.
+        unsafe { CFRelease(result) };
     }
+    // SAFETY: `query` holds a +1 reference that nothing else releases.
+    unsafe { CFRelease(query) };
     WindowIterator::from_owned_iterator(iterator)
 }
 
@@ -1134,13 +1132,13 @@ pub fn make_key_window(pid: pid_t, wsid: WindowServerId) -> Result<(), CGError> 
 
     let psn = ProcessSerialNumber::for_pid(pid)?;
 
-    // SAFETY: `psn` is a live process serial number, and both event records are 0x100-byte buffers,
-    // larger than the 0xf8 bytes the record header declares.
-    unsafe {
-        cg_ok(_SLPSSetFrontProcessWithOptions(&psn, wsid.0, kCPSUserGenerated))?;
-        cg_ok(SLPSPostEventRecordTo(&psn, event1.as_ptr()))?;
-        cg_ok(SLPSPostEventRecordTo(&psn, event2.as_ptr()))?;
-    }
+    // SAFETY: `psn` is a live process serial number.
+    cg_ok(unsafe { _SLPSSetFrontProcessWithOptions(&psn, wsid.0, kCPSUserGenerated) })?;
+    // SAFETY: `psn` is live, and the event record is a 0x100-byte buffer, larger than the 0xf8
+    // bytes its header declares.
+    cg_ok(unsafe { SLPSPostEventRecordTo(&psn, event1.as_ptr()) })?;
+    // SAFETY: As above.
+    cg_ok(unsafe { SLPSPostEventRecordTo(&psn, event2.as_ptr()) })?;
     Ok(())
 }
 

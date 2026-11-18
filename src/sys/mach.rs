@@ -33,17 +33,14 @@ fn bs_name() -> CString {
 
 pub fn is_mach_server_registered() -> bool {
     let bs_name = bs_name();
-    // SAFETY: `bs_name` is a NUL-terminated C string, and the send right bootstrap returns is
-    // deallocated once.
-    unsafe {
-        let service_port = mach_get_bs_port(&bs_name);
-        if service_port == 0 {
-            return false;
-        }
-        // bootstrap_look_up gives this task a send-right reference.
-        let _ = mach_port_deallocate(mach_task_self(), service_port);
-        true
+    // SAFETY: `bs_name` is a NUL-terminated C string.
+    let service_port = unsafe { mach_get_bs_port(&bs_name) };
+    if service_port == 0 {
+        return false;
     }
+    // SAFETY: bootstrap_look_up gave this task a send-right reference, released once here.
+    let _ = unsafe { mach_port_deallocate(mach_task_self(), service_port) };
+    true
 }
 
 type kern_return_t = c_int;
@@ -266,7 +263,8 @@ struct mach_receive_buffer_t<const N: usize> {
 
 #[link(name = "System", kind = "framework")]
 unsafe extern "C" {
-    fn mach_task_self() -> mach_port_name_t;
+    // Takes no arguments and returns this task's own port name.
+    safe fn mach_task_self() -> mach_port_name_t;
 
     fn task_get_special_port(
         task: mach_port_name_t,
@@ -406,11 +404,11 @@ static mut window_sub_level_error_logged: bool = false;
 static mut window_sub_level_invalid_msg_logged: bool = false;
 
 pub fn init_window_sub_level_server_port() {
+    // SAFETY: The call builds and sends its own message, with no caller precondition.
+    let port = unsafe { create_connection_server_port() };
     // SAFETY: rift's main calls this once at startup, before any thread that reads g_server_port
     // exists.
-    unsafe {
-        g_server_port = create_connection_server_port();
-    }
+    unsafe { g_server_port = port };
 }
 
 const LC_SEGMENT_64: u32 = 0x19;
@@ -1290,63 +1288,73 @@ extern "C" fn mach_message_callback(
     _size: CFIndex,
     context: *mut c_void,
 ) {
-    // SAFETY: CFMachPort passes the `mach_server` registered as its context, which outlives the
-    // port, and a received message valid for this callback.
-    unsafe {
-        if context.is_null() || message.is_null() {
-            return;
-        }
-        let mach_server = &mut *(context as *mut mach_server);
-        let header_val = core::ptr::read_unaligned(message as *const mach_msg_header_t);
-
-        if let Some(name) = dead_name_notification(message.cast()) {
-            if let Some(handler) = mach_server.dead_name_handler {
-                handler(mach_server.context, name);
-            }
-            // The notification carries its own dead-name reference; leases hold theirs.
-            let _ = mach_port_deallocate(mach_task_self(), name);
-            let _ = mach_msg_destroy(message as *mut mach_msg_header_t);
-            return;
-        }
-        let header_ptr = &header_val as *const mach_msg_header_t as *mut mach_msg_header_t;
-        // Without a reply port this is not a request (e.g. a send-once notice).
-        if header_val.msgh_remote_port == 0 {
-            let _ = mach_msg_destroy(message as *mut mach_msg_header_t);
-            return;
-        }
-
-        let mut payload_ptr: *mut c_char = null_mut();
-        let mut payload_len: u32 = 0;
-
-        if (header_val.msgh_bits & MACH_MSGH_BITS_COMPLEX) != 0 {
-            let body_ptr = (message as *const u8).add(size_of::<mach_msg_header_t>())
-                as *const mach_msg_body_t;
-            let body_val = core::ptr::read_unaligned(body_ptr);
-            if body_val.msgh_descriptor_count >= 1 {
-                let desc_ptr = ((body_ptr as usize + size_of::<mach_msg_body_t>() + 7) & !7)
-                    as *const mach_msg_ool_descriptor_t;
-                let desc_val = core::ptr::read_unaligned(desc_ptr);
-                payload_ptr = desc_val.address as *mut c_char;
-                payload_len = desc_val.size;
-                if payload_ptr.is_null() || payload_len == 0 {
-                    payload_len =
-                        header_val.msgh_size.saturating_sub(size_of::<mach_msg_header_t>() as u32);
-                    payload_ptr =
-                        (message as *mut u8).add(size_of::<mach_msg_header_t>()) as *mut c_char;
-                }
-            }
-        } else {
-            payload_len =
-                header_val.msgh_size.saturating_sub(size_of::<mach_msg_header_t>() as u32);
-            payload_ptr = (message as *mut u8).add(size_of::<mach_msg_header_t>()) as *mut c_char;
-        }
-
-        if let Some(handler) = mach_server.handler {
-            handler(mach_server.context, payload_ptr, payload_len, header_ptr);
-        }
-
-        let _ = mach_msg_destroy(message as *mut mach_msg_header_t);
+    if context.is_null() || message.is_null() {
+        return;
     }
+    let destroy = || {
+        // SAFETY: CFMachPort hands over a received message whose rights this callback owns; each
+        // path calls this once, on its way out.
+        let _ = unsafe { mach_msg_destroy(message as *mut mach_msg_header_t) };
+    };
+    // SAFETY: CFMachPort passes the `mach_server` registered as its context, which outlives the
+    // port, and nothing else borrows it during the callback.
+    let mach_server = unsafe { &mut *(context as *mut mach_server) };
+    // SAFETY: A received message starts with its header.
+    let header_val = unsafe { core::ptr::read_unaligned(message as *const mach_msg_header_t) };
+
+    // SAFETY: A received message starts with its header.
+    if let Some(name) = unsafe { dead_name_notification(message.cast()) } {
+        if let Some(handler) = mach_server.dead_name_handler {
+            // SAFETY: The handler was registered with this context, which outlives the port.
+            unsafe { handler(mach_server.context, name) };
+        }
+        // SAFETY: The notification carries its own dead-name reference, released once here;
+        // leases hold theirs.
+        let _ = unsafe { mach_port_deallocate(mach_task_self(), name) };
+        destroy();
+        return;
+    }
+    let header_ptr = &header_val as *const mach_msg_header_t as *mut mach_msg_header_t;
+    // Without a reply port this is not a request (e.g. a send-once notice).
+    if header_val.msgh_remote_port == 0 {
+        destroy();
+        return;
+    }
+
+    let inline_len = header_val.msgh_size.saturating_sub(size_of::<mach_msg_header_t>() as u32);
+    let inline_ptr =
+        (message as *mut u8).wrapping_add(size_of::<mach_msg_header_t>()) as *mut c_char;
+    let mut payload_ptr: *mut c_char = null_mut();
+    let mut payload_len: u32 = 0;
+
+    if (header_val.msgh_bits & MACH_MSGH_BITS_COMPLEX) != 0 {
+        let body_ptr = inline_ptr as *const mach_msg_body_t;
+        // SAFETY: A complex message has a body right after its header.
+        let body_val = unsafe { core::ptr::read_unaligned(body_ptr) };
+        if body_val.msgh_descriptor_count >= 1 {
+            let desc_ptr = ((body_ptr as usize + size_of::<mach_msg_body_t>() + 7) & !7)
+                as *const mach_msg_ool_descriptor_t;
+            // SAFETY: A body that counts at least one descriptor is followed by it.
+            let desc_val = unsafe { core::ptr::read_unaligned(desc_ptr) };
+            payload_ptr = desc_val.address as *mut c_char;
+            payload_len = desc_val.size;
+            if payload_ptr.is_null() || payload_len == 0 {
+                payload_len = inline_len;
+                payload_ptr = inline_ptr;
+            }
+        }
+    } else {
+        payload_len = inline_len;
+        payload_ptr = inline_ptr;
+    }
+
+    if let Some(handler) = mach_server.handler {
+        // SAFETY: The handler was registered with this context; the payload and header copy stay
+        // valid until the message is destroyed below.
+        unsafe { handler(mach_server.context, payload_ptr, payload_len, header_ptr) };
+    }
+
+    destroy();
 }
 
 pub unsafe fn mach_server_begin(

@@ -11,70 +11,56 @@ use tracing::info;
 unsafe extern "C" {
     fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
 
-    static kAXTrustedCheckOptionPrompt: *const c_void;
+    // A CFString the framework sets before main runs.
+    safe static kAXTrustedCheckOptionPrompt: *const c_void;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
-    static kCFBooleanTrue: *const c_void;
-    static kCFBooleanFalse: *const c_void;
+    // CFBoolean singletons the framework sets before main runs.
+    safe static kCFBooleanTrue: *const c_void;
+    safe static kCFBooleanFalse: *const c_void;
 }
 
 const AX_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const AX_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[inline]
-fn ax_is_trusted() -> bool {
-    // SAFETY: Both arrays hold one valid CF object (an immutable framework constant) for
-    // dictionaryWithObjects:forKeys:count:, and AXIsProcessTrustedWithOptions takes that
-    // autoreleased dictionary.
-    unsafe {
-        autoreleasepool(|_| {
-            let keys: [*mut AnyObject; 1] = [kAXTrustedCheckOptionPrompt as *mut AnyObject];
-            let vals: [*mut AnyObject; 1] = [kCFBooleanFalse as *mut AnyObject];
-            let dict: *mut AnyObject = msg_send![
+/// Asks whether rift has Accessibility access. With `prompt`, macOS also shows its grant dialog.
+fn ax_trusted(prompt: bool) -> bool {
+    autoreleasepool(|_| {
+        let value = if prompt {
+            kCFBooleanTrue
+        } else {
+            kCFBooleanFalse
+        };
+        let keys: [*mut AnyObject; 1] = [kAXTrustedCheckOptionPrompt as *mut AnyObject];
+        let vals: [*mut AnyObject; 1] = [value as *mut AnyObject];
+        // SAFETY: Both arrays hold one valid CF object, an immutable framework constant.
+        let dict: *mut AnyObject = unsafe {
+            msg_send![
                 class!(NSDictionary),
                 dictionaryWithObjects: vals.as_ptr(),
                 forKeys:              keys.as_ptr(),
                 count:                1usize
-            ];
-
-            AXIsProcessTrustedWithOptions(dict.cast())
-        })
-    }
-}
-
-fn prompt_ax_trust_dialog() {
-    // SAFETY: Both arrays hold one valid CF object (an immutable framework constant) for
-    // dictionaryWithObjects:forKeys:count:, and AXIsProcessTrustedWithOptions takes that
-    // autoreleased dictionary.
-    autoreleasepool(|_| unsafe {
-        let keys: [*mut AnyObject; 1] = [kAXTrustedCheckOptionPrompt as *mut AnyObject];
-        let vals: [*mut AnyObject; 1] = [kCFBooleanTrue as *mut AnyObject];
-
-        let dict: *mut AnyObject = msg_send![
-            class!(NSDictionary),
-            dictionaryWithObjects: vals.as_ptr(),
-            forKeys:              keys.as_ptr(),
-            count:                1usize
-        ];
-
-        let _ = AXIsProcessTrustedWithOptions(dict.cast());
-    });
+            ]
+        };
+        // SAFETY: `dict` is an autoreleased NSDictionary that lives until the pool drains.
+        unsafe { AXIsProcessTrustedWithOptions(dict.cast()) }
+    })
 }
 
 pub fn ensure_accessibility_permission() {
-    if ax_is_trusted() {
+    if ax_trusted(false) {
         return;
     }
 
     info!("Accessibility permission is not granted; prompting user for permission now.");
 
-    prompt_ax_trust_dialog();
+    let _ = ax_trusted(true);
 
     let start = Instant::now();
     loop {
-        if ax_is_trusted() {
+        if ax_trusted(false) {
             info!("Accessibility permission granted");
             return;
         }

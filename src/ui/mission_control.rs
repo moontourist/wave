@@ -209,10 +209,9 @@ fn fade(layer: &CALayer, to: f32) {
     let from = unsafe { layer.presentationLayer() }.map_or(layer.opacity(), |p| p.opacity());
     let animation = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("opacity")));
     // SAFETY: The opacity key path animates NSNumber values.
-    unsafe {
-        animation.setFromValue(Some(&NSNumber::new_f32(from)));
-        animation.setToValue(Some(&NSNumber::new_f32(to)));
-    }
+    unsafe { animation.setFromValue(Some(&NSNumber::new_f32(from))) };
+    // SAFETY: As above.
+    unsafe { animation.setToValue(Some(&NSNumber::new_f32(to))) };
     animation.setDuration(REVEAL_MOTION);
     layer.setOpacity(to);
     layer.addAnimation_forKey(&animation, Some(&NSString::from_str("reveal")));
@@ -230,10 +229,9 @@ fn decoration_fade(layer: &CALayer, shadow: bool, to: f32, duration: f64) {
     let key = NSString::from_str(if shadow { "shadowOpacity" } else { "opacity" });
     let animation = CABasicAnimation::animationWithKeyPath(Some(&key));
     // SAFETY: The opacity and shadowOpacity key paths animate NSNumber values.
-    unsafe {
-        animation.setFromValue(Some(&NSNumber::new_f32(from)));
-        animation.setToValue(Some(&NSNumber::new_f32(to)));
-    }
+    unsafe { animation.setFromValue(Some(&NSNumber::new_f32(from))) };
+    // SAFETY: As above.
+    unsafe { animation.setToValue(Some(&NSNumber::new_f32(to))) };
     animation.setDuration(duration);
     if shadow {
         layer.setShadowOpacity(to);
@@ -249,11 +247,10 @@ fn decoration_fade(layer: &CALayer, shadow: bool, to: f32, duration: f64) {
 
 fn set_text(l: &CATextLayer, text: &str) {
     let text = CFString::from_str(text);
-    // SAFETY: CFString is toll-free bridged to NSString, which CATextLayer's string property
-    // accepts.
-    unsafe {
-        l.setString(Some(&*(text.as_ref() as *const AnyObject)));
-    }
+    // SAFETY: CFString is toll-free bridged to NSString, an Objective-C object.
+    let string = unsafe { &*(text.as_ref() as *const AnyObject) };
+    // SAFETY: CATextLayer's string property accepts an NSString.
+    unsafe { l.setString(Some(string)) };
 }
 fn text(
     parent: &CALayer,
@@ -266,12 +263,12 @@ fn text(
     l.setFrame(frame);
     l.setContentsScale(scale);
     let font = NSFont::systemFontOfSize(size);
-    // SAFETY: NSFont is toll-free bridged to CTFont, which CATextLayer's font property accepts;
-    // kCATruncationEnd is an immutable framework constant.
-    unsafe {
-        l.setFont(Some(&*(Retained::as_ptr(&font) as *const CFType)));
-        l.setTruncationMode(objc2_quartz_core::kCATruncationEnd);
-    }
+    // SAFETY: NSFont is toll-free bridged to CTFont, a CF type.
+    let font = unsafe { &*(Retained::as_ptr(&font) as *const CFType) };
+    // SAFETY: CATextLayer's font property accepts a CTFont.
+    unsafe { l.setFont(Some(font)) };
+    // SAFETY: kCATruncationEnd is an immutable framework constant.
+    unsafe { l.setTruncationMode(objc2_quartz_core::kCATruncationEnd) };
     l.setFontSize(size);
     l.setForegroundColor(Some(&color(1., 1., 1., 0.9)));
     set_text(&l, value);
@@ -320,10 +317,10 @@ fn symbol(parent: &CALayer, name: &str, x: f64, scale: f64) {
     }
 }
 fn image_contents(l: &CALayer, image: &CGImage) {
+    // SAFETY: A CGImage is a CF type toll-free bridged to an Objective-C object.
+    let contents = unsafe { &*(image as *const CGImage as *const AnyObject) };
     // SAFETY: CALayer's contents property accepts a CGImage.
-    unsafe {
-        l.setContents(Some(&*(image as *const CGImage as *const AnyObject)));
-    }
+    unsafe { l.setContents(Some(contents)) };
 }
 fn app_icon(pid: i32) -> Option<Retained<CGImage>> {
     let image = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?.icon()?;
@@ -982,10 +979,9 @@ impl DisplayOverview {
                 // SAFETY: valueWithCATransform3D boxes a plain CATransform3D struct.
                 let to = unsafe { NSValue::valueWithCATransform3D(motion.to.transform()) };
                 // SAFETY: The transform key path animates NSValue-wrapped CATransform3D values.
-                unsafe {
-                    animation.setFromValue(Some(&from));
-                    animation.setToValue(Some(&to));
-                }
+                unsafe { animation.setFromValue(Some(&from)) };
+                // SAFETY: As above.
+                unsafe { animation.setToValue(Some(&to)) };
                 animation.setTimingFunction(Some(
                     &objc2_quartz_core::CAMediaTimingFunction::functionWithControlPoints(
                         1. / 3.,
@@ -1069,11 +1065,14 @@ impl DisplayOverview {
                     let animation = CABasicAnimation::animationWithKeyPath(Some(
                         &NSString::from_str("position"),
                     ));
+                    // SAFETY: valueWithPoint boxes a plain CGPoint struct.
+                    let from = unsafe { NSValue::valueWithPoint(position) };
+                    // SAFETY: valueWithPoint boxes a plain CGPoint struct.
+                    let to = unsafe { NSValue::valueWithPoint(CGPoint::new(x, y)) };
                     // SAFETY: The position key path animates NSValue-wrapped CGPoint values.
-                    unsafe {
-                        animation.setFromValue(Some(&NSValue::valueWithPoint(position)));
-                        animation.setToValue(Some(&NSValue::valueWithPoint(CGPoint::new(x, y))));
-                    }
+                    unsafe { animation.setFromValue(Some(&from)) };
+                    // SAFETY: As above.
+                    unsafe { animation.setToValue(Some(&to)) };
                     animation.setDuration(motion.duration);
                     animation.setTimingFunction(Some(
                         &objc2_quartz_core::CAMediaTimingFunction::functionWithControlPoints(
@@ -2293,19 +2292,15 @@ impl OverviewSession {
                 ty: to.mid().y - from.mid().y,
             });
             // SAFETY: valueWithCATransform3D boxes a plain CATransform3D struct.
-            let values = unsafe {
-                [
-                    NSValue::valueWithCATransform3D(w.shadow.transform()),
-                    NSValue::valueWithCATransform3D(transform),
-                ]
-            };
+            let from = unsafe { NSValue::valueWithCATransform3D(w.shadow.transform()) };
+            // SAFETY: valueWithCATransform3D boxes a plain CATransform3D struct.
+            let to = unsafe { NSValue::valueWithCATransform3D(transform) };
             let animation =
                 CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("transform")));
             // SAFETY: The transform key path animates NSValue-wrapped CATransform3D values.
-            unsafe {
-                animation.setFromValue(Some(&values[0]));
-                animation.setToValue(Some(&values[1]));
-            }
+            unsafe { animation.setFromValue(Some(&from)) };
+            // SAFETY: As above.
+            unsafe { animation.setToValue(Some(&to)) };
             animation.setDuration(remaining);
             animation.setTimingFunction(Some(
                 &objc2_quartz_core::CAMediaTimingFunction::functionWithControlPoints(
