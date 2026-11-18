@@ -1663,58 +1663,62 @@ mod tests {
             msgh_id: 17,
         };
         let mut storage = MaybeUninit::<mach_message_t>::uninit();
+        // SAFETY: `payload` is live, and its length fits the inline buffer.
         let header_ptr = unsafe {
             prepare_inline_send(&mut storage, header, payload.as_ptr(), payload.len() as u32)
         };
+        // SAFETY: `header_ptr` points at the header prepare_inline_send wrote.
+        let written = unsafe { header_ptr.read() };
+        assert_eq!(written.msgh_bits, 7);
+        assert_eq!(written.msgh_remote_port, 11);
+        assert_eq!(written.msgh_local_port, 13);
+        assert_eq!(written.msgh_id, 17);
+        assert_eq!(written.msgh_size as usize, size_of::<mach_msg_header_t>() + 8);
 
-        unsafe {
-            assert_eq!((*header_ptr).msgh_bits, 7);
-            assert_eq!((*header_ptr).msgh_remote_port, 11);
-            assert_eq!((*header_ptr).msgh_local_port, 13);
-            assert_eq!((*header_ptr).msgh_id, 17);
-            assert_eq!(
-                (*header_ptr).msgh_size as usize,
-                size_of::<mach_msg_header_t>() + 8
-            );
-
-            let data = addr_of_mut!((*storage.as_mut_ptr()).data).cast::<u8>();
-            assert_eq!(core::slice::from_raw_parts(data, 8), b"hello\0\0\0");
-        }
+        // SAFETY: `storage` holds the message, so projecting to its data field stays in bounds.
+        let data = unsafe { addr_of_mut!((*storage.as_mut_ptr()).data) }.cast::<u8>();
+        // SAFETY: prepare_inline_send initialized the payload and its padding, 8 bytes.
+        assert_eq!(unsafe { core::slice::from_raw_parts(data, 8) }, b"hello\0\0\0");
     }
 
     #[test]
     fn owned_mach_reply_survives_received_message_cleanup() {
-        unsafe {
-            let reply_port = mach_allocate_reply_port().expect("allocate reply port");
-            let mut received_header = zeroed::<mach_msg_header_t>();
-            received_header.msgh_remote_port = reply_port;
-            received_header.msgh_id = 42;
+        // SAFETY: Allocating a port has no precondition.
+        let reply_port = unsafe { mach_allocate_reply_port() }.expect("allocate reply port");
+        // SAFETY: mach_msg_header_t is plain integers, valid when zeroed.
+        let mut received_header = unsafe { zeroed::<mach_msg_header_t>() };
+        received_header.msgh_remote_port = reply_port;
+        received_header.msgh_id = 42;
 
-            let mut destination =
-                OwnedMachReply::retain(&received_header).expect("retain reply destination");
+        // SAFETY: `received_header` is a live header naming `reply_port`.
+        let mut destination =
+            unsafe { OwnedMachReply::retain(&received_header) }.expect("retain reply destination");
 
-            // Simulate mach_msg_destroy consuming the send right carried by
-            // the received message after the CFMachPort callback returns.
-            assert!(mach_release_send_right(reply_port));
+        // Simulate mach_msg_destroy consuming the send right carried by
+        // the received message after the CFMachPort callback returns.
+        // SAFETY: The allocation gave this test a send right to `reply_port`.
+        assert!(unsafe { mach_release_send_right(reply_port) });
 
-            let response = b"reply\0";
-            assert!(send_mach_reply(
+        let response = b"reply\0";
+        // SAFETY: `response` is live for the call, and its length is passed with it.
+        assert!(unsafe {
+            send_mach_reply(
                 destination.header_mut(),
                 response.as_ptr().cast(),
                 response.len() as u32,
-            ));
+            )
+        });
 
-            let mut received = Vec::new();
-            assert!(receive_message_on_port(
-                reply_port,
-                &mut received,
-                "owned_mach_reply_test",
-            ));
-            assert!(received.starts_with(response));
+        let mut received = Vec::new();
+        // SAFETY: `reply_port` holds the receive right this test allocated.
+        assert!(unsafe {
+            receive_message_on_port(reply_port, &mut received, "owned_mach_reply_test")
+        });
+        assert!(received.starts_with(response));
 
-            drop(destination);
-            mach_deallocate_reply_port(reply_port);
-        }
+        drop(destination);
+        // SAFETY: Nothing uses `reply_port` after this.
+        unsafe { mach_deallocate_reply_port(reply_port) };
     }
 
     #[test]
@@ -1736,76 +1740,88 @@ mod tests {
             (*context.cast::<Seen>()).dead.push(port);
         }
 
-        unsafe {
-            let task = mach_task_self();
-            let server_port = mach_allocate_reply_port().unwrap();
-            let reply = mach_allocate_reply_port().unwrap();
-            let client = mach_allocate_reply_port().unwrap();
-            let mut previous = MACH_PORT_NULL;
-            assert_eq!(
-                mach_port_request_notification(
-                    task,
-                    client,
-                    MACH_NOTIFY_DEAD_NAME,
-                    1,
-                    server_port,
-                    MACH_MSG_TYPE_MAKE_SEND_ONCE as c_int,
-                    &mut previous,
-                ),
-                KERN_SUCCESS
-            );
+        let task = mach_task_self();
+        // SAFETY: Allocating a port has no precondition.
+        let server_port = unsafe { mach_allocate_reply_port() }.unwrap();
+        // SAFETY: As above.
+        let reply = unsafe { mach_allocate_reply_port() }.unwrap();
+        // SAFETY: As above.
+        let client = unsafe { mach_allocate_reply_port() }.unwrap();
+        let mut previous = MACH_PORT_NULL;
+        // SAFETY: Both ports were allocated above, and `previous` is a live local.
+        let requested = unsafe {
+            mach_port_request_notification(
+                task,
+                client,
+                MACH_NOTIFY_DEAD_NAME,
+                1,
+                server_port,
+                MACH_MSG_TYPE_MAKE_SEND_ONCE as c_int,
+                &mut previous,
+            )
+        };
+        assert_eq!(requested, KERN_SUCCESS);
 
-            // Requests numbered 72 whose bodies mimic a notification naming `client`.
-            let mut body = [0u8; 12];
-            body[8..].copy_from_slice(&client.to_ne_bytes());
-            for reply_port in [reply, MACH_PORT_NULL] {
-                let local = if reply_port == MACH_PORT_NULL {
-                    0
-                } else {
-                    MACH_MSG_TYPE_MAKE_SEND
-                };
-                let header = mach_msg_header_t {
-                    msgh_bits: MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, local),
-                    msgh_size: 0,
-                    msgh_remote_port: server_port,
-                    msgh_local_port: reply_port,
-                    msgh_voucher_port: 0,
-                    msgh_id: MACH_NOTIFY_DEAD_NAME,
-                };
-                let mut storage = MaybeUninit::<mach_message_t>::uninit();
-                let message = prepare_inline_send(&mut storage, header, body.as_ptr(), 12);
-                assert_eq!(
-                    mach_msg(message, MACH_SEND_MSG, (*message).msgh_size, 0, 0, 0, 0),
-                    MACH_MSG_SUCCESS
-                );
-            }
-            // Destroying the receive right makes the kernel send the real notification.
-            let _ = mach_port_mod_refs(task, client, MACH_PORT_RIGHT_RECEIVE, -1);
-
-            let mut seen = Seen::default();
-            let mut server = mach_server {
-                handler: Some(on_request),
-                dead_name_handler: Some(on_dead_name),
-                context: (&raw mut seen).cast(),
-                ..Default::default()
+        // Requests numbered 72 whose bodies mimic a notification naming `client`.
+        let mut body = [0u8; 12];
+        body[8..].copy_from_slice(&client.to_ne_bytes());
+        for reply_port in [reply, MACH_PORT_NULL] {
+            let local = if reply_port == MACH_PORT_NULL {
+                0
+            } else {
+                MACH_MSG_TYPE_MAKE_SEND
             };
-            let mut buffer = [0u64; 128];
-            let header = buffer.as_mut_ptr().cast::<mach_msg_header_t>();
-            let options = MACH_RCV_MSG | MACH_RCV_TIMEOUT;
-            while mach_msg(header, options, 0, 1024, server_port, 10, 0) == MACH_MSG_SUCCESS {
-                mach_message_callback(null(), header.cast(), 0, (&raw mut server).cast());
-            }
-
-            // Only the request with a reply port is dispatched; only the kernel's message
-            // ends the client.
-            assert_eq!(seen.requests, [MACH_NOTIFY_DEAD_NAME]);
-            assert_eq!(seen.dead, [client]);
-            // The notification's reference was dropped: releasing ours frees the name.
-            assert!(mach_release_send_right(client));
-            let mut port_type = 0;
-            assert_ne!(mach_port_type(task, client, &mut port_type), KERN_SUCCESS);
-            mach_deallocate_reply_port(reply);
-            mach_deallocate_reply_port(server_port);
+            let header = mach_msg_header_t {
+                msgh_bits: MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, local),
+                msgh_size: 0,
+                msgh_remote_port: server_port,
+                msgh_local_port: reply_port,
+                msgh_voucher_port: 0,
+                msgh_id: MACH_NOTIFY_DEAD_NAME,
+            };
+            let mut storage = MaybeUninit::<mach_message_t>::uninit();
+            // SAFETY: `body` is live and 12 bytes long.
+            let message = unsafe { prepare_inline_send(&mut storage, header, body.as_ptr(), 12) };
+            // SAFETY: `message` points at the header prepare_inline_send wrote.
+            let size = unsafe { (*message).msgh_size };
+            // SAFETY: `message` is an initialized message of `size` bytes in `storage`.
+            let sent = unsafe { mach_msg(message, MACH_SEND_MSG, size, 0, 0, 0, 0) };
+            assert_eq!(sent, MACH_MSG_SUCCESS);
         }
+        // Destroying the receive right makes the kernel send the real notification.
+        // SAFETY: This releases the receive right allocated above, once.
+        let _ = unsafe { mach_port_mod_refs(task, client, MACH_PORT_RIGHT_RECEIVE, -1) };
+
+        let mut seen = Seen::default();
+        let mut server = mach_server {
+            handler: Some(on_request),
+            dead_name_handler: Some(on_dead_name),
+            context: (&raw mut seen).cast(),
+            ..Default::default()
+        };
+        let mut buffer = [0u64; 128];
+        let header = buffer.as_mut_ptr().cast::<mach_msg_header_t>();
+        let options = MACH_RCV_MSG | MACH_RCV_TIMEOUT;
+        // SAFETY: `buffer` is 1024 bytes, the receive size.
+        while unsafe { mach_msg(header, options, 0, 1024, server_port, 10, 0) } == MACH_MSG_SUCCESS
+        {
+            mach_message_callback(null(), header.cast(), 0, (&raw mut server).cast());
+        }
+
+        // Only the request with a reply port is dispatched; only the kernel's message
+        // ends the client.
+        assert_eq!(seen.requests, [MACH_NOTIFY_DEAD_NAME]);
+        assert_eq!(seen.dead, [client]);
+        // The notification's reference was dropped: releasing ours frees the name.
+        // SAFETY: The allocation gave this test a send right to `client`.
+        assert!(unsafe { mach_release_send_right(client) });
+        let mut port_type = 0;
+        // SAFETY: `port_type` is a live local.
+        let lookup = unsafe { mach_port_type(task, client, &mut port_type) };
+        assert_ne!(lookup, KERN_SUCCESS);
+        // SAFETY: Nothing uses `reply` after this.
+        unsafe { mach_deallocate_reply_port(reply) };
+        // SAFETY: Nothing uses `server_port` after this.
+        unsafe { mach_deallocate_reply_port(server_port) };
     }
 }

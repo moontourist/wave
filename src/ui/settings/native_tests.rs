@@ -86,13 +86,16 @@ fn editable(view: &NSView) -> Option<Retained<objc2_app_kit::NSTextField>> {
 }
 fn change_text(field: &objc2_app_kit::NSTextField, text: &str) {
     field.setStringValue(&objc2_foundation::NSString::from_str(text));
-    unsafe {
-        let note = objc2_foundation::NSNotification::notificationWithName_object(
+    // SAFETY: A text-change notification takes the field as its object.
+    let note = unsafe {
+        objc2_foundation::NSNotification::notificationWithName_object(
             &objc2_foundation::NSString::from_str("NSControlTextDidChangeNotification"),
             Some(field),
-        );
-        let _: () = objc2::msg_send![&*field.delegate().unwrap(), controlTextDidChange: &*note];
-    }
+        )
+    };
+    let delegate = field.delegate().unwrap();
+    // SAFETY: The field's delegate implements controlTextDidChange:, which takes the notification.
+    let _: () = unsafe { objc2::msg_send![&*delegate, controlTextDidChange: &*note] };
 }
 
 pub fn run(ui: Ui) {
@@ -427,10 +430,10 @@ pub fn run(ui: Ui) {
                 frame,
                 "expanding displays preserves window size"
             );
-            unsafe {
-                spacing.performClick(None);
-                displays.performClick(None);
-            }
+            // SAFETY: A click with no sender is what a user's click sends.
+            unsafe { spacing.performClick(None) };
+            // SAFETY: As above.
+            unsafe { displays.performClick(None) };
             assert!(
                 named::<NSControl>(root, "Screen edges").is_none(),
                 "collapsed editors hide"

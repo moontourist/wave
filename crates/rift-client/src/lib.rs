@@ -811,18 +811,20 @@ mod tests {
             id: 17,
         };
         let mut storage = MaybeUninit::<InlineMessage>::uninit();
+        // SAFETY: The payload fits MAX_MESSAGE_SIZE.
         let header_ptr = unsafe { prepare_inline_send(&mut storage, header, payload) };
+        // SAFETY: `header_ptr` points at the header prepare_inline_send wrote.
+        let written = unsafe { header_ptr.read() };
+        assert_eq!(written.bits, 7);
+        assert_eq!(written.remote_port, 11);
+        assert_eq!(written.local_port, 13);
+        assert_eq!(written.id, 17);
+        assert_eq!(written.size as usize, size_of::<MachMessageHeader>() + 8);
 
-        unsafe {
-            assert_eq!((*header_ptr).bits, 7);
-            assert_eq!((*header_ptr).remote_port, 11);
-            assert_eq!((*header_ptr).local_port, 13);
-            assert_eq!((*header_ptr).id, 17);
-            assert_eq!((*header_ptr).size as usize, size_of::<MachMessageHeader>() + 8);
-
-            let data = addr_of_mut!((*storage.as_mut_ptr()).data).cast::<u8>();
-            assert_eq!(std::slice::from_raw_parts(data, 8), b"hello\0\0\0");
-        }
+        // SAFETY: `storage` holds the message, so projecting to its data field stays in bounds.
+        let data = unsafe { addr_of_mut!((*storage.as_mut_ptr()).data) }.cast::<u8>();
+        // SAFETY: prepare_inline_send initialized the payload and its padding, 8 bytes.
+        assert_eq!(unsafe { std::slice::from_raw_parts(data, 8) }, b"hello\0\0\0");
     }
 
     pub(super) const MACH_PORT_RIGHT_SEND: c_int = 0;
@@ -844,13 +846,15 @@ mod tests {
             id,
         };
         let mut storage = MaybeUninit::<InlineMessage>::uninit();
-        unsafe {
-            let message = prepare_inline_send(&mut storage, header, payload);
-            assert_eq!(
-                mach_msg(message, MACH_SEND_MSG, (*message).size, 0, 0, 0, 0),
-                KERN_SUCCESS
-            );
-        }
+        // SAFETY: Test payloads fit MAX_MESSAGE_SIZE.
+        let message = unsafe { prepare_inline_send(&mut storage, header, payload) };
+        // SAFETY: `message` points at the header prepare_inline_send wrote.
+        let size = unsafe { (*message).size };
+        // SAFETY: `message` is an initialized message of `size` bytes in `storage`.
+        assert_eq!(
+            unsafe { mach_msg(message, MACH_SEND_MSG, size, 0, 0, 0, 0) },
+            KERN_SUCCESS
+        );
     }
 
     /// Serves `count` requests on a fake Rift service port for this thread's clients.
@@ -871,11 +875,14 @@ mod tests {
                     unsafe { mach_msg(header, options, 0, size, port, 2_000, 0) },
                     KERN_SUCCESS
                 );
-                let (id, reply, len) =
-                    unsafe { ((*header).id, (*header).remote_port, (*header).size) };
+                // SAFETY: The receive filled `buffer`, which starts with the header.
+                let received = unsafe { header.read() };
+                let (id, reply, len) = (received.id, received.remote_port, received.size);
+                // SAFETY: The kernel wrote `len` bytes into `buffer`, the body right after the
+                // header.
                 let body = unsafe {
                     std::slice::from_raw_parts(
-                        header.add(1).cast::<u8>(),
+                        header.wrapping_add(1).cast::<u8>(),
                         len as usize - size_of::<MachMessageHeader>(),
                     )
                 };

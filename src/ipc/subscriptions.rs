@@ -363,9 +363,11 @@ mod tests {
             client
         };
         // Once every lease is gone, dropping the test's own reference frees the name.
-        let freed = |client| unsafe {
-            assert!(mach_release_send_right(client));
-            test_support::is_unused(client)
+        let freed = |client| {
+            // SAFETY: The test holds its own send right to `client`.
+            assert!(unsafe { mach_release_send_right(client) });
+            // SAFETY: Looking up a port name has no precondition.
+            unsafe { test_support::is_unused(client) }
         };
 
         // Dropping every subscription keeps the claims' watch.
