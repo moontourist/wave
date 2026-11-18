@@ -253,7 +253,7 @@ impl MissionControlActor {
             rx,
             tx,
             cache: None,
-            backgrounds: DesktopBackgrounds::new(mtm),
+            backgrounds: DesktopBackgrounds::default(),
             reactor,
             session: None,
             generation: 0,
@@ -299,6 +299,8 @@ impl MissionControlActor {
             session.retain_previews(&mut self.cache);
             drop(session);
         }
+        self.backgrounds.clear();
+        crate::sys::dispatch::release_free_memory_after(std::time::Duration::from_secs(1));
         self.input_tx
             .send(super::input::Request::SetMissionControlActive(false, Vec::new()));
         self.stack_line_tx.send(super::stack_line::Event::OverviewBounds(Vec::new()));
@@ -337,6 +339,7 @@ impl MissionControlActor {
             }
             Event::PumpPreviews => {
                 if let Some(session) = self.session.as_mut() {
+                    session.install_backgrounds(&mut self.backgrounds);
                     session.pump_previews();
                     if session.handoff_ready() {
                         // Native layout, stacking and focus have already been
@@ -383,6 +386,8 @@ impl MissionControlActor {
                     if self.settings.window_previews {
                         let _ = cgs::compositor::preview::PreviewCompositor::prepare();
                     }
+                    let tx = self.tx.clone();
+                    self.backgrounds.capture(self.mtm, move || tx.send(Event::PumpPreviews));
                     self.session = OverviewSession::new(
                         &self.reactor,
                         self.mtm,
@@ -396,6 +401,8 @@ impl MissionControlActor {
                             self.tx.clone(),
                             self.cache.as_mut(),
                         );
+                    } else {
+                        self.backgrounds.clear();
                     }
                     self.input_tx.send(super::input::Request::SetMissionControlActive(
                         self.session.is_some(),

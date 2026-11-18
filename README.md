@@ -45,6 +45,7 @@ Rust, using macOS's private SkyLight APIs for speed and Core Animation for the o
 ## Develop
 - `cargo test --workspace` runs the tests.
 - `scripts/audit.sh` checks a change against the code rules: no panics outside tests, documented single-operation `unsafe`, no unchecked casts. It prints nothing when the change is clean.
+- `scripts/sign-dev.sh` signs a release build with a local certificate, so macOS keeps wave's Accessibility and Screen Recording permissions across rebuilds. Make the certificate once: in Keychain Access, Certificate Assistant → Create a Certificate, name it `wave dev`, identity type Self Signed Root, certificate type Code Signing.
 - Format changed files with nightly rustfmt only: `rustfmt +nightly --edition 2024 <files>`. Stable `cargo fmt` skips the repo's unstable options and reformats everything.
 
 ## Roadmap
