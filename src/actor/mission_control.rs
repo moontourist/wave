@@ -147,8 +147,11 @@ fn merge_motion(event: &mut Event, next: Event) -> Result<(), Event> {
                 },
             ) =>
         {
-            let (windows, steps) = input.navigation().unwrap();
-            let (_, next_steps) = next.navigation().unwrap();
+            let (Some((windows, steps)), Some((_, next_steps))) =
+                (input.navigation(), next.navigation())
+            else {
+                return Err(Event::Input(next));
+            };
             let steps = steps.saturating_add(next_steps);
             *input = if windows {
                 Input::WindowSteps(steps)
@@ -360,8 +363,10 @@ impl MissionControlActor {
                     "Overview toggle"
                 );
                 if self.session.is_some() {
-                    if self.session.as_ref().is_some_and(OverviewSession::needs_handoff) {
-                        self.session.as_mut().unwrap().toggle();
+                    if let Some(session) =
+                        self.session.as_mut().filter(|session| session.needs_handoff())
+                    {
+                        session.toggle();
                     } else {
                         self.close();
                     }

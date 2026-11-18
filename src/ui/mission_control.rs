@@ -669,9 +669,10 @@ impl DisplayOverview {
             .iter()
             .map(|ws| ws.display_frame.size.height)
             .fold(info.frame.size.height, f64::max);
+        let origin = workspaces.get(origin_workspace)?;
         let selection = Selection {
-            workspace: workspaces[origin_workspace].index,
-            window: workspaces[origin_workspace].focused_window,
+            workspace: origin.index,
+            window: origin.focused_window,
         };
         let regions = workspaces
             .iter()
@@ -768,7 +769,8 @@ impl DisplayOverview {
             if !self.regions.iter().any(|r| r.id == ws.workspace_id) {
                 let slot = (0..=self.regions.len())
                     .find(|&i| !self.regions.iter().any(|r| r.origin.y == self.home_for_slot(i).y))
-                    .unwrap();
+                    // n regions fill at most n of these n + 1 slots, so one is always free.
+                    .unwrap_or(self.regions.len());
                 let mut origin = self.home_for_slot(slot);
                 origin.x = workspace_offset(ws, &self.info);
                 self.regions.push(WorkspaceRegion::new(ws, origin, &self.root, self.scale));
@@ -853,7 +855,7 @@ impl DisplayOverview {
             });
         } else {
             self.windows.sort_by_key(|w| {
-                previous_order.iter().position(|(id, _)| *id == w.data.id).unwrap()
+                previous_order.iter().position(|(id, _)| *id == w.data.id).unwrap_or(usize::MAX)
             });
         }
         for w in &self.windows {
@@ -904,8 +906,8 @@ impl DisplayOverview {
     }
 
     fn default_camera(&self) -> Camera {
-        let workspace = self.workspaces.iter().find(|w| w.is_active).unwrap_or(&self.workspaces[0]);
-        let origin = self.workspace_origin(workspace.index);
+        let workspace = self.workspaces.iter().find(|w| w.is_active).or(self.workspaces.first());
+        let origin = workspace.map_or(CGPoint::ZERO, |ws| self.workspace_origin(ws.index));
         Camera {
             zoom: OVERVIEW_ZOOM,
             position: CGPoint::new(
@@ -1131,7 +1133,7 @@ impl DisplayOverview {
         }
     }
 
-    fn animate(&mut self, to: Camera, duration: f64) {
+    fn animate(&mut self, to: Camera, duration: f64) -> &mut Motion {
         let now = Instant::now();
         let velocity = self.motion.as_ref().map(|motion| {
             let t =
@@ -1168,7 +1170,8 @@ impl DisplayOverview {
         });
         self.pictures.removeAnimationForKey(&NSString::from_str("camera"));
         self.pictures.setTransform(self.camera.transform());
-        self.motion = Some(Motion {
+        self.request_camera_frame();
+        self.motion.insert(Motion {
             from: self.camera,
             to,
             start: Instant::now(),
@@ -1176,8 +1179,7 @@ impl DisplayOverview {
             curve,
             submitted: false,
             completed: Arc::new(AtomicBool::new(false)),
-        });
-        self.request_camera_frame();
+        })
     }
 
     fn sample(&mut self, now: Instant) {
@@ -1272,7 +1274,8 @@ impl DisplayOverview {
         let viewport = CGRect::new(CGPoint::ZERO, self.bounds.size);
         let inventory_changed = self.sources.len() != self.windows.len()
             || self.windows.iter().zip(&self.sources).any(|(w, s)| {
-                w.data.info.sys_id.unwrap().as_u32() != s.window_id || w.data.id.pid != s.process_id
+                w.data.info.sys_id.map(|id| id.as_u32()) != Some(s.window_id)
+                    || w.data.id.pid != s.process_id
             });
         // Interactive camera updates can arrive at 120+ Hz. Reuse the current
         // capture sizes until input settles instead of reconfiguring SCStreams
@@ -1294,6 +1297,10 @@ impl DisplayOverview {
         let total_weight = self.windows.iter().map(&weight).sum::<usize>().max(1);
         self.sources.clear();
         for w in &self.windows {
+            // Windows without a window-server id never enter the scene.
+            let Some(sys_id) = w.data.info.sys_id else {
+                continue;
+            };
             let projected = camera.frame(w.world);
             let visible = intersects(projected, viewport) || self.dragged == Some(w.data.id);
             let important = selected == Some(w.data.id);
@@ -1312,7 +1319,7 @@ impl DisplayOverview {
             let width = (width as f64 * shrink).floor().max(1.) as usize;
             let height = (height as f64 * shrink).floor().max(1.) as usize;
             self.sources.push(cgs::compositor::preview::PreviewSource {
-                window_id: w.data.info.sys_id.unwrap().as_u32(),
+                window_id: sys_id.as_u32(),
                 process_id: w.data.id.pid,
                 mode: if visible {
                     cgs::compositor::preview::CaptureMode::Live
@@ -1679,7 +1686,7 @@ impl OverviewSession {
             "Spatial overview hosts created"
         );
         let d = displays.get(active)?;
-        let ws = d.workspaces.iter().find(|w| w.is_active).unwrap_or(&d.workspaces[0]);
+        let ws = d.workspaces.iter().find(|w| w.is_active).or(d.workspaces.first())?;
         let selection = Selection {
             workspace: ws.index,
             window: ws.focused_window,
@@ -1731,7 +1738,9 @@ impl OverviewSession {
             d.capture_pixels = pixels;
             start_display(d, enabled, &wake, cache.as_deref_mut());
         }
-        self.selection = self.displays[self.active].selection;
+        if let Some(d) = self.displays.get(self.active) {
+            self.selection = d.selection;
+        }
         self.change_selection(self.selection);
         // Cached IOSurfaces are already presentable. Submit the warm opening
         // before source inventory changes can initialize or resize captures.
@@ -1918,10 +1927,14 @@ impl OverviewSession {
             if workspaces.is_empty() {
                 continue;
             }
+            let Some(mtm) = MainThreadMarker::new() else {
+                tracing::error!("overview refresh ran off the main thread");
+                continue;
+            };
             if let Some(mut d) = DisplayOverview::new(
                 native.info.clone(),
                 workspaces,
-                MainThreadMarker::new().unwrap(),
+                mtm,
                 backgrounds.image(native.info.id.as_u32()),
             ) {
                 if let Some(wake) = &self.wake {
@@ -1999,7 +2012,9 @@ impl OverviewSession {
             d.update_sources(d.selection.window, true);
         }
         if self.drag.as_ref().is_some_and(|drag| {
-            !self.displays[drag.display].windows.iter().any(|w| w.data.id == drag.window)
+            self.displays
+                .get(drag.display)
+                .is_none_or(|d| !d.windows.iter().any(|w| w.data.id == drag.window))
                 || self.displays.iter().any(|d| d.workspaces.is_empty())
         }) && let Some(drag) = self.drag.take()
         {
@@ -2058,7 +2073,9 @@ impl OverviewSession {
     }
 
     fn activate(&mut self, dismiss: bool) -> Option<OverviewAction> {
-        let d = &mut self.displays[self.active];
+        let Some(d) = self.displays.get_mut(self.active) else {
+            return Some(OverviewAction::Dismiss);
+        };
         let chosen = if dismiss {
             d.windows.iter().find(|w| {
                 w.data.is_focused
@@ -2164,7 +2181,9 @@ impl OverviewSession {
             return;
         }
         let _tx = LayerTransaction::disabled().flush_on_commit();
-        let d = &self.displays[self.active];
+        let Some(d) = self.displays.get(self.active) else {
+            return;
+        };
         // Resolve one authoritative destination before submitting the close.
         // Scrolling translates the strip; its selected window anchors the camera.
         let target =
@@ -2204,7 +2223,9 @@ impl OverviewSession {
             "Overview close geometry prepared"
         );
         self.animate_exit_for(target, remaining);
-        let d = &mut self.displays[self.active];
+        let Some(d) = self.displays.get_mut(self.active) else {
+            return;
+        };
         let local_workspace = d
             .workspaces
             .iter()
@@ -2296,8 +2317,7 @@ impl OverviewSession {
             // An unchanged authoritative destination should not stop and restart
             // an already running close (especially on uninvolved displays).
             if !d.motion.as_ref().is_some_and(|motion| motion.to == destination) {
-                d.animate(destination, duration);
-                let motion = d.motion.as_mut().unwrap();
+                let motion = d.animate(destination, duration);
                 motion.start = now;
                 if !matches!(motion.curve, MotionCurve::Retarget(_)) {
                     motion.curve = MotionCurve::Smooth;
@@ -2347,8 +2367,12 @@ impl OverviewSession {
     }
 
     fn select_workspace(&mut self, index: usize) {
-        let d = &mut self.displays[self.active];
-        let ws = &d.workspaces[index];
+        let Some(d) = self.displays.get_mut(self.active) else {
+            return;
+        };
+        let Some(ws) = d.workspaces.get(index) else {
+            return;
+        };
         let selection = Selection {
             workspace: ws.index,
             window: ws.focused_window,
@@ -2363,8 +2387,12 @@ impl OverviewSession {
     }
 
     fn select(&mut self, index: usize) {
-        let d = &mut self.displays[self.active];
-        let w = &d.windows[index];
+        let Some(d) = self.displays.get_mut(self.active) else {
+            return;
+        };
+        let Some(w) = d.windows.get(index) else {
+            return;
+        };
         let selection = Selection {
             workspace: w.workspace_index,
             window: Some(w.data.id),
@@ -2397,8 +2425,7 @@ impl OverviewSession {
                 );
             }
             if let Some(duration) = duration {
-                d.animate(camera, duration);
-                d.motion.as_mut().unwrap().start = now;
+                d.animate(camera, duration).start = now;
             } else {
                 d.camera = camera;
             }
@@ -2408,10 +2435,14 @@ impl OverviewSession {
     }
 
     fn activate_display(&mut self, index: usize) {
-        if self.active != index {
-            self.displays[self.active].selection = self.selection;
+        if self.active != index
+            && let Some(selection) = self.displays.get(index).map(|d| d.selection)
+        {
+            if let Some(d) = self.displays.get_mut(self.active) {
+                d.selection = self.selection;
+            }
             self.active = index;
-            self.selection = self.displays[index].selection;
+            self.selection = selection;
         }
         for (i, d) in self.displays.iter().enumerate() {
             d.controls.setHidden(i != self.active);
@@ -2425,7 +2456,9 @@ impl OverviewSession {
     fn change_selection(&mut self, selection: Selection) {
         let previous = self.selection.window;
         self.selection = selection;
-        self.displays[self.active].selection = selection;
+        if let Some(d) = self.displays.get_mut(self.active) {
+            d.selection = selection;
+        }
         let selected = selection.window;
         for d in &mut self.displays {
             d.policy_dirty |= previous != selected;
@@ -2500,7 +2533,7 @@ impl OverviewSession {
                 if let Some(i) = self.displays.iter().position(|d| contains(d.bounds, point)) {
                     self.activate_display(i);
                 }
-                let d = &mut self.displays[self.active];
+                let d = self.displays.get_mut(self.active)?;
                 if matches!(input, Input::Zoom { .. }) {
                     let mut target = d.camera;
                     target.zoom_at((delta.y * 0.008).exp(), d.local(point));
@@ -2512,7 +2545,7 @@ impl OverviewSession {
                 }
             }
             Input::ZoomStep(step) => {
-                let d = &mut self.displays[self.active];
+                let d = self.displays.get_mut(self.active)?;
                 let pivot = self
                     .selection
                     .window
@@ -2534,7 +2567,7 @@ impl OverviewSession {
                 if let Some(i) = self.displays.iter().position(|d| contains(d.bounds, point)) {
                     self.activate_display(i);
                 }
-                let d = &mut self.displays[self.active];
+                let d = self.displays.get_mut(self.active)?;
                 let mut target = d.camera;
                 target.zoom_at(factor, d.local(point));
                 self.zoom_view(target, None);
@@ -2566,26 +2599,29 @@ impl OverviewSession {
                         }
                     });
                     if index != d.help_index {
-                        if let Some(i) = index {
-                            set_text(
-                                &d.help,
-                                [
-                                    "Zoom out · ⌘− · Pinch to zoom",
-                                    "Actual size · ⌘0",
-                                    "Zoom in · ⌘+ · Pinch to zoom",
-                                    "Fit workspace · ↑↓ switch workspace",
-                                    "Fit all workspaces · Scroll to explore",
-                                    "Open selected window · Return · ←→ select",
-                                    "Return to desktop · Escape",
-                                ][i],
-                            );
+                        if let Some(text) = index.and_then(|i| {
+                            [
+                                "Zoom out · ⌘− · Pinch to zoom",
+                                "Actual size · ⌘0",
+                                "Zoom in · ⌘+ · Pinch to zoom",
+                                "Fit workspace · ↑↓ switch workspace",
+                                "Fit all workspaces · Scroll to explore",
+                                "Open selected window · Return · ←→ select",
+                                "Return to desktop · Escape",
+                            ]
+                            .get(i)
+                            .copied()
+                        }) {
+                            set_text(&d.help, text);
                         }
                         d.help.setHidden(index.is_none());
                         d.help_index = index;
                     }
                 }
-                if self.drag.is_none() && self.pressed.is_none() {
-                    let d = &self.displays[self.active];
+                if self.drag.is_none()
+                    && self.pressed.is_none()
+                    && let Some(d) = self.displays.get(self.active)
+                {
                     let local = d.local(point);
                     if contains(d.bounds, point)
                         && !contains(d.controls.frame(), local)
@@ -2593,7 +2629,7 @@ impl OverviewSession {
                             .regions
                             .iter()
                             .any(|r| !r.label.isHidden() && contains(r.label.frame(), local))
-                        && let Some(w) = d.hit(point).map(|i| &d.windows[i])
+                        && let Some(w) = d.hit(point).and_then(|i| d.windows.get(i))
                         && Some(w.data.id) != self.selection.window
                     {
                         self.change_selection(Selection {
@@ -2610,14 +2646,13 @@ impl OverviewSession {
                 self.pressed = None;
                 if let Some(i) = self.displays.iter().position(|d| contains(d.bounds, point)) {
                     self.activate_display(i);
-                    let d = &self.displays[i];
+                    let d = self.displays.get(i)?;
                     if contains(d.controls.frame(), d.local(point))
                         || d.workspace_label_at(d.local(point)).is_some()
                     {
                         return None;
                     }
-                    if let Some(j) = d.hit(point) {
-                        let w = &d.windows[j];
+                    if let Some(w) = d.hit(point).and_then(|j| d.windows.get(j)) {
                         self.drag = Some(Drag {
                             window: w.data.id,
                             display: i,
@@ -2669,7 +2704,9 @@ impl OverviewSession {
                 if let Some(i) = self.displays.iter().position(|d| contains(d.bounds, point)) {
                     self.activate_display(i);
                 }
-                self.pressed = Some((point, self.displays[self.active].camera));
+                if let Some(d) = self.displays.get(self.active) {
+                    self.pressed = Some((point, d.camera));
+                }
                 NSCursor::closedHandCursor().set();
             }
             Input::EndPan(point) => {
@@ -2700,23 +2737,17 @@ impl OverviewSession {
                 } else if let Some(drag) = self.drag.take().filter(|d| d.moved) {
                     self.drop = self.drop_target(&drag, point).map(|(intent, _)| intent);
                     if self.drop.is_some() {
-                        let frame = self.displays[drag.display]
-                            .windows
-                            .iter()
-                            .find(|w| w.data.id == drag.window)
-                            .and_then(|w| {
-                                self.displays[drag.display]
-                                    .captures
-                                    .as_ref()?
-                                    .captured_frame(w.data.info.sys_id?.as_u32())
-                            });
+                        let frame = self.displays.get(drag.display).and_then(|d| {
+                            let w = d.windows.iter().find(|w| w.data.id == drag.window)?;
+                            d.captures.as_ref()?.captured_frame(w.data.info.sys_id?.as_u32())
+                        });
                         drag.indicator.removeFromSuperlayer();
                         self.pending_drop = Some((drag, frame));
                     } else {
                         self.end_drag(drag, true);
                     }
                 } else {
-                    let d = &mut self.displays[self.active];
+                    let d = self.displays.get_mut(self.active)?;
                     let p = d.local(point);
                     if contains(d.controls.frame(), p) {
                         let x = p.x - d.controls.frame().origin.x;
@@ -2740,7 +2771,7 @@ impl OverviewSession {
                                 .workspaces
                                 .iter()
                                 .find(|ws| ws.index == self.selection.workspace)
-                                .unwrap_or(&d.workspaces[0]);
+                                .or(d.workspaces.first())?;
                             let frame = d
                                 .windows
                                 .iter()
@@ -2773,7 +2804,7 @@ impl OverviewSession {
             }
             Input::SwitchWorkspace(ref selector) | Input::MoveToWorkspace(ref selector, _) => {
                 use crate::common::config::WorkspaceSelector;
-                let d = &self.displays[self.active];
+                let d = self.displays.get(self.active)?;
                 let current =
                     d.workspaces.iter().position(|ws| ws.index == self.selection.workspace)?;
                 let destination = match selector {
@@ -2791,7 +2822,7 @@ impl OverviewSession {
                 if matches!(input, Input::MoveToWorkspace(..)) {
                     self.drop = Some(OverviewDrop {
                         window: self.selection.window?,
-                        workspace: d.workspaces[destination].workspace_id,
+                        workspace: d.workspaces.get(destination)?.workspace_id,
                         target: None,
                         frame: d
                             .windows
@@ -2809,7 +2840,7 @@ impl OverviewSession {
             }
             Input::MoveNode(direction) | Input::ConsumeOrExpel(direction) => {
                 use crate::layout_engine::WindowDropAction;
-                let d = &self.displays[self.active];
+                let d = self.displays.get(self.active)?;
                 let source = d.windows.iter().find(|w| Some(w.data.id) == self.selection.window)?;
                 let workspace =
                     d.workspaces.iter().find(|ws| ws.index == source.workspace_index)?;
@@ -2824,7 +2855,7 @@ impl OverviewSession {
                 });
             }
             Input::Up | Input::Down | Input::WorkspaceSteps(_) => {
-                let d = &mut self.displays[self.active];
+                let d = self.displays.get(self.active)?;
                 let current = d
                     .workspaces
                     .iter()
@@ -2834,15 +2865,17 @@ impl OverviewSession {
                     Input::Up => -1,
                     Input::Down => 1,
                     Input::WorkspaceSteps(steps) => steps,
-                    _ => unreachable!(),
+                    // The enclosing arm admits only the three inputs above.
+                    _ => 0,
                 };
                 let next = (current as i64)
                     .saturating_add(steps)
-                    .clamp(0, d.workspaces.len() as i64 - 1) as usize;
+                    .clamp(0, (d.workspaces.len() as i64 - 1).max(0))
+                    as usize;
                 self.select_workspace(next);
             }
             Input::Left | Input::Right | Input::Cycle(_) | Input::WindowSteps(_) => {
-                let d = &self.displays[self.active];
+                let d = self.displays.get(self.active)?;
                 let ws = d.workspaces.iter().find(|ws| ws.index == self.selection.workspace)?;
                 let windows: Vec<_> = ws
                     .windows
@@ -2854,9 +2887,9 @@ impl OverviewSession {
                 if windows.is_empty() {
                     return None;
                 }
-                let current = windows
-                    .iter()
-                    .position(|&index| Some(d.windows[index].data.id) == self.selection.window);
+                let current = windows.iter().position(|&index| {
+                    d.windows.get(index).is_some_and(|w| Some(w.data.id) == self.selection.window)
+                });
                 let steps = match input {
                     Input::Right | Input::Cycle(true) => 1,
                     Input::WindowSteps(steps) => steps,
@@ -2867,14 +2900,16 @@ impl OverviewSession {
                     Some(index) => (index as i64 + steps % count).rem_euclid(count),
                     None => (steps - steps.signum()).rem_euclid(count),
                 } as usize;
-                self.select(windows[next]);
+                if let Some(&index) = windows.get(next) {
+                    self.select(index);
+                }
             }
             _ => {}
         }
-        if matches!(input, Input::Scroll { .. } | Input::Pan(_))
-            || (matches!(input, Input::PointerDrag(_)) && self.drag.is_none())
+        if (matches!(input, Input::Scroll { .. } | Input::Pan(_))
+            || (matches!(input, Input::PointerDrag(_)) && self.drag.is_none()))
+            && let Some(d) = self.displays.get(self.active)
         {
-            let d = &self.displays[self.active];
             let center = d
                 .camera
                 .unproject(CGPoint::new(d.bounds.size.width / 2., d.bounds.size.height / 2.));
@@ -2893,8 +2928,8 @@ impl OverviewSession {
         }
         if !matches!(input, Input::Move(_) | Input::PointerDown(_))
             && !(matches!(input, Input::PointerDrag(_)) && self.drag.is_some())
+            && let Some(d) = self.displays.get_mut(self.active)
         {
-            let d = &mut self.displays[self.active];
             d.request_camera_frame();
         }
         for d in &mut self.displays {
@@ -2906,8 +2941,9 @@ impl OverviewSession {
     }
 
     fn pan_to(&mut self, point: CGPoint) {
-        if let Some((start, camera)) = self.pressed {
-            let d = &mut self.displays[self.active];
+        if let Some((start, camera)) = self.pressed
+            && let Some(d) = self.displays.get_mut(self.active)
+        {
             d.camera = Camera {
                 zoom: camera.zoom,
                 position: CGPoint::new(
@@ -2934,7 +2970,10 @@ impl OverviewSession {
             .iter()
             .position(|d| contains(d.bounds, point))
             .unwrap_or(drag.destination);
-        let d = &self.displays[destination];
+        let Some(d) = self.displays.get(destination) else {
+            self.drag = Some(drag);
+            return;
+        };
         let zoom = d.camera.zoom;
         let frame = rect(
             point.x - d.bounds.origin.x - (drag.anchor.x - drag.original.origin.x) * zoom,
@@ -2948,10 +2987,11 @@ impl OverviewSession {
             drag.overlay.setFrame(CGRect::new(CGPoint::ZERO, d.bounds.size));
             d.root.addSublayer(&drag.overlay);
             let mut canvas = cgs::compositor::preview::PreviewLayer::new();
-            if let Some(owner) = &self.displays[drag.display].captures
-                && let Some(w) =
-                    self.displays[drag.display].windows.iter().find(|w| w.data.id == drag.window)
-                && let Some(frame) = owner.captured_frame(w.data.info.sys_id.unwrap().as_u32())
+            if let Some(source) = self.displays.get(drag.display)
+                && let Some(owner) = &source.captures
+                && let Some(w) = source.windows.iter().find(|w| w.data.id == drag.window)
+                && let Some(sys_id) = w.data.info.sys_id
+                && let Some(frame) = owner.captured_frame(sys_id.as_u32())
             {
                 canvas.set_surface_frame(&frame);
             }
@@ -2963,26 +3003,28 @@ impl OverviewSession {
             drag.overlay.addSublayer(canvas.layer());
             drag.canvas = Some(canvas);
             drag.overlay.addSublayer(&drag.badge);
-            let source = &mut self.displays[drag.display];
-            source.dragged = Some(drag.window);
-            source.invalidate_scene();
-            source.apply_camera(1.);
+            if let Some(source) = self.displays.get_mut(drag.display) {
+                source.dragged = Some(drag.window);
+                source.invalidate_scene();
+                source.apply_camera(1.);
+            }
         } else if let Some(canvas) = &drag.canvas {
             canvas.layer().setFrame(frame);
         }
-        if let Some((intent, marker)) = self.drop_target(&drag, point) {
-            self.displays[destination].root.addSublayer(&drag.indicator);
-            drag.indicator.setFrame(marker);
-            drag.indicator.setHidden(false);
-            if let Some(region) =
-                self.displays[destination].regions.iter().find(|r| r.id == intent.workspace)
-            {
-                region.label.setOpacity(1.);
+        let target = self.drop_target(&drag, point);
+        if let Some(d) = self.displays.get_mut(destination) {
+            if let Some((intent, marker)) = target {
+                d.root.addSublayer(&drag.indicator);
+                drag.indicator.setFrame(marker);
+                drag.indicator.setHidden(false);
+                if let Some(region) = d.regions.iter().find(|r| r.id == intent.workspace) {
+                    region.label.setOpacity(1.);
+                }
+            } else {
+                drag.indicator.setHidden(true);
             }
-        } else {
-            drag.indicator.setHidden(true);
+            d.request_camera_frame();
         }
-        self.displays[destination].request_camera_frame();
         drag.moved = true;
         drag.destination = destination;
         drag.frame = frame;
@@ -3008,8 +3050,7 @@ impl OverviewSession {
         if matches!(self.phase, Phase::Exiting { .. }) {
             self.interrupt();
             for d in &mut self.displays {
-                d.animate(d.home, self.duration);
-                d.motion.as_mut().unwrap().curve = MotionCurve::Enter;
+                d.animate(d.home, self.duration).curve = MotionCurve::Enter;
                 d.apply_camera(d.applied.map_or(1., |(_, opacity)| opacity));
             }
             self.phase = Phase::Entering;
@@ -3022,7 +3063,7 @@ impl OverviewSession {
         let Some(destination) = self.displays.iter().position(|d| contains(d.bounds, point)) else {
             return None;
         };
-        let d = &self.displays[destination];
+        let d = self.displays.get(destination)?;
         let world = d.camera.unproject(d.local(point));
         let ws = d
             .workspace_label_at(d.local(point))
@@ -3039,7 +3080,7 @@ impl OverviewSession {
         let Some(ws) = ws else {
             return None;
         };
-        let source = &self.displays[drag.display];
+        let source = self.displays.get(drag.display)?;
         let Some(w) = source.windows.iter().find(|w| w.data.id == drag.window) else {
             return None;
         };
@@ -3121,8 +3162,8 @@ impl OverviewSession {
                         }
                     }
                     for w in &mut d.windows {
-                        if let Some(frame) =
-                            captures.captured_frame(w.data.info.sys_id.unwrap().as_u32())
+                        if let Some(sys_id) = w.data.info.sys_id
+                            && let Some(frame) = captures.captured_frame(sys_id.as_u32())
                             && frame.process_id() == w.data.id.pid
                             && w.set_frame(&frame)
                         {
@@ -3152,8 +3193,7 @@ impl OverviewSession {
                 self.phase = Phase::Entering;
                 for d in &mut self.displays {
                     d.decoration_duration = self.fade_duration;
-                    d.animate(d.home, self.duration);
-                    let motion = d.motion.as_mut().unwrap();
+                    let motion = d.animate(d.home, self.duration);
                     motion.start = now;
                     motion.curve = MotionCurve::Enter;
                     d.background.setOpacity(1.);
@@ -3173,8 +3213,8 @@ impl OverviewSession {
         if drag_frame
             && let Some(drag) = &mut self.drag
             && drag.moved
+            && let Some(d) = self.displays.get_mut(drag.destination)
         {
-            let d = &mut self.displays[drag.destination];
             let y = d.local(drag.point).y;
             let edge = 64.;
             let velocity = if !contains(d.bounds, drag.point) {
@@ -3256,7 +3296,8 @@ impl OverviewSession {
                     tracing::warn!(?e, "Spatial capture update failed");
                 }
                 for w in &mut d.windows {
-                    if let Some(frame) = m.captured_frame(w.data.info.sys_id.unwrap().as_u32())
+                    if let Some(sys_id) = w.data.info.sys_id
+                        && let Some(frame) = m.captured_frame(sys_id.as_u32())
                         && w.set_frame(&frame)
                     {
                         w.shadow.setOpacity(1.);
@@ -3266,10 +3307,11 @@ impl OverviewSession {
         }
         for drag in self.drag.iter_mut().chain(self.pending_drop.iter_mut().map(|(d, _)| d)) {
             if let Some(canvas) = &mut drag.canvas
-                && let Some(owner) = &self.displays[drag.display].captures
-                && let Some(w) =
-                    self.displays[drag.display].windows.iter().find(|w| w.data.id == drag.window)
-                && let Some(frame) = owner.captured_frame(w.data.info.sys_id.unwrap().as_u32())
+                && let Some(source) = self.displays.get(drag.display)
+                && let Some(owner) = &source.captures
+                && let Some(w) = source.windows.iter().find(|w| w.data.id == drag.window)
+                && let Some(sys_id) = w.data.info.sys_id
+                && let Some(frame) = owner.captured_frame(sys_id.as_u32())
             {
                 canvas.set_surface_frame(&frame);
             }
@@ -3361,7 +3403,10 @@ impl OverviewSession {
         if !target_ready || self.displays.iter().any(|d| d.motion.is_some()) {
             return false;
         }
-        let d = &self.displays[self.active];
+        // With no display left there is nothing to wait for.
+        let Some(d) = self.displays.get(self.active) else {
+            return true;
+        };
         let ids: Vec<_> = d
             .windows
             .iter()
