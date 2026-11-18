@@ -21,7 +21,7 @@ impl Default for ConfigDocument {
     )]
     fn default() -> Self {
         Self {
-            document: include_str!("../../../rift.default.toml").parse().unwrap(),
+            document: include_str!("../../../wave.default.toml").parse().unwrap(),
         }
     }
 }

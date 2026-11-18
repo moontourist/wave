@@ -11,7 +11,7 @@ use cgs::text::{Label, SecondaryLabel};
 use cgs::view::NativeView;
 use cgs::window::{Popover, Sheet};
 use objc2::Message;
-use rift_protocol::{
+use wave_protocol::{
     CommandArgument as Arg, Direction, DisplaySelector, LayoutCommand as L, ReactorCommand as R,
     ResizeOrientation,
 };
@@ -35,7 +35,7 @@ const SECTIONS: [&str; 7] = [
     "Display",
     "Layout",
     "Overview",
-    "Rift",
+    "Wave",
 ];
 const OTHER: usize = 6;
 
@@ -77,7 +77,7 @@ fn key_glyph(key: &str) -> &str {
 /// A binding key as the recorder shows it, such as ⌃⌥←.
 fn shortcut(hotkey: &Hotkey) -> KeyShortcut {
     KeyShortcut {
-        modifiers: from_rift_modifiers(hotkey.modifiers),
+        modifiers: from_wave_modifiers(hotkey.modifiers),
         key: Key {
             code: (0..128)
                 .find(|code| {
@@ -99,20 +99,20 @@ const MODIFIER_NAMES: [(Modifiers, &str); 4] = [
     (Modifiers::Command, "Meta"),
 ];
 
-pub(super) fn to_rift_modifiers(flags: Modifiers) -> crate::sys::hotkey::Modifiers {
+pub(super) fn to_wave_modifiers(flags: Modifiers) -> crate::sys::hotkey::Modifiers {
     let mut result = crate::sys::hotkey::Modifiers::empty();
-    for (native, rift) in modifier_flags() {
+    for (native, wave) in modifier_flags() {
         if flags.contains(native) {
-            result.insert(rift);
+            result.insert(wave);
         }
     }
     result
 }
 
-pub(super) fn from_rift_modifiers(flags: crate::sys::hotkey::Modifiers) -> Modifiers {
+pub(super) fn from_wave_modifiers(flags: crate::sys::hotkey::Modifiers) -> Modifiers {
     let mut result = Modifiers::empty();
-    for (native, rift) in modifier_flags() {
-        if flags.intersects(rift) {
+    for (native, wave) in modifier_flags() {
+        if flags.intersects(wave) {
             result.insert(native);
         }
     }
@@ -392,7 +392,7 @@ impl Shortcuts {
             }
             let Some(key) = recorded_key(candidate) else {
                 let message =
-                    "Rift cannot assign this key. Choose a different key combination.".to_string();
+                    "Wave cannot assign this key. Choose a different key combination.".to_string();
                 report(&conflict_error, &Err(message.clone()));
                 return Some(message);
             };

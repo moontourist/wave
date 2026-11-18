@@ -12,8 +12,8 @@ pub mod cli_exec;
 pub mod protocol;
 pub mod subscriptions;
 
-pub use protocol::{RiftCommand, RiftRequest, RiftResponse};
-pub use rift_client::{ClientError as RiftMachClientError, RiftMachClient, RiftMachSubscription};
+pub use protocol::{WaveCommand, WaveRequest, WaveResponse};
+pub use wave_client::{ClientError as WaveMachClientError, WaveMachClient, WaveMachSubscription};
 
 use crate::actor::config as config_actor;
 use crate::actor::reactor::{self, Event};
@@ -27,7 +27,7 @@ use crate::sys::mach::{
 type ClientPort = u32;
 
 struct ConfigJob {
-    request: RiftRequest,
+    request: WaveRequest,
     destination: OwnedMachReply,
 }
 
@@ -72,7 +72,7 @@ pub fn run_mach_server(
 ) -> Result<SharedServerState, String> {
     if is_mach_server_registered() {
         return Err(
-            "Another Rift instance is already running; quit it before starting another.".into(),
+            "Another Wave instance is already running; quit it before starting another.".into(),
         );
     }
     let (response, result) = sync_channel(1);
@@ -95,7 +95,7 @@ pub(crate) fn install_mach_server(reactor: Rc<RefCell<reactor::Reactor>>, reques
     let result = (|| {
         if is_mach_server_registered() {
             return Err(
-                "Another Rift instance is already running; quit it before starting another.".into(),
+                "Another Wave instance is already running; quit it before starting another.".into(),
             );
         }
 
@@ -198,34 +198,34 @@ impl IpcRequestHandler {
         trace!(?request, client_port, "Handling IPC request");
 
         let response = match request {
-            request @ (RiftRequest::GetConfig
-            | RiftRequest::GetSettingsSource
-            | RiftRequest::ApplySettingsSource { .. }
-            | RiftRequest::ReloadSettingsSource
-            | RiftRequest::ExecuteCommand {
-                command: rift_protocol::RiftCommand::Config(_),
+            request @ (WaveRequest::GetConfig
+            | WaveRequest::GetSettingsSource
+            | WaveRequest::ApplySettingsSource { .. }
+            | WaveRequest::ReloadSettingsSource
+            | WaveRequest::ExecuteCommand {
+                command: wave_protocol::WaveCommand::Config(_),
             }) => {
                 self.dispatch_config_request(request, header);
                 return;
             }
-            RiftRequest::SetShortcutRecording { pid, recording } => {
+            WaveRequest::SetShortcutRecording { pid, recording } => {
                 crate::actor::input::set_shortcut_recording(pid, recording);
                 encode_success(())
             }
-            RiftRequest::InitializeSettings => {
+            WaveRequest::InitializeSettings => {
                 // Register first: every change after this point is either represented
                 // by the actor's snapshot or queued on the client's subscription port.
                 if !self.server_state.subscribe_client(
                     client_port,
-                    rift_protocol::EventKind::ConfigChanged.to_string(),
+                    wave_protocol::EventKind::ConfigChanged.to_string(),
                 ) {
                     send_error_response(header, "Failed to monitor subscription port");
                     return;
                 }
-                self.dispatch_config_request(RiftRequest::GetSettingsSource, header);
+                self.dispatch_config_request(WaveRequest::GetSettingsSource, header);
                 return;
             }
-            RiftRequest::Subscribe { event } => {
+            WaveRequest::Subscribe { event } => {
                 if self.server_state.subscribe_client(client_port, event.to_string()) {
                     encode_success(serde_json::json!({ "subscribed": event.to_string() }))
                 } else {
@@ -234,11 +234,11 @@ impl IpcRequestHandler {
                     }))
                 }
             }
-            RiftRequest::Unsubscribe { event } => {
+            WaveRequest::Unsubscribe { event } => {
                 self.server_state.unsubscribe_client(client_port, event.to_string());
                 encode_success(serde_json::json!({ "unsubscribed": event.to_string() }))
             }
-            RiftRequest::SubscribeCli { event, command, args } => {
+            WaveRequest::SubscribeCli { event, command, args } => {
                 self.server_state
                     .subscribe_cli(event.to_string(), command.clone(), args.clone());
                 encode_success(serde_json::json!({
@@ -247,14 +247,14 @@ impl IpcRequestHandler {
                     "args": args
                 }))
             }
-            RiftRequest::UnsubscribeCli { event } => {
+            WaveRequest::UnsubscribeCli { event } => {
                 self.server_state.unsubscribe_cli(event.to_string());
                 encode_success(serde_json::json!({ "cli_unsubscribed": event.to_string() }))
             }
-            RiftRequest::ListCliSubscriptions => {
+            WaveRequest::ListCliSubscriptions => {
                 encode_success(self.server_state.list_cli_subscriptions())
             }
-            RiftRequest::ClaimWindow { window_id, flags } => self.update_claims(
+            WaveRequest::ClaimWindow { window_id, flags } => self.update_claims(
                 client_port,
                 |reactor, owner| {
                     // A claim may only exist while its owner's port is watched.
@@ -265,7 +265,7 @@ impl IpcRequestHandler {
                 },
                 serde_json::json!({ "claimed": window_id }),
             ),
-            RiftRequest::ReleaseWindow { window_id } => self.update_claims(
+            WaveRequest::ReleaseWindow { window_id } => self.update_claims(
                 client_port,
                 |reactor, owner| reactor.release_window(window_id_from(window_id)?, owner),
                 serde_json::json!({ "released": window_id }),
@@ -278,7 +278,7 @@ impl IpcRequestHandler {
         send_encoded_response(header, &response);
     }
 
-    fn dispatch_config_request(&self, request: RiftRequest, header: &mut mach_msg_header_t) {
+    fn dispatch_config_request(&self, request: WaveRequest, header: &mut mach_msg_header_t) {
         // SAFETY: `header` is the live request header this handler was given.
         let Some(destination) = (unsafe { OwnedMachReply::retain(header) }) else {
             send_error_response(header, "Failed to retain IPC reply port");
@@ -299,20 +299,20 @@ impl IpcRequestHandler {
     }
 }
 
-fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest) -> Vec<u8> {
+fn encode_reactor_response(reactor: &mut reactor::Reactor, request: WaveRequest) -> Vec<u8> {
     match request {
-        RiftRequest::GetWorkspaces { space_id } => {
+        WaveRequest::GetWorkspaces { space_id } => {
             let workspaces =
                 reactor.query_workspaces(space_id.map(crate::sys::screen::SpaceId::new));
             encode_success(
                 workspaces
                     .into_iter()
-                    .map(rift_protocol::WorkspaceData::from)
+                    .map(wave_protocol::WorkspaceData::from)
                     .collect::<Vec<_>>(),
             )
         }
 
-        RiftRequest::GetWorkspacesForDisplay { display_uuid } => {
+        WaveRequest::GetWorkspacesForDisplay { display_uuid } => {
             let space = match query_space_for_display(reactor, &display_uuid) {
                 Ok(space) => space,
                 Err(response) => return response,
@@ -321,44 +321,44 @@ fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest)
             encode_success(
                 workspaces
                     .into_iter()
-                    .map(rift_protocol::WorkspaceData::from)
+                    .map(wave_protocol::WorkspaceData::from)
                     .collect::<Vec<_>>(),
             )
         }
 
-        RiftRequest::GetDisplays => {
+        WaveRequest::GetDisplays => {
             let displays = reactor.query_displays();
             encode_success(
-                displays.into_iter().map(rift_protocol::DisplayData::from).collect::<Vec<_>>(),
+                displays.into_iter().map(wave_protocol::DisplayData::from).collect::<Vec<_>>(),
             )
         }
 
-        RiftRequest::GetWindows { space_id } => {
+        WaveRequest::GetWindows { space_id } => {
             let windows = reactor.query_windows(space_id.map(crate::sys::screen::SpaceId::new));
             encode_success(
-                windows.into_iter().map(rift_protocol::WindowData::from).collect::<Vec<_>>(),
+                windows.into_iter().map(wave_protocol::WindowData::from).collect::<Vec<_>>(),
             )
         }
 
-        RiftRequest::GetWindowsForDisplay { display_uuid } => {
+        WaveRequest::GetWindowsForDisplay { display_uuid } => {
             let space = match query_space_for_display(reactor, &display_uuid) {
                 Ok(space) => space,
                 Err(response) => return response,
             };
             let windows = reactor.query_windows(Some(space));
             encode_success(
-                windows.into_iter().map(rift_protocol::WindowData::from).collect::<Vec<_>>(),
+                windows.into_iter().map(wave_protocol::WindowData::from).collect::<Vec<_>>(),
             )
         }
 
-        RiftRequest::GetWindowInfo { window_id } => {
+        WaveRequest::GetWindowInfo { window_id } => {
             match window_id_from(window_id).ok().and_then(|id| reactor.query_window_info(id)) {
-                Some(window) => encode_success(rift_protocol::WindowData::from(window)),
+                Some(window) => encode_success(wave_protocol::WindowData::from(window)),
                 None => encode_error(serde_json::json!({ "message": "Window not found" })),
             }
         }
 
-        RiftRequest::GetLayoutState { space_id, workspace_id } => {
+        WaveRequest::GetLayoutState { space_id, workspace_id } => {
             match reactor.query_layout_state(space_id, workspace_id) {
                 Some(layout_state) => encode_success(layout_state),
                 None => {
@@ -367,7 +367,7 @@ fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest)
             }
         }
 
-        RiftRequest::GetLayoutStateForDisplay { display_uuid, workspace_id } => {
+        WaveRequest::GetLayoutStateForDisplay { display_uuid, workspace_id } => {
             let space = match query_space_for_display(reactor, &display_uuid) {
                 Ok(space) => space,
                 Err(response) => return response,
@@ -378,7 +378,7 @@ fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest)
             }
         }
 
-        RiftRequest::GetWorkspaceLayouts { space_id, workspace_id } => {
+        WaveRequest::GetWorkspaceLayouts { space_id, workspace_id } => {
             let workspace_layouts = reactor.query_workspace_layouts(
                 space_id.map(crate::sys::screen::SpaceId::new),
                 workspace_id,
@@ -386,7 +386,7 @@ fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest)
             encode_success(workspace_layouts)
         }
 
-        RiftRequest::GetWorkspaceLayoutsForDisplay { display_uuid, workspace_id } => {
+        WaveRequest::GetWorkspaceLayoutsForDisplay { display_uuid, workspace_id } => {
             let space = match query_space_for_display(reactor, &display_uuid) {
                 Ok(space) => space,
                 Err(response) => return response,
@@ -394,36 +394,36 @@ fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest)
             encode_success(reactor.query_workspace_layouts(Some(space), workspace_id))
         }
 
-        RiftRequest::GetApplications => {
+        WaveRequest::GetApplications => {
             let applications = reactor.query_applications();
             encode_success(applications)
         }
 
-        RiftRequest::GetBindingMode => encode_success(&reactor.binding_mode),
-        RiftRequest::SetShortcutRecording { .. } => {
+        WaveRequest::GetBindingMode => encode_success(&reactor.binding_mode),
+        WaveRequest::SetShortcutRecording { .. } => {
             encode_error(serde_json::json!({ "message": "recording leases bypass the reactor" }))
         }
 
-        RiftRequest::GetMetrics => encode_success(reactor.query_metrics()),
+        WaveRequest::GetMetrics => encode_success(reactor.query_metrics()),
 
-        RiftRequest::GetConfig
-        | RiftRequest::GetSettingsSource
-        | RiftRequest::ApplySettingsSource { .. }
-        | RiftRequest::ReloadSettingsSource => {
+        WaveRequest::GetConfig
+        | WaveRequest::GetSettingsSource
+        | WaveRequest::ApplySettingsSource { .. }
+        | WaveRequest::ReloadSettingsSource => {
             encode_error(serde_json::json!({ "message": "config requests run on config workers" }))
         }
 
-        RiftRequest::ExecuteCommand { command } => match command {
-            rift_protocol::RiftCommand::Config(_) => encode_error(
+        WaveRequest::ExecuteCommand { command } => match command {
+            wave_protocol::WaveCommand::Config(_) => encode_error(
                 serde_json::json!({ "message": "config requests run on config workers" }),
             ),
-            rift_protocol::RiftCommand::Layout(command) => {
+            wave_protocol::WaveCommand::Layout(command) => {
                 handle_reactor_command(reactor, crate::model::reactor::Command::Layout(command))
             }
-            rift_protocol::RiftCommand::Metrics(command) => {
+            wave_protocol::WaveCommand::Metrics(command) => {
                 handle_reactor_command(reactor, crate::model::reactor::Command::Metrics(command))
             }
-            rift_protocol::RiftCommand::Reactor(command) => {
+            wave_protocol::WaveCommand::Reactor(command) => {
                 handle_reactor_command(reactor, crate::model::reactor::Command::Reactor(command))
             }
         },
@@ -432,7 +432,7 @@ fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest)
 }
 
 fn window_id_from(
-    id: rift_protocol::WindowId,
+    id: wave_protocol::WindowId,
 ) -> Result<crate::actor::app::WindowId, &'static str> {
     std::num::NonZeroU32::new(id.idx)
         .map(|idx| crate::actor::app::WindowId { pid: id.pid, idx })
@@ -491,17 +491,17 @@ impl ConfigRequestHandler {
         })
     }
 
-    fn handle_request(&self, request: RiftRequest) -> Vec<u8> {
+    fn handle_request(&self, request: WaveRequest) -> Vec<u8> {
         match request {
-            RiftRequest::GetConfig => match self.perform(config_actor::Event::QueryConfig) {
+            WaveRequest::GetConfig => match self.perform(config_actor::Event::QueryConfig) {
                 Ok(config) => encode_success(config),
                 Err(error) => encode_error(serde_json::json!({
                     "message": "Failed to get config response",
                     "details": error,
                 })),
             },
-            RiftRequest::ExecuteCommand {
-                command: rift_protocol::RiftCommand::Config(command),
+            WaveRequest::ExecuteCommand {
+                command: wave_protocol::WaveCommand::Config(command),
             } => match self
                 .perform(|response| config_actor::Event::ApplyConfig { cmd: command, response })
             {
@@ -511,13 +511,13 @@ impl ConfigRequestHandler {
                     "message": format!("Failed to apply config: {error}"),
                 })),
             },
-            RiftRequest::GetSettingsSource => {
+            WaveRequest::GetSettingsSource => {
                 Self::snapshot(self.perform(config_actor::Event::QuerySource))
             }
-            RiftRequest::ReloadSettingsSource => {
+            WaveRequest::ReloadSettingsSource => {
                 Self::snapshot(self.perform(config_actor::Event::ReloadSource))
             }
-            RiftRequest::ApplySettingsSource { expected_revision, source } => {
+            WaveRequest::ApplySettingsSource { expected_revision, source } => {
                 match serde_json::from_value(source) {
                     Ok(source) => {
                         Self::snapshot(self.perform(|response| config_actor::Event::ApplySource {
@@ -607,14 +607,14 @@ fn send_error_response(header: &mut mach_msg_header_t, message: &str) {
 }
 
 fn encode_success<T: Serialize>(data: T) -> Vec<u8> {
-    encode_response(&RiftResponse::Success { data })
+    encode_response(&WaveResponse::Success { data })
 }
 
 fn encode_error(error: serde_json::Value) -> Vec<u8> {
-    encode_response::<serde_json::Value>(&RiftResponse::Error { error })
+    encode_response::<serde_json::Value>(&WaveResponse::Error { error })
 }
 
-fn encode_response<T: Serialize>(response: &RiftResponse<T>) -> Vec<u8> {
+fn encode_response<T: Serialize>(response: &WaveResponse<T>) -> Vec<u8> {
     let mut response_json = match serde_json::to_vec(response) {
         Ok(response) => response,
         Err(error) => {

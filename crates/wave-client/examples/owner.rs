@@ -1,12 +1,12 @@
 //! Claim one tracked window until this process exits.
 //!
-//! cargo run -p rift-client --example owner -- --window-id 12312312
-//! cargo run -p rift-client --example owner -- --window-id 1234:1
+//! cargo run -p wave-client --example owner -- --window-id 12312312
+//! cargo run -p wave-client --example owner -- --window-id 1234:1
 
 use std::error::Error;
 use std::sync::mpsc;
 
-use rift_client::{RiftMachClient, WindowId};
+use wave_client::{WaveMachClient, WindowId};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("unexpected extra argument".into());
     }
 
-    let client = RiftMachClient::connect()?;
+    let client = WaveMachClient::connect()?;
     let window_id = if let Some((pid, idx)) = raw_id.split_once(':') {
         WindowId::new(pid.parse()?, idx.parse()?).ok_or("window idx must be nonzero")?
     } else {

@@ -1,8 +1,8 @@
-use rift_protocol as protocol;
 use serde::de::Deserializer;
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use wave_protocol as protocol;
 
 use crate::actor::app::WindowId;
 use crate::sys::app::WindowInfo;
@@ -12,7 +12,7 @@ use crate::sys::window_server::WindowServerId;
 
 /// Runtime-only workspace projection. Its windows retain the macOS
 /// accessibility metadata needed by the UI; IPC uses the protocol-owned
-/// `rift_protocol::WorkspaceData` representation.
+/// `wave_protocol::WorkspaceData` representation.
 #[derive(Debug, Clone)]
 pub struct RuntimeWorkspaceData {
     pub workspace_id: crate::model::VirtualWorkspaceId,
@@ -47,15 +47,15 @@ pub struct RuntimeWindowData {
 #[derive(Debug, Clone)]
 pub struct RuntimeDisplayData {
     pub info: ScreenInfo,
-    /// True if macOS reports this display's current space as visible, even when Rift is disabled.
+    /// True if macOS reports this display's current space as visible, even when Wave is disabled.
     pub is_visible_space: bool,
-    /// True if this display's current space is enabled for Rift management.
+    /// True if this display's current space is enabled for Wave management.
     pub is_active_space: bool,
-    /// True if this display corresponds to the context Rift uses when no space_id is provided
+    /// True if this display corresponds to the context Wave uses when no space_id is provided
     pub is_active_context: bool,
-    /// Visible space ids enabled for Rift management on this display (empty if none).
+    /// Visible space ids enabled for Wave management on this display (empty if none).
     pub active_space_ids: Vec<u64>,
-    /// Space ids not currently managed: hidden spaces and visible spaces with Rift disabled.
+    /// Space ids not currently managed: hidden spaces and visible spaces with Wave disabled.
     pub inactive_space_ids: Vec<u64>,
 }
 

@@ -35,7 +35,7 @@ impl SettingsSidebar {
             })
             .collect();
         let navigation = SettingsNavigation::new(ui, destinations, select);
-        navigation.identifier("rift.settings.navigation");
+        navigation.identifier("wave.settings.navigation");
         navigation.accessibility_label("Settings categories");
         Self { navigation }
     }

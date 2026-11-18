@@ -170,7 +170,7 @@ impl Control {
         }
         *owner = Ownership {
             session: context.session,
-            owner: Owner::Rift,
+            owner: Owner::Wave,
             consume: context.consume,
             touching: true,
             dock_owner: owner.dock_owner,
@@ -421,7 +421,7 @@ impl DeviceSession {
                             // placement noise to resolve into horizontal intent.
                             return;
                         } else if control.claim(c) {
-                            self.owner = Owner::Rift;
+                            self.owner = Owner::Wave;
                             tracing::debug!(session = c.session, space = ?c.space, scrolling = c.action.scrolling, fingers = c.action.fingers, "gesture claimed");
                             if c.action.scrolling {
                                 self.claim_x = x;
@@ -437,7 +437,7 @@ impl DeviceSession {
                             self.owner = Owner::System;
                         }
                     }
-                    if self.owner != Owner::Rift {
+                    if self.owner != Owner::Wave {
                         return;
                     }
                     let total_x = (x - if c.action.scrolling {
@@ -540,7 +540,7 @@ impl DeviceInput {
                 && routing.enabled
             {
                 let consume = s.context.consume
-                    && (count == s.recognizer.required_finger_count || s.owner == Owner::Rift);
+                    && (count == s.recognizer.required_finger_count || s.owner == Owner::Wave);
                 let mut owner = control.owner.lock();
                 if owner.session == s.sample.session && owner.owner == Owner::System {
                     s.owner = Owner::System;
@@ -661,7 +661,7 @@ mod tests {
             DeviceInput::deliver(&other, multitouch::ContactEvent::Frame(&frame(2, 0.1, 0.5)));
         }
         DeviceInput::deliver(&other, multitouch::ContactEvent::Stopped);
-        assert_eq!(control.owner.lock().owner, Owner::Rift);
+        assert_eq!(control.owner.lock().owner, Owner::Wave);
         assert!(control.owner.lock().touching);
         assert!(rx.try_recv().is_err());
         DeviceInput::deliver(&input, multitouch::ContactEvent::Stopped);
@@ -743,7 +743,7 @@ mod tests {
             rx.try_recv().unwrap().1,
             Event::Gesture(Lifecycle::Begin { .. })
         ));
-        assert_eq!(control.owner.lock().owner, Owner::Rift);
+        assert_eq!(control.owner.lock().owner, Owner::Wave);
         assert_eq!(
             control.latest(control.routing.lock().ui_session).unwrap().total_x,
             0.0
@@ -963,7 +963,7 @@ mod tests {
             Event::Gesture(Lifecycle::Begin { .. })
         ));
         s.frame(&frame(3, 0.37, 0.6), 3, Duration::from_millis(20), &tx, &c);
-        assert_eq!(s.owner, Owner::Rift); // committed direction ignores later wobble
+        assert_eq!(s.owner, Owner::Wave); // committed direction ignores later wobble
         assert!((c.latest(1).unwrap().total_x + 0.08).abs() < 1e-6);
         assert!(rx.try_recv().is_err()); // no per-frame actor traffic
         s.frame(&frame(4, 0.37, 0.6), 4, Duration::from_millis(30), &tx, &c);
@@ -1039,7 +1039,7 @@ mod tests {
             );
             s.frame(&frame(3, 0.41, 0.405), 3, Duration::from_millis(500), &tx, &c);
             s.frame(&frame(3, 0.5, 0.405), 3, Duration::from_secs(5), &tx, &c);
-            assert_eq!(s.owner, Owner::Rift);
+            assert_eq!(s.owner, Owner::Wave);
             let event = rx.try_recv().unwrap().1;
             assert!(
                 matches!(event, Event::Gesture(Lifecycle::Begin { .. })) && scrolling
@@ -1080,7 +1080,7 @@ mod tests {
     }
     #[test]
     fn dock_delivery_prevents_a_late_physical_claim() {
-        for native_owner in [Owner::System, Owner::Rift] {
+        for native_owner in [Owner::System, Owner::Wave] {
             let (mut s, c, tx, mut rx) = setup(true);
             c.ownership_guard().dock_owner = Some(native_owner);
             s.frame(&frame(3, 0.5, 0.5), 3, Duration::ZERO, &tx, &c);
@@ -1088,7 +1088,7 @@ mod tests {
             if native_owner == Owner::System {
                 assert!(
                     rx.try_recv().is_err(),
-                    "Dock and Rift must not both handle a stroke"
+                    "Dock and Wave must not both handle a stroke"
                 );
             } else {
                 assert!(

@@ -13,7 +13,7 @@ use crate::common::collections::HashMap;
 use crate::common::config::{self as config, Config};
 use crate::common::log::{MetricsCommand, handle_command as handle_metrics_command};
 use crate::layout_engine::{LayoutCommand, LayoutEvent};
-use crate::model::RiftState;
+use crate::model::WaveState;
 use crate::model::space_activation::{
     SpaceActivationConfig, SpaceActivationPolicy, ToggleSpaceContext,
 };
@@ -30,7 +30,7 @@ pub struct LayoutCommandPayload {
 }
 
 pub fn handle_command_layout(
-    state: &mut RiftState,
+    state: &mut WaveState,
     layout: &mut LayoutManager,
     workspace_switch: &mut WorkspaceSwitchManager,
     payload: LayoutCommandPayload,
@@ -192,7 +192,7 @@ pub fn handle_command_layout(
 /// One physical placement boundary for commands, rules, and topology recovery.
 /// Logical membership has already been committed by the workspace model.
 pub(in crate::actor::reactor) fn request_window_transfer(
-    state: &mut RiftState,
+    state: &mut WaveState,
     layout: &mut LayoutManager,
     window: WindowId,
     target: SpaceId,
@@ -210,7 +210,7 @@ pub(in crate::actor::reactor) fn request_window_transfer(
 }
 
 fn current_floating_positions(
-    state: &RiftState,
+    state: &WaveState,
     layout: &LayoutManager,
     space: SpaceId,
 ) -> Vec<(WindowId, objc2_core_foundation::CGRect)> {
@@ -228,7 +228,7 @@ fn current_floating_positions(
         .collect()
 }
 
-fn store_current_floating_positions(state: &RiftState, layout: &mut LayoutManager, space: SpaceId) {
+fn store_current_floating_positions(state: &WaveState, layout: &mut LayoutManager, space: SpaceId) {
     let positions = current_floating_positions(state, layout, space);
     if !positions.is_empty() {
         layout.layout_engine.store_floating_window_positions(space, &positions);
@@ -267,7 +267,7 @@ pub fn handle_close_window(
 pub fn handle_config_updated(
     config: &mut Config,
     layout: &mut LayoutManager,
-    state: &RiftState,
+    state: &WaveState,
     drag: &mut DragManager,
     new_config: Config,
 ) -> anyhow::Result<EventOutcome> {
@@ -326,23 +326,23 @@ pub fn handle_command_reactor_serialize(
 }
 
 pub fn handle_command_reactor_save_and_exit(
-    state: &RiftState,
+    state: &WaveState,
     layout: &LayoutManager,
     active_space: Option<SpaceId>,
 ) -> anyhow::Result<EventOutcome> {
     if let Err(e) = save_layout(state, layout, config::restore_file(), active_space) {
         error!("Could not save master file: {e}");
-        // A quit request is conditional on a durable master save. Keep Rift running when the
+        // A quit request is conditional on a durable master save. Keep Wave running when the
         // snapshot cannot be committed so the user can fix the filesystem problem or retry
         // without losing the only complete in-memory layout.
         return Ok(EventOutcome::no_change()
-            .with_stdout_line(format!("Could not save master file; Rift is still running: {e}")));
+            .with_stdout_line(format!("Could not save master file; Wave is still running: {e}")));
     }
     std::process::exit(0);
 }
 
 fn save_layout(
-    state: &RiftState,
+    state: &WaveState,
     layout: &LayoutManager,
     path: std::path::PathBuf,
     active_space: Option<SpaceId>,
@@ -351,7 +351,7 @@ fn save_layout(
 }
 
 pub fn handle_command_reactor_save_layout(
-    state: &RiftState,
+    state: &WaveState,
     layout: &LayoutManager,
     path: std::path::PathBuf,
     active_space: Option<SpaceId>,
@@ -387,7 +387,7 @@ pub fn handle_command_reactor_toggle_space_activated(
         )
         .first()
         .is_some_and(Option::is_some);
-    info!(?space, display_uuid = ?payload.display_uuid, enabled, "Toggled Rift space management");
+    info!(?space, display_uuid = ?payload.display_uuid, enabled, "Toggled Wave space management");
     Ok(EventOutcome::layout_changed(false).with_active_space_recompute())
 }
 
@@ -463,7 +463,7 @@ pub fn handle_focus_display(
 }
 
 pub fn handle_command_reactor_focus_window(
-    state: &RiftState,
+    state: &WaveState,
     apps: &AppManager,
     payload: FocusWindowPayload,
 ) -> anyhow::Result<EventOutcome> {
@@ -507,7 +507,7 @@ pub struct MoveWorkspaceToDisplayPayload {
 }
 
 pub fn handle_command_reactor_move_workspace_to_display(
-    state: &mut RiftState,
+    state: &mut WaveState,
     layout: &mut LayoutManager,
     workspace_switch: &mut WorkspaceSwitchManager,
     payload: MoveWorkspaceToDisplayPayload,

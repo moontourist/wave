@@ -47,7 +47,7 @@ pub fn handle_application_terminated(pid: i32) -> anyhow::Result<EventOutcome> {
 }
 
 pub fn handle_application_thread_terminated(
-    state: &mut crate::model::RiftState,
+    state: &mut crate::model::WaveState,
     apps: &mut AppManager,
     pid: i32,
 ) -> anyhow::Result<EventOutcome> {
@@ -71,7 +71,7 @@ pub fn handle_application_activated(
     if quiet == Quiet::Yes {
         debug!(
             pid,
-            "Skipping auto workspace switch for quiet app activation (initiated by Rift)"
+            "Skipping auto workspace switch for quiet app activation (initiated by Wave)"
         );
         return Ok(EventOutcome::no_change());
     }

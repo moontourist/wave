@@ -1,9 +1,9 @@
 # Config schema derives
 
-Rift's config doc comments are the source of Settings help. `ConfigSchema`
+Wave's config doc comments are the source of Settings help. `ConfigSchema`
 generates static field metadata and typed read/write functions at compile time;
 there is no source parsing, reflection, or config-to-JSON conversion at runtime.
-It is currently intended for named, non-generic Rift config structs.
+It is currently intended for named, non-generic Wave config structs.
 
 ```rust
 #[derive(ConfigSchema)]
@@ -35,7 +35,7 @@ pub struct Example {
 - `#[setting(choices)]` uses the field enum's `ConfigEnum` metadata for a native
   popup. `ConfigEnum` derives labels and documentation from unit variants and
   allows `#[setting(label = "…")]` on variants. It works on protocol enums too,
-  without depending on Rift or AppKit. Serde names and aliases are unaffected.
+  without depending on Wave or AppKit. Serde names and aliases are unaffected.
 - `aliases` adds search terms alongside the field name and doc text.
 - `group` selects a section; a struct-level group supplies the default for new
   fields. Source declaration order controls row order.

@@ -119,7 +119,7 @@ pub struct WindowData {
     pub title: String,
     pub frame: Rect,
     pub is_floating: bool,
-    /// Claimed by an external window manager and excluded from Rift's layout.
+    /// Claimed by an external window manager and excluded from Wave's layout.
     #[serde(default)]
     pub externally_managed: bool,
     pub is_focused: bool,
@@ -184,7 +184,7 @@ pub struct LayoutStateData {
     pub container_tree: ContainerTreeNode,
 }
 
-/// The type of a node in Rift's normalized layout topology.
+/// The type of a node in Wave's normalized layout topology.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerNodeType {
@@ -231,18 +231,18 @@ pub struct DisplayData {
     #[serde(default = "unit_scale")]
     pub backing_scale: f64,
     pub space: Option<u64>,
-    /// Whether macOS reports `space` as visible, independent of Rift management.
+    /// Whether macOS reports `space` as visible, independent of Wave management.
     /// Older servers omit this field; it defaults to false (visibility unknown).
     #[serde(default)]
     pub is_visible_space: bool,
-    /// Whether the visible space is enabled for Rift management.
+    /// Whether the visible space is enabled for Wave management.
     pub is_active_space: bool,
     /// The display targeted by commands without an explicit space id.
     /// Can be true when management is disabled, so toggling can re-enable it.
     pub is_active_context: bool,
-    /// Visible space ids enabled for Rift management.
+    /// Visible space ids enabled for Wave management.
     pub active_space_ids: Vec<u64>,
-    /// Hidden space ids and visible space ids with Rift management disabled.
+    /// Hidden space ids and visible space ids with Wave management disabled.
     pub inactive_space_ids: Vec<u64>,
 }
 

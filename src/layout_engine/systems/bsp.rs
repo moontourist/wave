@@ -1567,12 +1567,12 @@ impl LayoutSystem for BspLayoutSystem {
         }
     }
 
-    fn container_tree(&self, layout: LayoutId) -> rift_protocol::ContainerTreeNode {
+    fn container_tree(&self, layout: LayoutId) -> wave_protocol::ContainerTreeNode {
         fn snapshot(
             system: &BspLayoutSystem,
             node: NodeId,
             selected: NodeId,
-        ) -> rift_protocol::ContainerTreeNode {
+        ) -> wave_protocol::ContainerTreeNode {
             let weight = node.parent(&system.tree.map).and_then(|parent| {
                 let NodeKind::Split { ratio, .. } = system.kind.get(parent)? else {
                     return None;
@@ -1586,11 +1586,11 @@ impl LayoutSystem for BspLayoutSystem {
             });
 
             match system.kind.get(node) {
-                Some(NodeKind::Split { orientation, .. }) => rift_protocol::ContainerTreeNode {
+                Some(NodeKind::Split { orientation, .. }) => wave_protocol::ContainerTreeNode {
                     node_id: node.data().as_ffi(),
-                    node_type: rift_protocol::ContainerNodeType::Container,
+                    node_type: wave_protocol::ContainerNodeType::Container,
                     frame: Default::default(),
-                    layout_kind: Some(rift_protocol::LayoutKind::from(*orientation)),
+                    layout_kind: Some(wave_protocol::LayoutKind::from(*orientation)),
                     weight,
                     window_id: None,
                     is_selected: node == selected,
@@ -1611,17 +1611,17 @@ impl LayoutSystem for BspLayoutSystem {
                 }) => {
                     let members = system.stacks.get(&node);
                     let stacked = members.is_some();
-                    rift_protocol::ContainerTreeNode {
+                    wave_protocol::ContainerTreeNode {
                         node_id: node.data().as_ffi(),
                         node_type: if stacked {
-                            rift_protocol::ContainerNodeType::Container
+                            wave_protocol::ContainerNodeType::Container
                         } else if window.is_some() {
-                            rift_protocol::ContainerNodeType::Window
+                            wave_protocol::ContainerNodeType::Window
                         } else {
-                            rift_protocol::ContainerNodeType::Placeholder
+                            wave_protocol::ContainerNodeType::Placeholder
                         },
                         frame: Default::default(),
-                        layout_kind: stacked.then_some(rift_protocol::LayoutKind::HorizontalStack),
+                        layout_kind: stacked.then_some(wave_protocol::LayoutKind::HorizontalStack),
                         weight,
                         window_id: if stacked {
                             None
@@ -1636,10 +1636,10 @@ impl LayoutSystem for BspLayoutSystem {
                         children: members.map_or_else(Vec::new, |members| {
                             members
                                 .iter()
-                                .map(|member| rift_protocol::ContainerTreeNode {
+                                .map(|member| wave_protocol::ContainerTreeNode {
                                     node_id: (u64::from(member.pid as u32) << 32)
                                         | u64::from(member.idx.get()),
-                                    node_type: rift_protocol::ContainerNodeType::Window,
+                                    node_type: wave_protocol::ContainerNodeType::Window,
                                     frame: Default::default(),
                                     layout_kind: None,
                                     weight: None,
@@ -1657,7 +1657,7 @@ impl LayoutSystem for BspLayoutSystem {
                 }
                 None => {
                     tracing::error!(?node, "BSP node has no metadata");
-                    rift_protocol::ContainerTreeNode {
+                    wave_protocol::ContainerTreeNode {
                         node_id: node.data().as_ffi(),
                         weight,
                         ..Default::default()
@@ -1667,7 +1667,7 @@ impl LayoutSystem for BspLayoutSystem {
         }
 
         let Some(state) = self.layouts.get(layout) else {
-            return rift_protocol::ContainerTreeNode::default();
+            return wave_protocol::ContainerTreeNode::default();
         };
         let selected = self.tree.data.selection.current_selection(state.root);
         snapshot(self, state.root, selected)

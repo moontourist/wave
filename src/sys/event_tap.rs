@@ -123,7 +123,7 @@ pub struct EventTap {
 }
 
 impl EventTap {
-    /// Creates a tap on the current run loop (Rift input uses active HID).
+    /// Creates a tap on the current run loop (Wave input uses active HID).
     /// On failure the caller retains ownership of `user_info`.
     ///
     /// # Safety
@@ -157,7 +157,7 @@ impl EventTap {
             CGEvent::tap_create(
                 location,
                 // Append so active taps installed earlier at the HID level, such as
-                // Raycast's Hyper Key remap, see events before rift does.
+                // Raycast's Hyper Key remap, see events before wave does.
                 CGTapPlace::TailAppendEventTap,
                 options,
                 mask,

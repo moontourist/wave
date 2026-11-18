@@ -1,6 +1,6 @@
 //! Compile-time Settings metadata. Doc comments remain the source of help text;
 //! config serialization and validation stay independent of UI generation.
-pub use rift_config_derive::{ConfigEnum, ConfigSchema};
+pub use wave_config_derive::{ConfigEnum, ConfigSchema};
 
 /// Native popup label and its documentation; variant identity is the typed index.
 pub type EnumChoice = (&'static str, &'static str);

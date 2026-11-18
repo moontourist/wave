@@ -17,14 +17,14 @@ use std::vec::Vec;
 use tracing::{debug, error, info};
 
 const MAX_MESSAGE_SIZE: u32 = 262_144;
-const MACH_BS_NAME_FMT_PREFIX: &str = "git.";
-static G_NAME: &str = "acsandmann.rift";
+const MACH_BS_NAME_FMT_PREFIX: &str = "com.";
+static G_NAME: &str = "moontourist.wave";
 
 fn bs_name() -> CString {
-    if let Ok(name) = std::env::var("RIFT_BS_NAME") {
+    if let Ok(name) = std::env::var("WAVE_BS_NAME") {
         match CString::new(name) {
             Ok(name) => return name,
-            Err(error) => tracing::warn!(%error, "ignoring RIFT_BS_NAME with a NUL byte"),
+            Err(error) => tracing::warn!(%error, "ignoring WAVE_BS_NAME with a NUL byte"),
         }
     }
     // Both parts are NUL-free constants.
@@ -406,7 +406,7 @@ static mut window_sub_level_invalid_msg_logged: bool = false;
 pub fn init_window_sub_level_server_port() {
     // SAFETY: The call builds and sends its own message, with no caller precondition.
     let port = unsafe { create_connection_server_port() };
-    // SAFETY: rift's main calls this once at startup, before any thread that reads g_server_port
+    // SAFETY: wave's main calls this once at startup, before any thread that reads g_server_port
     // exists.
     unsafe { g_server_port = port };
 }
@@ -600,7 +600,7 @@ unsafe fn create_connection_server_port() -> mach_port_t {
     msg.0.magic2 = 0x110000;
     msg.0.magic3 = 0x110000;
 
-    let bundle = b"com.acsandmann.rift";
+    let bundle = b"com.moontourist.wave";
     let copy_len = bundle.len().min(msg.0.bundle_name.len());
     for (dst, &src) in msg.0.bundle_name.iter_mut().zip(bundle) {
         *dst = src;

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use rift_protocol::{FloatingWindowSize, FloatingWindowSizePreset, ToggleWindowFloatingOptions};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
+use wave_protocol::{FloatingWindowSize, FloatingWindowSizePreset, ToggleWindowFloatingOptions};
 
 use super::{Direction, FloatingManager, LayoutId, LayoutSystemKind, ResizeOrientation};
 #[cfg(test)]
@@ -27,7 +27,7 @@ mod persistence;
 
 use persistence::PersistenceState;
 pub use persistence::{RestoreReport, RestoreRequest, RestoreScope, RestoreSource};
-pub use rift_protocol::LayoutCommand;
+pub use wave_protocol::LayoutCommand;
 
 const SMART_FLOATING_WIDTH_RATIO: f64 = 0.8;
 const SMART_FLOATING_HEIGHT_RATIO: f64 = 0.93;
@@ -250,7 +250,7 @@ pub(crate) struct WorkspaceLayoutQuerySnapshot {
     pub is_active: bool,
     pub mode: LayoutMode,
     pub selected_window: Option<WindowId>,
-    pub container_tree: rift_protocol::ContainerTreeNode,
+    pub container_tree: wave_protocol::ContainerTreeNode,
 }
 
 impl LayoutEngine {

@@ -35,7 +35,6 @@ const html = `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;wid
   <div style="display:flex;flex-direction:column;gap:14px">
     <div style="font-size:64px;font-weight:800;color:${C.accent};letter-spacing:-0.02em;line-height:1">wave</div>
     <div style="font-size:20px;color:${C.text}">a tiling window manager for macOS</div>
-    <div style="font-size:16px;color:${C.dim}">built on rift</div>
   </div>
 </div>`;
 

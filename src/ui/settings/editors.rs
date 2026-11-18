@@ -1067,7 +1067,7 @@ pub(super) fn rules(ui: Ui, model: &Rc<Model>) -> Page {
     let mut page = f.finish(
         SettingsPage::new(&ui, "")
             .subtitle(
-                "Choose which windows Rift manages and where they open. Drag rules to change their order.",
+                "Choose which windows Wave manages and where they open. Drag rules to change their order.",
             )
             .section(search)
             .section(table)
@@ -1965,7 +1965,7 @@ pub(super) fn display_inspector(ui: Ui, model: &Rc<Model>) -> Page {
                 .push(HStack::new(&ui).push(Spacer::new(&ui)).push(cancel).push(add))
                 .push({
                     let hint =
-                        Caption::new(&ui, "Find a display’s UUID with rift-cli query displays.");
+                        Caption::new(&ui, "Find a display’s UUID with wave-cli query displays.");
                     hint.ns_text_field().setAlignment(objc2_app_kit::NSTextAlignment::Right);
                     hint
                 }),

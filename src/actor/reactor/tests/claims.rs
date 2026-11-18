@@ -1,5 +1,5 @@
-use rift_protocol::WindowClaimFlags;
 use test_log::test;
+use wave_protocol::WindowClaimFlags;
 
 use super::*;
 use crate::layout_engine::systems::LayoutSystem;
@@ -78,7 +78,7 @@ fn claim_detaches_without_destroying_and_release_restores_the_slot() {
     assert_eq!(
         apps.windows[&wid(2)].frame,
         parked,
-        "Rift never moves a claimed window"
+        "Wave never moves a claimed window"
     );
     assert!(reactor.state.windows.contains_window(wid(2)));
     assert_eq!(reactor.state.windows.workspace_for_window(wid(2)), None);
@@ -210,7 +210,7 @@ fn claimed_floating_window_keeps_its_classification_and_adopts_owner_geometry() 
     assert!(reactor.layout_manager.layout_engine.is_window_floating(wid));
     assert_eq!(reactor.state.windows.workspace_for_window(wid), None);
 
-    // The owner moves it; Rift neither records nor fights the geometry.
+    // The owner moves it; Wave neither records nor fights the geometry.
     let moved = CGRect::new(CGPoint::new(300., 200.), floating_frame.size);
     reactor.handle_event(Event::WindowFrameChanged(
         wid,
@@ -220,7 +220,7 @@ fn claimed_floating_window_keeps_its_classification_and_adopts_owner_geometry() 
         None,
     ));
     assert_eq!(reactor.state.windows.window(wid).unwrap().frame_monotonic, moved);
-    assert!(!reactor.is_in_drag(), "an owner move is not a Rift drag");
+    assert!(!reactor.is_in_drag(), "an owner move is not a Wave drag");
     let stored = |r: &Reactor| r.layout_manager.layout_engine.get_floating_position(workspace, wid);
     assert_eq!(stored(&reactor), Some(floating_frame));
 
@@ -262,7 +262,7 @@ fn claim_cancels_drag_animation_and_pending_geometry() {
             .any(|message| matches!(message, animation::Message::Stop(ids) if ids == [wid]))
     );
 
-    // Rift-controlled drags never start on a claimed window.
+    // Wave-controlled drags never start on a claimed window.
     let moved = CGRect::new(CGPoint::new(50., 50.), frame.size);
     reactor.handle_event(Event::WindowFrameChanged(
         wid,
@@ -606,7 +606,7 @@ fn window_queries_place_claimed_windows_from_cached_spaces_only() {
 }
 
 #[test]
-fn rekeying_a_claimed_window_schedules_no_rift_work() {
+fn rekeying_a_claimed_window_schedules_no_wave_work() {
     let (mut apps, mut reactor, space) = settled(2);
     reactor.claim_window(wid(1), OWNER, SUPPRESS).unwrap();
     apps.simulate_until_quiet(&mut reactor);

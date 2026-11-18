@@ -1,5 +1,5 @@
-pub use rift_protocol::{DisplaySelector, ReactorCommand};
 use serde::{Deserialize, Serialize};
+pub use wave_protocol::{DisplaySelector, ReactorCommand};
 
 use crate::actor::app::{AppInfo, AppThreadHandle, WindowId, pid_t};
 use crate::common::log::MetricsCommand;
@@ -15,7 +15,7 @@ use crate::sys::screen::SpaceId;
 /// assignments have one explicit owner here. Cross-store operations receive
 /// this store by reference instead of retaining an alias to it.
 #[derive(Debug, Default)]
-pub struct RiftState {
+pub struct WaveState {
     pub windows: WindowStore,
 }
 
@@ -82,7 +82,7 @@ pub(crate) struct WindowState {
     /// This value only updates monotonically with respect to writes; in other
     /// words, we only accept reads when we know they come after the last write.
     pub(crate) frame_monotonic: CGRect,
-    /// Rift/macOS heuristic result, kept separately from an explicit app-rule
+    /// Wave/macOS heuristic result, kept separately from an explicit app-rule
     /// override so every discovered window can remain tracked.
     pub(crate) is_manageable: bool,
     pub(crate) native_transient: bool,
@@ -155,7 +155,7 @@ pub enum ReactorError {
 
 #[cfg(test)]
 mod tests {
-    use rift_protocol::{RestoreScope, RestoreSource};
+    use wave_protocol::{RestoreScope, RestoreSource};
 
     use super::*;
 

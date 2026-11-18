@@ -1328,95 +1328,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
-name = "rift-client"
-version = "0.1.0"
-dependencies = [
- "ctrlc",
- "rift-protocol",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "rift-config-derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "rift-protocol"
-version = "0.1.0"
-dependencies = [
- "rift-config-derive",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "rift-wm"
-version = "0.8.3"
-dependencies = [
- "anyhow",
- "ascii_tree",
- "bitflags 2.11.0",
- "block2",
- "cgs",
- "clap",
- "crossbeam-channel",
- "dashmap",
- "dirs",
- "dispatchr",
- "embed_plist",
- "enum_dispatch",
- "multitouch",
- "nix 0.30.1",
- "notify",
- "num_enum",
- "objc2",
- "objc2-app-kit",
- "objc2-application-services",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-text",
- "objc2-foundation",
- "objc2-quartz-core",
- "once_cell",
- "parking_lot",
- "pretty_assertions",
- "regex",
- "rift-client",
- "rift-config-derive",
- "rift-protocol",
- "ron",
- "rustc-hash",
- "serde",
- "serde_json",
- "serde_with",
- "sigpipe",
- "slotmap",
- "static_assertions",
- "strum",
- "strum_macros",
- "tempfile",
- "test-log",
- "test_bin",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "toml",
- "toml_edit",
- "tracing",
- "tracing-subscriber",
- "tracing-timing",
- "tracing-tree",
-]
-
-[[package]]
 name = "ron"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2044,6 +1955,95 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f01b580c9ac74c8d8f0c0e4afb04eeef2acf145458e52c03845ee9cd23e3d12"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wave-client"
+version = "0.1.0"
+dependencies = [
+ "ctrlc",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "wave-protocol",
+]
+
+[[package]]
+name = "wave-config-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "wave-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wave-config-derive",
+]
+
+[[package]]
+name = "wave-wm"
+version = "0.8.3"
+dependencies = [
+ "anyhow",
+ "ascii_tree",
+ "bitflags 2.11.0",
+ "block2",
+ "cgs",
+ "clap",
+ "crossbeam-channel",
+ "dashmap",
+ "dirs",
+ "dispatchr",
+ "embed_plist",
+ "enum_dispatch",
+ "multitouch",
+ "nix 0.30.1",
+ "notify",
+ "num_enum",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-application-services",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-text",
+ "objc2-foundation",
+ "objc2-quartz-core",
+ "once_cell",
+ "parking_lot",
+ "pretty_assertions",
+ "regex",
+ "ron",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "sigpipe",
+ "slotmap",
+ "static_assertions",
+ "strum",
+ "strum_macros",
+ "tempfile",
+ "test-log",
+ "test_bin",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "toml",
+ "toml_edit",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-timing",
+ "tracing-tree",
+ "wave-client",
+ "wave-config-derive",
+ "wave-protocol",
 ]
 
 [[package]]

@@ -14,7 +14,7 @@ use crate::sys::screen::SpaceId;
 /// Handler for window discovery events, responsible for processing newly discovered windows
 /// and managing the lifecycle of window state in the reactor.
 fn sync_existing_window_state(
-    state: &mut crate::model::RiftState,
+    state: &mut crate::model::WaveState,
     transactions: &TransactionManager,
     wid: WindowId,
     mut info: WindowInfo,
@@ -24,20 +24,20 @@ fn sync_existing_window_state(
     let was_manageable = state.windows.window(wid).is_some_and(WindowState::is_admitted);
 
     let is_minimized = info.is_minimized;
-    let rift_owns_geometry =
+    let wave_owns_geometry =
         info.sys_id.is_some_and(|wsid| transactions.get_target_frame(wsid).is_some());
     let needs_arrange;
     let claimed = state.windows.is_claimed(wid);
     if let Some(existing) = state.windows.window_mut(wid) {
         let valid_frame = info.frame.size.width != 0.0 || info.frame.size.height != 0.0;
         let geometry_changed =
-            !rift_owns_geometry && valid_frame && !existing.frame_monotonic.same_as(info.frame);
+            !wave_owns_geometry && valid_frame && !existing.frame_monotonic.same_as(info.frame);
         let constraints_changed = existing.info.is_resizable != info.is_resizable
             || existing.info.min_size != info.min_size
             || existing.info.max_size != info.max_size;
         // A claimed window's owner has geometry authority.
         needs_arrange = (geometry_changed || constraints_changed) && !claimed;
-        if !rift_owns_geometry && valid_frame {
+        if !wave_owns_geometry && valid_frame {
             existing.frame_monotonic = info.frame;
         }
         // Preserve the observed frame and minimize transition until their handlers run.
@@ -96,7 +96,7 @@ fn sync_existing_window_state(
 }
 
 fn should_emit_window_for_space(
-    state: &crate::model::RiftState,
+    state: &crate::model::WaveState,
     layout: &crate::actor::reactor::managers::LayoutManager,
     space: SpaceId,
     wid: WindowId,
@@ -123,7 +123,7 @@ pub(crate) struct ObservedWindow {
 }
 
 pub(crate) fn process_window_list(
-    state: &mut crate::model::RiftState,
+    state: &mut crate::model::WaveState,
     layout: &mut crate::actor::reactor::managers::LayoutManager,
     transactions: &TransactionManager,
     observed: Vec<ObservedWindow>,
@@ -156,21 +156,21 @@ pub(crate) fn process_window_list(
 
 /// Inserts the newly discovered window snapshots into domain state.
 pub(crate) fn update_window_states(
-    rift_state: &mut crate::model::RiftState,
+    wave_state: &mut crate::model::WaveState,
     new_windows: Vec<(WindowId, WindowInfo)>,
 ) {
     // Update or insert window states
     for (wid, info) in new_windows {
         let state: WindowState = info.into();
-        rift_state.windows.insert_window(wid, state);
-        let _ = utils::refresh_heuristic(rift_state, wid);
+        wave_state.windows.insert_window(wid, state);
+        let _ = utils::refresh_heuristic(wave_state, wid);
     }
 }
 
 /// Assignment and rejection handling shared by discovery and rule reapplication.
 /// Callers decide whether successful, unchanged membership needs a layout refresh.
 pub(crate) fn assign_window<'a>(
-    state: &mut crate::model::RiftState,
+    state: &mut crate::model::WaveState,
     layout: &mut crate::actor::reactor::managers::LayoutManager,
     wid: WindowId,
     context: impl Into<crate::model::virtual_workspace::WorkspaceContext<'a>>,
@@ -228,7 +228,7 @@ pub(crate) struct EmitLayoutPayload<'a> {
 }
 
 pub(crate) fn emit_layout_events(
-    state: &mut crate::model::RiftState,
+    state: &mut crate::model::WaveState,
     layout: &mut crate::actor::reactor::managers::LayoutManager,
     payload: EmitLayoutPayload<'_>,
 ) -> crate::actor::reactor::events::EventOutcome {

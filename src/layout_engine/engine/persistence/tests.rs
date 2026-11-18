@@ -148,7 +148,7 @@ fn restore_on(
     visible: &[SpaceId],
 ) -> anyhow::Result<RestoreReport> {
     let path = std::env::temp_dir().join(format!(
-        "rift-persistence-test-{}-{}.ron",
+        "wave-persistence-test-{}-{}.ron",
         std::process::id(),
         SAVE_TEMP_COUNTER.fetch_add(1, AtomicOrdering::Relaxed),
     ));
@@ -406,7 +406,7 @@ fn persistence_preserves_layouts_through_every_lifecycle() {
     store.window_mut(w3).unwrap().frame_monotonic.origin.x = 99_999.0;
     store.observe_minimized(minimized);
     let _ = engine.handle_event(&mut store, LayoutEvent::WindowSuspended(minimized));
-    let path = std::env::temp_dir().join(format!("rift-save-test-{}.ron", std::process::id()));
+    let path = std::env::temp_dir().join(format!("wave-save-test-{}.ron", std::process::id()));
     engine.save_current_layout(path.clone(), &store, Some(a)).unwrap();
     let file = fs::read_to_string(&path).unwrap();
     let _ = fs::remove_file(path);
@@ -1072,7 +1072,7 @@ fn persistence_preserves_layouts_through_every_lifecycle() {
         &mut store,
         LayoutEvent::WindowDiscoveryCompleted(w1.pid, None, vec![a]),
     );
-    let path = std::env::temp_dir().join(format!("rift-waiting-{}.ron", std::process::id()));
+    let path = std::env::temp_dir().join(format!("wave-waiting-{}.ron", std::process::id()));
     assert!(engine.save_current_layout(path.clone(), &store, None).is_err());
     assert!(!path.exists(), "the master on disk outlives the wait");
     resolve(&mut engine, &mut store, &[(a, "x")], &[("x", &[a, b])]);

@@ -584,7 +584,7 @@ impl LayoutSystem for MasterStackLayoutSystem {
         self.inner.draw_tree_with_labels(layout, &labels)
     }
 
-    fn container_tree(&self, layout: LayoutId) -> rift_protocol::ContainerTreeNode {
+    fn container_tree(&self, layout: LayoutId) -> wave_protocol::ContainerTreeNode {
         let root = self.inner.root(layout);
         let children: Vec<_> = root.children(self.inner.map()).collect();
         let mut roles = HashMap::default();

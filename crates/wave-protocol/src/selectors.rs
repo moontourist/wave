@@ -10,7 +10,7 @@ pub enum WorkspaceSelector {
 }
 
 #[derive(
-    Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, rift_config_derive::ConfigEnum,
+    Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, wave_config_derive::ConfigEnum,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum RestoreScope {
@@ -29,7 +29,7 @@ pub enum RestoreScope {
     PartialEq,
     Serialize,
     Deserialize,
-    rift_config_derive::ConfigEnum,
+    wave_config_derive::ConfigEnum,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum RestoreSource {

@@ -252,21 +252,21 @@ fn menu_bar_fullscreen_indicator_defaults_off_and_can_be_enabled() {
 fn menu_bar_layout_folder_defaults_and_expands_home() {
     let settings: MenuBarSettings = toml::from_str("").unwrap();
 
-    assert_eq!(settings.layout_folder, PathBuf::from("~/.config/rift/layouts"));
+    assert_eq!(settings.layout_folder, PathBuf::from("~/.config/wave/layouts"));
     assert_eq!(
         settings.resolved_layout_folder(),
-        dirs::home_dir().unwrap().join(".config/rift/layouts")
+        dirs::home_dir().unwrap().join(".config/wave/layouts")
     );
 }
 
 #[test]
 fn menu_bar_layout_folder_preserves_absolute_paths() {
     let settings: MenuBarSettings =
-        toml::from_str("layout_folder = \"/tmp/rift-layouts\"").unwrap();
+        toml::from_str("layout_folder = \"/tmp/wave-layouts\"").unwrap();
 
     assert_eq!(
         settings.resolved_layout_folder(),
-        PathBuf::from("/tmp/rift-layouts")
+        PathBuf::from("/tmp/wave-layouts")
     );
 }
 
@@ -550,12 +550,12 @@ fn overview_hotkey_release_setting_defaults_to_sticky_and_can_be_edited() {
 fn default_document_is_the_canonical_template() {
     let document =
         ConfigDocument::from_source(ConfigDocument::default().source().unwrap()).unwrap();
-    assert_eq!(document.to_string(), include_str!("../../../rift.default.toml"));
+    assert_eq!(document.to_string(), include_str!("../../../wave.default.toml"));
 }
 
 #[test]
 fn scalar_edit_preserves_all_other_source_bytes_and_rolls_back_invalid_edits() {
-    let original = include_str!("../../../rift.default.toml")
+    let original = include_str!("../../../wave.default.toml")
         .replace(
             "animation_duration = 0.3",
             "animation_duration = 0.3 # my timing",
@@ -653,7 +653,7 @@ fn commented_optional_setting_uses_example_anchor_and_resets_to_omission() {
             < text.find("focus_follows_mouse = true").unwrap()
     );
     document.update(|source| source.settings.default_disable = true).unwrap();
-    assert_eq!(document.to_string(), include_str!("../../../rift.default.toml"));
+    assert_eq!(document.to_string(), include_str!("../../../wave.default.toml"));
 }
 
 #[test]
@@ -708,7 +708,7 @@ fn workspace_resize_cleans_removed_assignments_and_preserves_valid_rules() {
 
 #[test]
 fn keymap_rename_and_delete_update_both_command_encodings_and_self_references() {
-    use rift_protocol::ReactorCommand;
+    use wave_protocol::ReactorCommand;
 
     use crate::actor::wm_controller::WmCmd;
     let mut source = ConfigSource {
@@ -754,7 +754,7 @@ fn stack_tabs_default_on_and_release_the_reservation_when_disabled() {
     assert_eq!(tabs.reserve().total(), 0.0);
 }
 
-/// The stack line section of main's `rift.default.toml`, verbatim.
+/// The stack line section of main's `wave.default.toml`, verbatim.
 const MAIN_DEFAULT_STACK_LINE: &str = r#"
 [keys]
 

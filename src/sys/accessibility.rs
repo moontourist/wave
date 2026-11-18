@@ -25,7 +25,7 @@ unsafe extern "C" {
 const AX_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const AX_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Asks whether rift has Accessibility access. With `prompt`, macOS also shows its grant dialog.
+/// Asks whether wave has Accessibility access. With `prompt`, macOS also shows its grant dialog.
 fn ax_trusted(prompt: bool) -> bool {
     autoreleasepool(|_| {
         let value = if prompt {
@@ -73,7 +73,7 @@ pub fn ensure_accessibility_permission() {
     }
 
     println!(
-        "Rift still does not have accessibility permission. Enable it in System Settings > Privacy & Security > Accessibility, then restart Rift."
+        "Wave still does not have accessibility permission. Enable it in System Settings > Privacy & Security > Accessibility, then restart Wave."
     );
 
     std::process::exit(1);

@@ -1,4 +1,4 @@
-use rift_protocol::WindowClaimFlags;
+use wave_protocol::WindowClaimFlags;
 
 use crate::actor::app::WindowId;
 use crate::common::collections::{HashMap, HashSet};
@@ -53,7 +53,7 @@ pub struct WindowRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClaimOwner(pub u32);
 
-/// Temporary exclusion of a tracked window from Rift management.
+/// Temporary exclusion of a tracked window from Wave management.
 ///
 /// The claim holds the window's workspace assignment outside the workspace
 /// index, so enumeration, hiding, rebuilds and projection never see a claimed
@@ -150,7 +150,7 @@ impl WindowServerRecord {
     }
 }
 
-/// Authoritative per-window metadata tracked by Rift.
+/// Authoritative per-window metadata tracked by Wave.
 ///
 /// Workspace ownership lives here, not inside `VirtualWorkspace`. Layout trees
 /// retain canonical topology; geometry projects their participating members. Keeping the
@@ -226,7 +226,7 @@ impl WindowStore {
         }
     }
 
-    /// Rift manages a valid AX window when admission passes and no external owner holds it.
+    /// Wave manages a valid AX window when admission passes and no external owner holds it.
     pub(crate) fn is_admitted(&self, wid: WindowId) -> bool {
         self.record(wid).is_some_and(|record| {
             !record.ax_invalidated
@@ -235,7 +235,7 @@ impl WindowStore {
         })
     }
 
-    /// Rules and admission are reconciled only for windows Rift may manage.
+    /// Rules and admission are reconciled only for windows Wave may manage.
     pub(crate) fn can_reconcile_admission(&self, wid: WindowId) -> bool {
         self.record(wid).is_some_and(|record| {
             !record.ax_invalidated
@@ -2385,7 +2385,7 @@ mod tests {
         let workspace_id = workspaces.create_workspace(old, Some("Shared".to_string())).unwrap();
         let (moved, present) = (WindowId::new(5, 1), WindowId::new(5, 2));
         store.assign_window_to_workspace(moved, workspace_id);
-        // The window server placed this one on the incoming id before rift heard of it.
+        // The window server placed this one on the incoming id before wave heard of it.
         store.assign_window_to_workspace(present, workspace_id);
 
         store.suspend_window_to_native_fullscreen(

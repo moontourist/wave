@@ -532,7 +532,7 @@ fn floating_note(ui: &Ui) -> HStack {
             .push(Label::new(ui, "Windows stay where you put them"))
             .push(Caption::new(
                 ui,
-                "Rift doesn’t arrange windows in floating workspaces, so this layout has no settings of its own.",
+                "Wave doesn’t arrange windows in floating workspaces, so this layout has no settings of its own.",
             )),
     );
     note
@@ -782,7 +782,7 @@ fn layout_help(ui: &Ui) -> HelpButton {
                 .push(SectionTitle::new(&ui, "Layouts"))
                 .push(WrappingLabel::new(&ui, "Workspaces without their own layout use the Default layout, chosen in the toolbar. Clicking a layout shows its settings without changing the default."))
                 .push(WrappingLabel::new(&ui, "Shared settings apply to every layout. A layout can choose its own new-window position, and a display can override spacing and scrolling column widths."))
-                .push(Link::new(&ui, "Layout documentation", "https://acsandmann.github.io/rift-docs/layouts/"));
+                .push(Link::new(&ui, "Layout documentation", "https://github.com/moontourist/wave#readme"));
             content.width(320.0);
             HelpPopover::with_content(&ui, content)
         });

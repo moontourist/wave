@@ -1,8 +1,8 @@
 //! External window claims: a Mach session temporarily excludes windows from
-//! Rift management. Ownership lives in [`WindowStore`](crate::model::WindowStore);
+//! Wave management. Ownership lives in [`WindowStore`](crate::model::WindowStore);
 //! this module only applies the layout, presentation and focus effects.
 
-use rift_protocol::WindowClaimFlags;
+use wave_protocol::WindowClaimFlags;
 
 use super::{LayoutEvent, Reactor};
 use crate::actor::app::WindowId;
@@ -34,7 +34,7 @@ impl Reactor {
             None => {}
         }
         self.with_claim_focus_policy(|reactor| {
-            // The owner takes over like a user drag: stop Rift's motion and pending writes.
+            // The owner takes over like a user drag: stop Wave's motion and pending writes.
             reactor.cancel_window_presentations(vec![wid]);
             if let Some(wsid) = reactor.state.windows.window(wid).and_then(|w| w.info.sys_id) {
                 reactor.transaction_manager.clear_target_for_window(wsid);

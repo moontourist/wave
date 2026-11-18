@@ -84,12 +84,10 @@ pub enum MenuAction {
     RefreshLayoutFiles,
     OpenGitHub,
     OpenDocumentation,
-    OpenMatrix,
-    OpenSponsor,
     OpenConfig,
     OpenSettings,
     ReloadConfig,
-    QuitRift,
+    QuitWave,
 }
 
 pub struct MenuIcon {
@@ -193,7 +191,7 @@ impl MenuIcon {
         set_menu_item_hotkey(&self.prev_workspace_item, shortcuts.prev_workspace.as_ref());
         set_menu_item_hotkey(&self.tiling_item, shortcuts.toggle_space_activation.as_ref());
         set_menu_item_hotkey(&self.reload_item, shortcuts.reload_config.as_ref());
-        set_menu_item_hotkey(&self.quit_item, shortcuts.quit_rift.as_ref());
+        set_menu_item_hotkey(&self.quit_item, shortcuts.quit_wave.as_ref());
         for workspace in &self.workspace_items {
             let shortcut = shortcuts
                 .switch_workspace_by_index
@@ -747,7 +745,7 @@ fn build_static_menu(mtm: MainThreadMarker, handler: &Rc<MenuActionHandler>) -> 
             ReactorEvent::MenuClosed(own_pid())
         });
     }));
-    menu.ns_menu().setTitle(&NSString::from_str("Rift"));
+    menu.ns_menu().setTitle(&NSString::from_str("Wave"));
 
     let tiling_item = add_action_item(
         &menu,
@@ -852,24 +850,13 @@ fn build_static_menu(mtm: MainThreadMarker, handler: &Rc<MenuActionHandler>) -> 
             MenuActionHandler::on_open_documentation as MenuCallback,
         ),
         ("GitHub", MenuActionHandler::on_open_github),
-        ("Matrix", MenuActionHandler::on_open_matrix),
     ] {
         add_action_item(&help_menu, mtm, handler, title, action);
     }
 
     add_separator(&menu);
-    let sponsor_item = add_action_item(
-        &menu,
-        mtm,
-        handler,
-        "Sponsor Rift on GitHub",
-        MenuActionHandler::on_open_sponsor,
-    );
-    sponsor_item.setSubtitle(Some(&NSString::from_str("help fund continued development")));
-
-    add_separator(&menu);
     let quit_item =
-        add_action_item(&menu, mtm, handler, "Quit Rift", MenuActionHandler::on_quit_rift);
+        add_action_item(&menu, mtm, handler, "Quit Wave", MenuActionHandler::on_quit_wave);
 
     BuiltStatusMenu {
         menu,
@@ -891,7 +878,7 @@ struct MenuShortcuts {
     toggle_space_activation: Option<Hotkey>,
     next_workspace: Option<Hotkey>,
     prev_workspace: Option<Hotkey>,
-    quit_rift: Option<Hotkey>,
+    quit_wave: Option<Hotkey>,
     switch_workspace_by_index: HashMap<usize, Hotkey>,
     switch_workspace_by_name: HashMap<String, Hotkey>,
     reload_config: Option<Hotkey>,
@@ -943,7 +930,7 @@ impl MenuShortcuts {
                 WmCommand::ReactorCommand(ReactorTopCommand::Reactor(
                     ReactorCommand::SaveAndExit,
                 )) => {
-                    out.quit_rift.get_or_insert_with(|| hotkey.clone());
+                    out.quit_wave.get_or_insert_with(|| hotkey.clone());
                 }
                 WmCommand::Wm(WmCmd::ReloadConfig) => {
                     out.reload_config.get_or_insert_with(|| hotkey.clone());
@@ -1231,15 +1218,11 @@ impl MenuActionHandler {
 
     fn on_open_github(&self, _sender: Option<&NSMenuItem>) { self.emit(MenuAction::OpenGitHub); }
 
-    fn on_open_matrix(&self, _sender: Option<&NSMenuItem>) { self.emit(MenuAction::OpenMatrix); }
-
-    fn on_open_sponsor(&self, _sender: Option<&NSMenuItem>) { self.emit(MenuAction::OpenSponsor); }
-
     fn on_reload_config(&self, _sender: Option<&NSMenuItem>) {
         self.emit(MenuAction::ReloadConfig);
     }
 
-    fn on_quit_rift(&self, _sender: Option<&NSMenuItem>) { self.emit(MenuAction::QuitRift); }
+    fn on_quit_wave(&self, _sender: Option<&NSMenuItem>) { self.emit(MenuAction::QuitWave); }
 }
 
 #[cfg(test)]

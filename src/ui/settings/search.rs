@@ -109,7 +109,7 @@ fn describe(entry: &Draft) -> String {
         "Workspace swipes" => "Switch workspaces using trackpad gestures.",
         "New window position" => "Choose where newly opened windows appear.",
         "Default layout" => "Choose the layout used by default.",
-        "App rules" => "Choose how Rift handles an application's windows.",
+        "App rules" => "Choose how Wave handles an application's windows.",
         "Workspace rules" => "Assign matching windows to a workspace.",
         "Keyboard shortcuts" => "View, add, and edit keyboard shortcuts.",
         "Display overrides" => "Customize spacing and column widths for one display.",
@@ -278,22 +278,8 @@ const MANUAL: &[(Category, Option<LayoutMode>, &str, &str, &str)] = &[
         About,
         None,
         "About",
-        "Matrix Room",
-        "matrix community chat discussion support",
-    ),
-    (
-        About,
-        None,
-        "About",
         "Release Notes",
         "changelog version changes",
-    ),
-    (
-        About,
-        None,
-        "About",
-        "Sponsor Rift",
-        "donate support sponsorship",
     ),
 ];
 

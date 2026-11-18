@@ -1696,7 +1696,7 @@ fn contain_transition_frame(from: CGRect, to: CGRect, mut frame: CGRect) -> CGRe
 
 /// Maps time progress `t` (0..=1) to distance progress using the curves from
 /// easings.net. Each family is defined once as its "in" curve; "out" and
-/// "in-out" are derived from it. `EaseInOut` is rift's original curve.
+/// "in-out" are derived from it. `EaseInOut` is wave's original curve.
 pub(super) fn ease(easing: AnimationEasing, t: f64) -> f64 {
     use AnimationEasing::*;
     let t = t.clamp(0.0, 1.0);
@@ -2600,7 +2600,7 @@ mod tests {
 
     #[test]
     fn display_transfer_resets_scrolling_frames_and_preserves_tiling() {
-        use rift_protocol::DisplaySelector;
+        use wave_protocol::DisplaySelector;
 
         use super::super::testing::*;
         use super::super::{Command, Event, ReactorCommand};
@@ -2663,7 +2663,7 @@ mod tests {
                     selector: if turn % 2 == 0 {
                         DisplaySelector::Uuid(uuid)
                     } else {
-                        DisplaySelector::Direction(rift_protocol::Direction::Down)
+                        DisplaySelector::Direction(wave_protocol::Direction::Down)
                     },
                     window_id: Some(1),
                 },
