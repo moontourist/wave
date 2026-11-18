@@ -78,7 +78,10 @@ impl PersistedLayout {
         if saved_spaces.is_empty() {
             Err(anyhow::anyhow!("saved layout contains no macOS spaces"))
         } else if saved_spaces.len() == 1 {
-            Ok(*saved_spaces.first().expect("one saved space"))
+            saved_spaces
+                .first()
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("saved layout contains no macOS spaces"))
         } else {
             Err(anyhow::anyhow!(
                 "cannot choose a source from {} saved macOS spaces; save the layout again to record its active space",
@@ -137,10 +140,12 @@ impl PersistedLayout {
                 vec![(source, target)]
             }
         };
-        if mappings
-            .iter()
-            .any(|(source, _)| self.workspaces.workspaces[*source].active_layout().is_none())
-        {
+        if mappings.iter().any(|(source, _)| {
+            self.workspaces
+                .workspaces
+                .get(*source)
+                .is_none_or(|workspace| workspace.active_layout().is_none())
+        }) {
             return Err(anyhow::anyhow!("saved workspace layout is incomplete"));
         }
         Ok(mappings)
@@ -184,11 +189,11 @@ impl LayoutEngine {
         // Candidates still waiting in a replaced workspace lose their slots with its tree.
         self.persistence.pending.retain(|_, saved| !targets.contains(&saved.workspace));
         for &(source, target) in &mappings {
-            let saved = snapshot
-                .workspaces
-                .workspaces
-                .remove(source)
-                .expect("workspace sources were validated before installation");
+            // Sources were validated above; a missing one is skipped rather than half-installed.
+            let Some(saved) = snapshot.workspaces.workspaces.remove(source) else {
+                tracing::error!(?source, "validated workspace source vanished during restore");
+                continue;
+            };
             self.native_layouts.remove(&target);
             let display = self.space_display_map.get(&self.workspaces[target].space);
             let display = display.and_then(Option::as_deref);

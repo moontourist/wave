@@ -85,24 +85,36 @@ impl Selection {
             AddedToForest(_node) => {}
             AddedToParent(_node) => {}
             Copied { src, dest, .. } => {
-                let Some(info) = self.nodes.get(src) else {
+                let Some(&SelectionInfo {
+                    selected_child: selected,
+                    stop_here,
+                }) = self.nodes.get(src)
+                else {
                     return;
                 };
-                let selected_child = std::iter::zip(src.children(map), dest.children(map))
-                    .filter(|(src_child, _)| *src_child == info.selected_child)
+                let Some(selected_child) = std::iter::zip(src.children(map), dest.children(map))
+                    .filter(|(src_child, _)| *src_child == selected)
                     .map(|(_, dest_child)| dest_child)
                     .next()
-                    .unwrap_or_else(|| panic!("Dest tree had different structure, or source node had nonexistent selection: {src:?}, {dest:?}"));
-                self.nodes.insert(dest, SelectionInfo {
-                    selected_child,
-                    stop_here: self.nodes[src].stop_here,
-                });
+                else {
+                    tracing::error!(
+                        ?src,
+                        ?dest,
+                        "copied tree has a different shape, or the source selection is missing"
+                    );
+                    return;
+                };
+                self.nodes.insert(dest, SelectionInfo { selected_child, stop_here });
             }
             RemovingFromParent(node) => {
-                let parent = node.parent(map).unwrap();
+                let Some(parent) = node.parent(map) else {
+                    return;
+                };
                 if self.nodes.get(parent).map(|n| n.selected_child) == Some(node) {
-                    if let Some(new_selection) = node.next_sibling(map).or(node.prev_sibling(map)) {
-                        self.nodes[parent].selected_child = new_selection;
+                    if let Some(new_selection) = node.next_sibling(map).or(node.prev_sibling(map))
+                        && let Some(info) = self.nodes.get_mut(parent)
+                    {
+                        info.selected_child = new_selection;
                     } else {
                         self.nodes.remove(parent);
                     }

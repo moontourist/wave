@@ -69,6 +69,10 @@ impl ConfigActor {
         config_path: PathBuf,
     ) -> Sender {
         let (tx, rx) = actor::channel();
+        #[expect(
+            clippy::unwrap_used,
+            reason = "rift cannot apply configuration without its config thread; a failed spawn at startup is fatal and launchd restarts the process"
+        )]
         std::thread::Builder::new()
             .name("config".to_string())
             .spawn(move || Self::load(config, reactor_tx, events, config_path).run(rx))
@@ -312,7 +316,8 @@ impl ConfigActor {
                             ConfigCommand::SetWorkspaceNames(names) => {
                                 source.virtual_workspaces.workspace_names = names
                             }
-                            _ => unreachable!(),
+                            // The enclosing arm admits only the settings commands above.
+                            _ => {}
                         }
                     })
                     .map_err(|e| e.to_string())?;

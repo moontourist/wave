@@ -303,6 +303,10 @@ impl LayoutEngine {
                 floating.store(workspace, window, stored.unwrap_or(state.frame_monotonic));
             }
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "every engine state type serializes to RON; the persistence round-trip tests cover it"
+        )]
         ron::ser::to_string(&PersistedLayoutRef {
             schema_version: CURRENT_SCHEMA_VERSION,
             floating: &self.floating.persisted_view(floating.positioned_windows()),
@@ -332,13 +336,14 @@ pub(super) fn migrate_legacy_layout_system_tags(input: &str) -> Option<String> {
         let Some((start, needle, replacement)) = TAGS
             .iter()
             .filter_map(|(needle, replacement)| {
-                input[cursor..]
+                input
+                    .get(cursor..)?
                     .find(needle)
                     .map(|offset| (cursor + offset, *needle, *replacement))
             })
             .min_by_key(|(start, _, _)| *start)
         else {
-            output.push_str(&input[cursor..]);
+            output.push_str(input.get(cursor..)?);
             break;
         };
 
@@ -346,7 +351,7 @@ pub(super) fn migrate_legacy_layout_system_tags(input: &str) -> Option<String> {
         let mut in_string = false;
         let mut escaped = false;
         let mut end = None;
-        for (offset, ch) in input[start..].char_indices() {
+        for (offset, ch) in input.get(start..)?.char_indices() {
             if in_string {
                 if escaped {
                     escaped = false;
@@ -371,9 +376,9 @@ pub(super) fn migrate_legacy_layout_system_tags(input: &str) -> Option<String> {
             }
         }
         let end = end?;
-        output.push_str(&input[cursor..start]);
+        output.push_str(input.get(cursor..start)?);
         output.push_str(replacement);
-        output.push_str(&input[start + needle.len()..end]);
+        output.push_str(input.get(start + needle.len()..end)?);
         output.push_str("))");
         cursor = end + 1;
         changed = true;

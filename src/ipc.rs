@@ -396,7 +396,7 @@ fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest)
 
         RiftRequest::GetBindingMode => encode_success(&reactor.binding_mode),
         RiftRequest::SetShortcutRecording { .. } => {
-            unreachable!("recording leases bypass the reactor")
+            encode_error(serde_json::json!({ "message": "recording leases bypass the reactor" }))
         }
 
         RiftRequest::GetMetrics => encode_success(reactor.query_metrics()),
@@ -405,13 +405,13 @@ fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest)
         | RiftRequest::GetSettingsSource
         | RiftRequest::ApplySettingsSource { .. }
         | RiftRequest::ReloadSettingsSource => {
-            unreachable!("config requests run on config workers")
+            encode_error(serde_json::json!({ "message": "config requests run on config workers" }))
         }
 
         RiftRequest::ExecuteCommand { command } => match command {
-            rift_protocol::RiftCommand::Config(_) => {
-                unreachable!("config requests run on config workers")
-            }
+            rift_protocol::RiftCommand::Config(_) => encode_error(
+                serde_json::json!({ "message": "config requests run on config workers" }),
+            ),
             rift_protocol::RiftCommand::Layout(command) => {
                 handle_reactor_command(reactor, crate::model::reactor::Command::Layout(command))
             }
@@ -526,7 +526,9 @@ impl ConfigRequestHandler {
                     })),
                 }
             }
-            _ => unreachable!("only config requests are queued to config workers"),
+            _ => encode_error(serde_json::json!({
+                "message": "only config requests are queued to config workers"
+            })),
         }
     }
 }
@@ -549,8 +551,9 @@ unsafe extern "C" fn handle_mach_request_c(
     let handler = unsafe { &*(context as *const IpcRequestHandler) };
     let message_slice = unsafe { std::slice::from_raw_parts(message as *const u8, len as usize) };
 
-    let trimmed_slice = if let Some(pos) = message_slice.iter().position(|&b| b == 0) {
-        &message_slice[..pos]
+    // The bytes before the first NUL, or all of them.
+    let trimmed_slice = if let Some(head) = message_slice.split(|&b| b == 0).next() {
+        head
     } else {
         message_slice
     };

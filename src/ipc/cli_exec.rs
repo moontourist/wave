@@ -213,13 +213,13 @@ impl DefaultCliExecutor {
             let mut kv = k.as_bytes().to_vec();
             kv.push(b'=');
             kv.extend_from_slice(v.as_bytes());
-            env_storage.push(CString::new(kv).unwrap());
+            env_storage.push(CString::new(kv)?);
         }
         for (k, v) in env_vars {
             let mut kv = k.into_bytes();
             kv.push(b'=');
             kv.extend_from_slice(v.as_bytes());
-            env_storage.push(CString::new(kv).unwrap());
+            env_storage.push(CString::new(kv)?);
         }
         env_storage.push(
             CString::new(format!("RIFT_EVENT_JSON={event_json}")).map_err(|_| {
@@ -257,18 +257,24 @@ impl DefaultCliExecutor {
             let _ = unsafe { posix_spawnattr_destroy(&mut attr) };
             return Err(std::io::Error::from_raw_os_error(rc_fa));
         }
-        let devnull = CString::new("/dev/null").unwrap();
+        let devnull = c"/dev/null";
         unsafe {
             let _ = posix_spawn_file_actions_addopen(&mut fa, 0, devnull.as_ptr(), O_RDONLY, 0);
             let _ = posix_spawn_file_actions_addopen(&mut fa, 1, devnull.as_ptr(), O_WRONLY, 0);
             let _ = posix_spawn_file_actions_addopen(&mut fa, 2, devnull.as_ptr(), O_WRONLY, 0);
         }
 
+        let Some(program) = argv_storage.first().map(|program| program.as_ptr()) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "empty command",
+            ));
+        };
         let mut child_pid: pid_t = 0;
         let rc = unsafe {
             posix_spawnp(
                 &mut child_pid as *mut pid_t,
-                argv_storage[0].as_ptr(),
+                program,
                 &fa as *const _,
                 &attr as *const _,
                 argv.as_mut_ptr(),

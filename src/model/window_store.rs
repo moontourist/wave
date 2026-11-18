@@ -285,7 +285,10 @@ impl WindowStore {
     pub fn insert_claim(&mut self, wid: WindowId, owner: ClaimOwner, flags: WindowClaimFlags) {
         debug_assert!(self.contains_window(wid) && !self.is_claimed(wid));
         let workspace = self.take_assignment(wid);
-        self.windows.get_mut(&wid).unwrap().claim = Some(WindowClaim {
+        let Some(record) = self.windows.get_mut(&wid) else {
+            return;
+        };
+        record.claim = Some(WindowClaim {
             owner,
             flags,
             original: wid,
@@ -472,10 +475,10 @@ impl WindowStore {
                 return NativeDeparture::Closed(wid);
             }
         }
-        let remove_projection = window.and_then(|wid| self.record(wid)).is_some_and(|record| {
-            record.workspace.is_some()
-                && self.is_temporarily_unavailable(window.unwrap())
-                && self.native_space(window.unwrap()) == Some(reported_space)
+        let remove_projection = window.is_some_and(|wid| {
+            self.record(wid).is_some_and(|record| record.workspace.is_some())
+                && self.is_temporarily_unavailable(wid)
+                && self.native_space(wid) == Some(reported_space)
         });
         self.observe_native_space(wsid, reported_space, false);
         NativeDeparture::Hidden { window, remove_projection }
@@ -492,7 +495,9 @@ impl WindowStore {
             && Some(old) != wsid
         {
             self.remove_window_server_state(old);
-            self.windows.get_mut(&wid).unwrap().pending_transfer = None;
+            if let Some(record) = self.windows.get_mut(&wid) {
+                record.pending_transfer = None;
+            }
         }
         let wsid = wsid?;
         let previous = self.track_window_server_id(wsid, wid).filter(|old| *old != wid);
@@ -1248,11 +1253,11 @@ impl WindowStore {
     }
 
     pub(crate) fn note_fullscreen_exit(&mut self, window: WindowId, space: SpaceId) {
-        if let Some(original) = self.native_fullscreen_original_window(window) {
-            self.native_fullscreen_records_by_original_window
-                .get_mut(&original)
-                .unwrap()
-                .transition = NativeFullscreenTransition::ExitObserved(Some(space));
+        if let Some(original) = self.native_fullscreen_original_window(window)
+            && let Some(record) =
+                self.native_fullscreen_records_by_original_window.get_mut(&original)
+        {
+            record.transition = NativeFullscreenTransition::ExitObserved(Some(space));
         }
     }
 
@@ -1372,7 +1377,7 @@ impl WindowStore {
             None => return,
         };
 
-        let ax_invalidated = self.windows[&from].ax_invalidated;
+        let ax_invalidated = self.windows.get(&from).is_some_and(|record| record.ax_invalidated);
 
         let target_workspace = self.windows.get(&to).and_then(|record| record.workspace);
 
@@ -1418,14 +1423,17 @@ impl WindowStore {
                     );
                 }
             }
-            self.windows.get_mut(&to).unwrap().claim = Some(claim);
-            self.claims.entry(claim.owner).or_default().push(to);
+            if let Some(record) = self.windows.get_mut(&to) {
+                record.claim = Some(claim);
+                self.claims.entry(claim.owner).or_default().push(to);
+            }
         }
         // A replacement admitted before its predecessor was recognized yields to the claim.
         if self.is_claimed(to) {
             let replacement = self.take_assignment(to);
-            let claim = self.windows.get_mut(&to).and_then(|r| r.claim.as_mut()).unwrap();
-            claim.workspace = claim.workspace.or(replacement);
+            if let Some(claim) = self.windows.get_mut(&to).and_then(|r| r.claim.as_mut()) {
+                claim.workspace = claim.workspace.or(replacement);
+            }
         }
 
         if let Some(original_window_id) = self.native_fullscreen_original_window(from)

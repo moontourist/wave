@@ -20,8 +20,16 @@ pub(super) const DEPRECATED_MAP: &[(&str, &str)] = &[
     ("toggle_tile_orientation", "toggle_orientation"),
 ];
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "a logged-in macOS user always has a home directory"
+)]
 pub fn data_dir() -> PathBuf { dirs::home_dir().unwrap().join(".rift") }
 pub fn restore_file() -> PathBuf { data_dir().join("layout.ron") }
+#[expect(
+    clippy::unwrap_used,
+    reason = "a logged-in macOS user always has a home directory"
+)]
 pub fn config_file() -> PathBuf {
     dirs::home_dir().unwrap().join(".config").join("rift").join("config.toml")
 }

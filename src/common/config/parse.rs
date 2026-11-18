@@ -15,6 +15,10 @@ impl Config {
         Self::parse(&buf)
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "the bundled template is fixed at build time and parsed by the config tests"
+    )]
     pub fn default() -> Config { Self::parse(include_str!("../../../rift.default.toml")).unwrap() }
 
     /// Validates the entire configuration and returns a list of issues found.
@@ -67,12 +71,10 @@ impl Config {
         key: &str,
         combinations: &std::collections::BTreeMap<String, String>,
     ) -> String {
-        if let Some(plus_pos) = key.find(" + ") {
-            let potential_combo = &key[..plus_pos];
-            if let Some(combo_value) = combinations.get(potential_combo) {
-                let rest = &key[plus_pos + 3..];
-                return format!("{} + {}", combo_value, rest);
-            }
+        if let Some((combo, rest)) = key.split_once(" + ")
+            && let Some(combo_value) = combinations.get(combo)
+        {
+            return format!("{combo_value} + {rest}");
         }
         key.to_string()
     }
@@ -88,6 +90,10 @@ impl Config {
         Some((key, hotkey))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "row holds b.len() + 1 entries and every index is at most b.len()"
+    )]
     fn levenshtein(a: &str, b: &str) -> usize {
         let b: Vec<_> = b.chars().collect();
         let mut row: Vec<_> = (0..=b.len()).collect();
