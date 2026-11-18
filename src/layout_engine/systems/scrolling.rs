@@ -494,7 +494,9 @@ impl Geometry {
             let heights = solve_axis_lengths(&rows, available);
             let mut y = tiling.origin.y;
             for (geometry_row, (_, &wid)) in active_rows.enumerate() {
-                let height = heights[geometry_row];
+                let Some(&height) = heights.get(geometry_row) else {
+                    break;
+                };
                 let mut size = CGSize::new(width, height);
                 let c = constraint(&wid);
                 size.width = c.fixed_for_axis(true).unwrap_or(width).max(c.min_width).min(width);
@@ -564,7 +566,9 @@ impl Geometry {
                 })
                 .collect();
         }
-        let last = self.columns.last().unwrap();
+        let Some(last) = self.columns.last() else {
+            return Vec::new();
+        };
         let left = first.world_x;
         let right = last.world_x + last.width - view;
         let mut points = vec![SnapPoint { offset: left, column: 0 }, SnapPoint {
@@ -582,7 +586,9 @@ impl Geometry {
     }
 
     fn anchor_offset(&self, index: usize, alignment: ScrollingAlignment) -> f64 {
-        let column = self.columns[index];
+        let Some(&column) = self.columns.get(index) else {
+            return 0.0;
+        };
         if column.width >= self.tiling.size.width {
             return column.world_x;
         }
@@ -815,7 +821,7 @@ impl From<StoredLayoutState> for LayoutState {
 impl LayoutState {
     fn selected(&self, inactive: &HashSet<WindowId>) -> Option<WindowId> {
         let (col, row) = self.selected_location(inactive)?;
-        Some(self.columns[col].windows[row])
+        self.columns.get(col)?.windows.get(row).copied()
     }
 
     fn selected_location(&self, inactive: &HashSet<WindowId>) -> Option<(usize, usize)> {
@@ -843,7 +849,9 @@ impl LayoutState {
             return false;
         };
         self.active_column = col;
-        self.columns[col].active_window = row;
+        if let Some(column) = self.columns.get_mut(col) {
+            column.active_window = row;
+        }
         true
     }
 
@@ -873,10 +881,10 @@ impl LayoutState {
             let tiling = compute_tiling_area(screen, gaps);
             for column in &mut self.columns {
                 if matches!(column.width, ColumnWidth::Default)
-                    && column.windows.len() == 1
-                    && !inactive.contains(&column.windows[0])
+                    && let &[only] = column.windows.as_slice()
+                    && !inactive.contains(&only)
                     && constraints
-                        .get(&column.windows[0])
+                        .get(&only)
                         .map(|c| c.locked_width)
                         .is_some_and(|w| w.is_finite() && w > 0.0)
                 {
@@ -899,7 +907,7 @@ impl LayoutState {
             gaps.clone(),
         ));
         if let Some(bookmark) = bookmark
-            && let Some(column) = self.geometry.as_ref().unwrap().column(bookmark.column)
+            && let Some(column) = self.geometry.as_ref().and_then(|g| g.column(bookmark.column))
         {
             let old = self.viewport.offset();
             self.viewport.rebase(column.world_x + bookmark.relative_offset - old);
@@ -907,8 +915,7 @@ impl LayoutState {
         self.reconcile_camera_bounds();
         if initial {
             self.viewport = Viewport::Static(0.0);
-            if self.geometry.as_ref().unwrap().columns.len() == 1 {
-                let g = self.geometry.as_ref().unwrap();
+            if let Some(g) = self.geometry.as_ref().filter(|g| g.columns.len() == 1) {
                 self.viewport = Viewport::Static(g.anchor_offset(0, settings.alignment));
             } else {
                 self.reveal(settings);
@@ -967,10 +974,10 @@ impl LayoutState {
             return;
         };
         let offset = if settings.focus_navigation_style == ScrollingFocusNavigationStyle::Anchored {
-            g.anchor_offset(
-                g.columns.iter().position(|c| c.id == column.id).unwrap(),
-                settings.alignment,
-            )
+            let Some(index) = g.columns.iter().position(|c| c.id == column.id) else {
+                return;
+            };
+            g.anchor_offset(index, settings.alignment)
         } else {
             let target = match &self.viewport {
                 Viewport::Animation(s) => s.target,
@@ -1008,7 +1015,7 @@ impl LayoutState {
             ));
             let anchor = window
                 .and_then(|wid| self.locate(wid))
-                .map(|(col, _)| self.columns[col].id)
+                .and_then(|(col, _)| self.columns.get(col).map(|c| c.id))
                 .or_else(|| id.filter(|id| self.columns.iter().any(|c| c.id == *id)));
             if let (Some(old_x), Some(new)) =
                 (old_x, anchor.and_then(|id| self.geometry.as_ref()?.column(id)))
@@ -1045,7 +1052,7 @@ impl LayoutState {
     ) -> Option<(ColumnWidth, f64)> {
         let (col, row) = self.locate(wid)?;
         let selected = self.selected(inactive);
-        let column = &mut self.columns[col];
+        let column = self.columns.get_mut(col)?;
         let width = column.width;
         column.windows.remove(row);
         let weight = column.height_weights.remove(row);
@@ -1073,15 +1080,25 @@ impl LayoutState {
         action: WindowDropAction,
         inactive: &HashSet<WindowId>,
     ) -> bool {
+        // Move, swap and consume-or-expel take other paths before reaching here.
+        let (WindowDropAction::Stack | WindowDropAction::Insert(_)) = action else {
+            return false;
+        };
         if source == target || self.locate(source).is_none() || self.locate(target).is_none() {
             return false;
         }
-        let (width, weight) = self.detach(source, inactive).unwrap();
-        let (col, row) = self.locate(target).unwrap();
+        let Some((width, weight)) = self.detach(source, inactive) else {
+            return false;
+        };
+        let Some((col, row)) = self.locate(target) else {
+            return false;
+        };
         match action {
             WindowDropAction::Stack | WindowDropAction::Insert(Direction::Up | Direction::Down) => {
                 let row = row + usize::from(action != WindowDropAction::Insert(Direction::Up));
-                let column = &mut self.columns[col];
+                let Some(column) = self.columns.get_mut(col) else {
+                    return false;
+                };
                 if row <= column.active_window {
                     column.active_window += 1;
                 }
@@ -1096,7 +1113,9 @@ impl LayoutState {
                     weight,
                 );
             }
-            _ => unreachable!("move and swap handled before transfer"),
+            WindowDropAction::Swap
+            | WindowDropAction::Move(_)
+            | WindowDropAction::ConsumeOrExpel(_) => return false,
         }
         self.activate(source);
         true
@@ -1189,7 +1208,7 @@ impl ScrollingLayoutSystem {
             return;
         };
         let active_removed = state.selected(inactive) == Some(wid);
-        let column_removed = state.columns[col].windows.len() == 1;
+        let column_removed = state.columns.get(col).is_some_and(|c| c.windows.len() == 1);
         let restore = if active_removed && column_removed {
             state.transient_restore.take()
         } else {
@@ -1230,7 +1249,10 @@ impl ScrollingLayoutSystem {
         }
         let mut fallback = state.clone();
         fallback.prepare_geometry(&self.settings, &self.inactive, screen, constraints, gaps);
-        Self::translate_frames(&fallback, fallback.geometry.as_ref().unwrap(), park).collect()
+        let Some(g) = fallback.geometry.as_ref() else {
+            return Vec::new();
+        };
+        Self::translate_frames(&fallback, g, park).collect()
     }
 
     fn translate_frames<'a>(
@@ -1329,7 +1351,9 @@ impl ScrollingLayoutSystem {
         if !self.viewport_gesture_available(layout) {
             return false;
         }
-        let state = &mut self.layouts[layout];
+        let Some(state) = self.layouts.get_mut(layout) else {
+            return false;
+        };
         state.transient_restore = None;
         if matches!(state.viewport, Viewport::Gesture(_)) {
             return false;
@@ -1389,7 +1413,7 @@ impl ScrollingLayoutSystem {
         let projected = offset - velocity / (1000.0 * 0.997_f64.ln());
         let release = self.settle(layout, projected, velocity, true)?;
         if animate {
-            self.layouts[layout].viewport = Viewport::Animation(CameraSpring::new(
+            self.layouts.get_mut(layout)?.viewport = Viewport::Animation(CameraSpring::new(
                 release.from_offset,
                 release.offset,
                 release.velocity,
@@ -1443,13 +1467,11 @@ impl ScrollingLayoutSystem {
                         // Niri sorts snaps by position before nearest-point selection.
                         a.offset.total_cmp(&b.offset)
                     } else {
-                        (gesture_release
-                            && g.columns[a.column].id != state.columns[state.active_column].id)
-                            .cmp(
-                                &(gesture_release
-                                    && g.columns[b.column].id
-                                        != state.columns[state.active_column].id),
-                            )
+                        let active = state.columns.get(state.active_column).map(|c| c.id);
+                        let leaves = |snap: &SnapPoint| {
+                            gesture_release && g.columns.get(snap.column).map(|c| c.id) != active
+                        };
+                        leaves(a).cmp(&leaves(b))
                     }
                 })
         })?;
@@ -1470,13 +1492,16 @@ impl ScrollingLayoutSystem {
             } else {
                 (0..index)
                     .rev()
-                    .take_while(|&next| g.columns[next].world_x >= snap.offset)
+                    .take_while(|&next| {
+                        g.columns.get(next).is_some_and(|c| c.world_x >= snap.offset)
+                    })
                     .last()
                     .unwrap_or(index)
             };
         }
         let offset = snap.offset;
-        let canonical_index = state.columns.iter().position(|c| c.id == g.columns[index].id)?;
+        let target_id = g.columns.get(index)?.id;
+        let canonical_index = state.columns.iter().position(|c| c.id == target_id)?;
         if canonical_index != state.active_column {
             state.fullscreen_restore = None;
         }
@@ -1522,8 +1547,12 @@ impl ScrollingLayoutSystem {
         let Some(first) = presets.clone().next() else {
             return false;
         };
+        let Some((current_width, column_id)) = state.columns.get(col).map(|c| (c.width, c.id))
+        else {
+            return false;
+        };
         // The requested proportion remembers the preset even when geometry is constrained.
-        let known = match state.columns[col].width {
+        let known = match current_width {
             ColumnWidth::Proportion(ratio) => {
                 presets.clone().position(|preset| (ratio - preset).abs() <= 1e-6)
             }
@@ -1532,12 +1561,12 @@ impl ScrollingLayoutSystem {
         let target = if let Some(index) = known {
             let len = presets.clone().count();
             let next = (index + if backwards { len - 1 } else { 1 }) % len;
-            presets.clone().nth(next).unwrap()
+            presets.clone().nth(next).unwrap_or(first)
         } else {
             let Some(g) = &state.geometry else {
                 return false;
             };
-            let Some(column) = g.column(state.columns[col].id) else {
+            let Some(column) = g.column(column_id) else {
                 return false;
             };
             let resolved = |ratio| {
@@ -1553,16 +1582,18 @@ impl ScrollingLayoutSystem {
                     .clone()
                     .rev()
                     .find(|&r| resolved(r) + 1.0 < column.width)
-                    .unwrap_or_else(|| presets.clone().next_back().unwrap())
+                    .unwrap_or_else(|| presets.clone().next_back().unwrap_or(first))
             } else {
                 presets.clone().find(|&r| column.width + 1.0 < resolved(r)).unwrap_or(first)
             }
         };
-        if matches!(state.columns[col].width, ColumnWidth::Proportion(r) if r == target) {
+        if matches!(current_width, ColumnWidth::Proportion(r) if r == target) {
             return false;
         }
         state.mutate(&self.settings, &self.inactive, |state| {
-            state.columns[col].width = ColumnWidth::Proportion(target);
+            if let Some(column) = state.columns.get_mut(col) {
+                column.width = ColumnWidth::Proportion(target);
+            }
         });
         state.reveal(&self.settings);
         true
@@ -1626,7 +1657,9 @@ impl LayoutSystem for ScrollingLayoutSystem {
                         })
                 {
                     state.active_column = col;
-                    state.columns[col].active_window = row;
+                    if let Some(column) = state.columns.get_mut(col) {
+                        column.active_window = row;
+                    }
                 }
             });
         }
@@ -1670,7 +1703,12 @@ impl LayoutSystem for ScrollingLayoutSystem {
     }
 
     fn container_tree(&self, layout: LayoutId) -> rift_protocol::ContainerTreeNode {
-        let state = self.layouts.get(layout).expect("unknown scrolling layout");
+        let Some(state) = self.layouts.get(layout) else {
+            return rift_protocol::ContainerTreeNode {
+                layout_kind: Some(rift_protocol::LayoutKind::Horizontal),
+                ..Default::default()
+            };
+        };
         let children = state
             .columns
             .iter()
@@ -1792,15 +1830,20 @@ impl LayoutSystem for ScrollingLayoutSystem {
                 .filter(|w| !self.inactive.contains(w))
                 .or_else(|| column.windows.iter().copied().find(|w| !self.inactive.contains(w)))
         };
+        let column = state.columns.get(col)?;
         match direction {
-            Direction::Left => state.columns[..col].iter().rev().find_map(selected),
-            Direction::Right => state.columns[col + 1..].iter().find_map(selected),
-            Direction::Up => state.columns[col].windows[..row]
+            Direction::Left => state.columns.get(..col)?.iter().rev().find_map(selected),
+            Direction::Right => state.columns.get(col + 1..)?.iter().find_map(selected),
+            Direction::Up => column
+                .windows
+                .get(..row)?
                 .iter()
                 .rev()
                 .copied()
                 .find(|w| !self.inactive.contains(w)),
-            Direction::Down => state.columns[col].windows[row + 1..]
+            Direction::Down => column
+                .windows
+                .get(row + 1..)?
                 .iter()
                 .copied()
                 .find(|w| !self.inactive.contains(w)),
@@ -1885,7 +1928,7 @@ impl LayoutSystem for ScrollingLayoutSystem {
         if state
             .fullscreen_restore
             .as_ref()
-            .is_some_and(|b| b.column != state.columns[state.active_column].id)
+            .is_some_and(|b| Some(b.column) != state.columns.get(state.active_column).map(|c| c.id))
         {
             state.fullscreen_restore = None;
         }
@@ -1920,13 +1963,15 @@ impl LayoutSystem for ScrollingLayoutSystem {
         state.mutate(&self.settings, &self.inactive, |state| {
             // Display moves can resize only the height. Keep the requested width
             // (including preserved pixel widths) unless the width actually changed.
+            let Some(column) = state.columns.get_mut(col) else {
+                return;
+            };
             if width_changed {
-                state.columns[col].width = ColumnWidth::Proportion(clamp_ratio(
+                column.width = ColumnWidth::Proportion(clamp_ratio(
                     width_ratio(tiling.size.width, gaps.inner.horizontal, new_frame.size.width),
                     &self.settings,
                 ));
             }
-            let column = &mut state.columns[col];
             if height_changed && column.windows.len() > 1 {
                 let total = (tiling.size.height
                     - gaps.inner.vertical * column.windows.len().saturating_sub(1) as f64)
@@ -1953,12 +1998,22 @@ impl LayoutSystem for ScrollingLayoutSystem {
         };
         state.mutate(&self.settings, &self.inactive, |state| {
             let selected = state.selected(&self.inactive);
-            let aw = state.columns[ac].height_weights[ar];
-            let bw = state.columns[bc].height_weights[br];
-            state.columns[ac].windows[ar] = b;
-            state.columns[bc].windows[br] = a;
-            state.columns[ac].height_weights[ar] = bw;
-            state.columns[bc].height_weights[br] = aw;
+            let weight = |state: &LayoutState, col: usize, row: usize| {
+                state.columns.get(col)?.height_weights.get(row).copied()
+            };
+            let (Some(aw), Some(bw)) = (weight(state, ac, ar), weight(state, bc, br)) else {
+                return;
+            };
+            for (col, row, wid, weight) in [(ac, ar, b, bw), (bc, br, a, aw)] {
+                if let Some(column) = state.columns.get_mut(col) {
+                    if let Some(slot) = column.windows.get_mut(row) {
+                        *slot = wid;
+                    }
+                    if let Some(slot) = column.height_weights.get_mut(row) {
+                        *slot = weight;
+                    }
+                }
+            }
             if let Some(wid) = selected {
                 state.activate(wid);
             }
@@ -2005,9 +2060,13 @@ impl LayoutSystem for ScrollingLayoutSystem {
             let Some((col, row)) = state.selected_location(&self.inactive) else {
                 return false;
             };
-            if horizontal && state.columns[col].windows.len() > 1 {
-                let wid = state.selected(&self.inactive).unwrap();
-                let (width, weight) = state.detach(wid, &self.inactive).unwrap();
+            if horizontal && state.columns.get(col).is_some_and(|c| c.windows.len() > 1) {
+                let Some(wid) = state.selected(&self.inactive) else {
+                    return false;
+                };
+                let Some((width, weight)) = state.detach(wid, &self.inactive) else {
+                    return false;
+                };
                 state.new_column(
                     col + usize::from(direction == Direction::Right),
                     wid,
@@ -2019,13 +2078,20 @@ impl LayoutSystem for ScrollingLayoutSystem {
             let (index, len) = if horizontal {
                 (col, state.columns.len())
             } else {
-                (row, state.columns[col].windows.len())
+                (row, state.columns.get(col).map_or(0, |c| c.windows.len()))
             };
             let participates = |candidate: &usize| {
                 if horizontal {
-                    state.columns[*candidate].windows.iter().any(|w| !self.inactive.contains(w))
+                    state
+                        .columns
+                        .get(*candidate)
+                        .is_some_and(|c| c.windows.iter().any(|w| !self.inactive.contains(w)))
                 } else {
-                    !self.inactive.contains(&state.columns[col].windows[*candidate])
+                    state
+                        .columns
+                        .get(col)
+                        .and_then(|c| c.windows.get(*candidate))
+                        .is_some_and(|w| !self.inactive.contains(w))
                 }
             };
             let target = match direction {
@@ -2039,7 +2105,9 @@ impl LayoutSystem for ScrollingLayoutSystem {
                 state.columns.swap(col, target);
                 state.active_column = target;
             } else {
-                let column = &mut state.columns[col];
+                let Some(column) = state.columns.get_mut(col) else {
+                    return false;
+                };
                 column.windows.swap(row, target);
                 column.height_weights.swap(row, target);
                 column.active_window = target;
@@ -2063,17 +2131,25 @@ impl LayoutSystem for ScrollingLayoutSystem {
         let Some(wid) = self.selected_window(from) else {
             return;
         };
-        let fullscreen = self.layouts[from].fullscreen.remove(&wid);
-        let within_gaps = self.layouts[from].fullscreen_within_gaps.remove(&wid);
-        self.layouts[from].transient_restore = None;
-        let fullscreen_restore = self.layouts[from].fullscreen_restore.clone();
-        let (width, weight) = self.layouts[from]
-            .mutate(&self.settings, &self.inactive, |s| s.detach(wid, &self.inactive))
-            .unwrap();
-        if !self.layouts[from].restore_fullscreen_view() {
-            self.layouts[from].reveal(&self.settings);
+        let Some(source) = self.layouts.get_mut(from) else {
+            return;
+        };
+        let fullscreen = source.fullscreen.remove(&wid);
+        let within_gaps = source.fullscreen_within_gaps.remove(&wid);
+        source.transient_restore = None;
+        let fullscreen_restore = source.fullscreen_restore.clone();
+        let Some((width, weight)) =
+            source.mutate(&self.settings, &self.inactive, |s| s.detach(wid, &self.inactive))
+        else {
+            return;
+        };
+        if !source.restore_fullscreen_view() {
+            source.reveal(&self.settings);
         }
-        self.layouts[to].mutate(&self.settings, &self.inactive, |s| {
+        let Some(destination) = self.layouts.get_mut(to) else {
+            return;
+        };
+        destination.mutate(&self.settings, &self.inactive, |s| {
             let index = s.selected_location(&self.inactive).map_or(0, |(col, _)| col + 1);
             s.new_column(index, wid, width, weight);
             if fullscreen {
@@ -2083,14 +2159,14 @@ impl LayoutSystem for ScrollingLayoutSystem {
                 s.fullscreen_within_gaps.insert(wid);
             }
             s.fullscreen_restore =
-                fullscreen_restore.filter(|_| fullscreen || within_gaps).map(|bookmark| {
-                    ViewBookmark {
-                        column: s.columns[s.active_column].id,
+                fullscreen_restore.filter(|_| fullscreen || within_gaps).and_then(|bookmark| {
+                    Some(ViewBookmark {
+                        column: s.columns.get(s.active_column)?.id,
                         relative_offset: bookmark.relative_offset,
-                    }
+                    })
                 });
         });
-        self.layouts[to].reveal(&self.settings);
+        destination.reveal(&self.settings);
     }
 
     fn toggle_fullscreen_of_selection(&mut self, layout: LayoutId) -> Vec<WindowId> {
@@ -2150,12 +2226,19 @@ impl LayoutSystem for ScrollingLayoutSystem {
         } else {
             return Vec::new();
         };
-        let moved = state.columns[target].windows.clone();
-        let selected = state.selected(&self.inactive).unwrap();
+        let Some(moved) = state.columns.get(target).map(|c| c.windows.clone()) else {
+            return Vec::new();
+        };
+        let Some(selected) = state.selected(&self.inactive) else {
+            return Vec::new();
+        };
         state.transient_restore = None;
         state.mutate(&self.settings, &self.inactive, |state| {
             let mut neighbor = state.columns.remove(target);
-            let column = &mut state.columns[col - usize::from(target < col)];
+            let Some(column) = state.columns.get_mut(col - usize::from(target < col)) else {
+                state.columns.insert(target, neighbor);
+                return;
+            };
             column.windows.append(&mut neighbor.windows);
             column.height_weights.append(&mut neighbor.height_weights);
             state.activate(selected);
@@ -2172,13 +2255,20 @@ impl LayoutSystem for ScrollingLayoutSystem {
         else {
             return Vec::new();
         };
-        let selected = state.selected(&self.inactive).unwrap();
-        let moved: Vec<_> =
-            state.columns[col].windows.iter().copied().filter(|w| *w != selected).collect();
+        let Some(selected) = state.selected(&self.inactive) else {
+            return Vec::new();
+        };
+        let moved: Vec<_> = state
+            .columns
+            .get(col)
+            .map(|c| c.windows.iter().copied().filter(|w| *w != selected).collect())
+            .unwrap_or_default();
         state.transient_restore = None;
         state.mutate(&self.settings, &self.inactive, |state| {
             for (index, &wid) in moved.iter().enumerate() {
-                let (width, weight) = state.detach(wid, &self.inactive).unwrap();
+                let Some((width, weight)) = state.detach(wid, &self.inactive) else {
+                    continue;
+                };
                 state.new_column(col + 1 + index, wid, width, weight);
             }
             state.activate(selected);
@@ -2213,13 +2303,19 @@ impl LayoutSystem for ScrollingLayoutSystem {
             return;
         };
         let vertical = orientation == ResizeOrientation::Vertical
-            || (orientation == ResizeOrientation::Smart && state.columns[col].windows.len() > 1);
+            || (orientation == ResizeOrientation::Smart
+                && state.columns.get(col).is_some_and(|c| c.windows.len() > 1));
         state.mutate(&self.settings, &self.inactive, |state| {
-            let column = &mut state.columns[col];
+            let Some(column) = state.columns.get_mut(col) else {
+                return;
+            };
             if vertical {
                 if column.windows.len() > 1 {
                     let total: f64 = column.height_weights.iter().sum();
-                    let share = (column.height_weights[row] / total + amount).clamp(0.05, 0.95);
+                    let Some(&weight) = column.height_weights.get(row) else {
+                        return;
+                    };
+                    let share = (weight / total + amount).clamp(0.05, 0.95);
                     set_height_share(column, row, share, total.max(10_000.0));
                 }
             } else {
