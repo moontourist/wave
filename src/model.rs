@@ -19,4 +19,4 @@ pub mod broadcast;
 pub mod drag;
 pub mod reactor;
 pub mod space_activation;
-pub use reactor::RiftState;
+pub use reactor::WaveState;

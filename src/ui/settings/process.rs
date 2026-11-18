@@ -1,4 +1,4 @@
-//! `rift --settings`: the Settings window in a short-lived child process.
+//! `wave --settings`: the Settings window in a short-lived child process.
 //!
 //! The daemon owns window management and configuration; this process owns only the native UI
 //! and reaches the daemon over its Mach service. Closing the window exits the process, which
@@ -21,10 +21,10 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSProcessInfo, NSString};
-use rift_client::{
-    ApplicationData, ClientError, DisplayData, RiftEvent, RiftMachClient, RiftRequest,
-};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use wave_client::{
+    ApplicationData, ClientError, DisplayData, WaveEvent, WaveMachClient, WaveRequest,
+};
 
 use super::{Action, Finish, Request, Settings, updates};
 use crate::actor::config::{SourceEdit, SourceSnapshot};
@@ -119,16 +119,16 @@ pub fn run(config_path: PathBuf) -> ! {
     let lost = messages.clone();
     let daemon = std::os::unix::process::parent_id();
     crate::sys::dispatch::on_proc_exit(daemon as i32, move || {
-        let _ = lost.send(Message::Lost("Rift quit.".into()));
+        let _ = lost.send(Message::Lost("Wave quit.".into()));
     });
     if std::os::unix::process::parent_id() != daemon {
-        let _ = messages.send(Message::Lost("Rift quit.".into()));
+        let _ = messages.send(Message::Lost("Wave quit.".into()));
     }
     let (jobs, queue) = mpsc::channel();
     let worker = messages.clone();
     #[expect(
         clippy::expect_used,
-        reason = "Settings can't reach Rift without its IPC thread; the child process exits and the user reopens it"
+        reason = "Settings can't reach Wave without its IPC thread; the child process exits and the user reopens it"
     )]
     std::thread::Builder::new()
         .name("settings-ipc".into())
@@ -137,8 +137,8 @@ pub fn run(config_path: PathBuf) -> ! {
 
     // Keep the same executable and signing identity, but distinguish the Settings child
     // in OS process listings. Foundation's processName alone does not rename it in the kernel.
-    NSProcessInfo::processInfo().setProcessName(&NSString::from_str("rift-settings"));
-    let name = c"rift-settings";
+    NSProcessInfo::processInfo().setProcessName(&NSString::from_str("wave-settings"));
+    let name = c"wave-settings";
     // SAFETY: both strings are valid for this call; only the current process is renamed.
     let result = unsafe {
         nix::libc::sysctlbyname(
@@ -154,7 +154,7 @@ pub fn run(config_path: PathBuf) -> ! {
     }
     #[expect(
         clippy::expect_used,
-        reason = "`rift --settings` calls run() from main()"
+        reason = "`wave --settings` calls run() from main()"
     )]
     let mtm = MainThreadMarker::new().expect("Settings runs on the main thread");
     let appkit = super::timing::start();
@@ -217,10 +217,10 @@ async fn open(
         if recording && !NSApplication::sharedApplication(mtm).isActive() {
             return Err("Activate Settings before recording a shortcut".into());
         }
-        RiftMachClient::connect()
+        WaveMachClient::connect()
             .and_then(|client| client.set_shortcut_recording(std::process::id() as i32, recording))
             .map_err(|error| {
-                format!("Cannot safely record keys while Rift is unavailable: {error}")
+                format!("Cannot safely record keys while Wave is unavailable: {error}")
             })
     });
     super::timing::finish(construction, "Settings::new");
@@ -332,14 +332,14 @@ async fn open(
 /// executor's poll, whose run-loop source would otherwise re-enter during the modal loop.
 /// Callers stop handling messages until then.
 fn fail(error: &str) {
-    tracing::error!(%error, "Settings cannot reach Rift");
+    tracing::error!(%error, "Settings cannot reach Wave");
     dispatchr::queue::main().after_f_s(Time::NOW, error.to_owned(), |error| {
         #[expect(
             clippy::expect_used,
             reason = "this block runs on the main dispatch queue"
         )]
         let ui = Ui::new(MainThreadMarker::new().expect("main queue"));
-        Alert::new(&ui, "Rift Settings can’t reach Rift", &error)
+        Alert::new(&ui, "Wave Settings can’t reach Wave", &error)
             .button("OK")
             .run_modal();
         std::process::exit(1)
@@ -546,7 +546,7 @@ impl Session {
 
 /// The IPC worker: one blocking client, used sequentially, plus one event receiver.
 fn serve(jobs: mpsc::Receiver<Job>, messages: UnboundedSender<Message>) {
-    let client = RiftMachClient;
+    let client = WaveMachClient;
     let initialization = super::timing::start();
     let (snapshot, subscription) = match client.initialize_settings::<SourceSnapshot>() {
         Ok(session) => session,
@@ -559,14 +559,14 @@ fn serve(jobs: mpsc::Receiver<Job>, messages: UnboundedSender<Message>) {
     let events = messages.clone();
     #[expect(
         clippy::expect_used,
-        reason = "Settings can't follow Rift's changes without its event thread; the child process exits and the user reopens it"
+        reason = "Settings can't follow Wave's changes without its event thread; the child process exits and the user reopens it"
     )]
     std::thread::Builder::new()
         .name("settings-events".into())
         .spawn(move || {
             loop {
                 match subscription.recv_event() {
-                    Ok(RiftEvent::ConfigChanged { revision }) => {
+                    Ok(WaveEvent::ConfigChanged { revision }) => {
                         if events.send(Message::ConfigChanged(revision)).is_err() {
                             return;
                         }
@@ -597,8 +597,8 @@ fn serve(jobs: mpsc::Receiver<Job>, messages: UnboundedSender<Message>) {
                     Message::Runtime(None)
                 }),
             },
-            Job::Source => source(&client, RiftRequest::GetSettingsSource),
-            Job::Reload => source(&client, RiftRequest::ReloadSettingsSource),
+            Job::Source => source(&client, WaveRequest::GetSettingsSource),
+            Job::Reload => source(&client, WaveRequest::ReloadSettingsSource),
             Job::Apply(expected_revision, base, edit) => {
                 apply(&client, expected_revision, base, edit)
             }
@@ -612,13 +612,13 @@ fn serve(jobs: mpsc::Receiver<Job>, messages: UnboundedSender<Message>) {
 }
 
 fn call<T: serde::de::DeserializeOwned>(
-    client: &RiftMachClient,
-    request: &RiftRequest,
+    client: &WaveMachClient,
+    request: &WaveRequest,
 ) -> Result<T, ClientError> {
     client.send_typed_request(request)?.into_result().map_err(ClientError::Server)
 }
 
-fn source(client: &RiftMachClient, request: RiftRequest) -> Message {
+fn source(client: &WaveMachClient, request: WaveRequest) -> Message {
     match call::<SourceSnapshot>(client, &request) {
         Ok(snapshot) => Message::Source(Ok(snapshot.into())),
         Err(error) => recoverable(error).map_or_else(Message::Lost, |e| Message::Source(Err(e))),
@@ -628,7 +628,7 @@ fn source(client: &RiftMachClient, request: RiftRequest) -> Message {
 /// Clone, compare and serialize off the main thread. A no-op returns the same shared
 /// snapshot, so it needs neither serialization nor a Mach request.
 fn apply(
-    client: &RiftMachClient,
+    client: &WaveMachClient,
     revision: u64,
     base: Arc<ConfigSource>,
     edit: SourceEdit,
@@ -641,7 +641,7 @@ fn apply(
         return Message::Source(Ok(Snapshot { revision, source: base }));
     }
     match serde_json::to_value(&candidate) {
-        Ok(candidate) => source(client, RiftRequest::ApplySettingsSource {
+        Ok(candidate) => source(client, WaveRequest::ApplySettingsSource {
             expected_revision: revision,
             source: candidate,
         }),
@@ -649,9 +649,9 @@ fn apply(
     }
 }
 
-fn runtime(client: &RiftMachClient) -> Result<Runtime, ClientError> {
-    let displays: Vec<DisplayData> = call(client, &RiftRequest::GetDisplays)?;
-    let applications = call(client, &RiftRequest::GetApplications)?;
+fn runtime(client: &WaveMachClient) -> Result<Runtime, ClientError> {
+    let displays: Vec<DisplayData> = call(client, &WaveRequest::GetDisplays)?;
+    let applications = call(client, &WaveRequest::GetApplications)?;
     Ok((displays.into_iter().map(screen).collect(), applications))
 }
 
@@ -673,7 +673,7 @@ fn recoverable(error: ClientError) -> Result<String, String> {
 }
 
 fn screen(display: DisplayData) -> ScreenInfo {
-    let rift_client::Rect { origin, size } = display.frame;
+    let wave_client::Rect { origin, size } = display.frame;
     ScreenInfo {
         id: ScreenId::new(display.screen_id),
         frame: CGRect::new(

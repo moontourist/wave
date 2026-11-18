@@ -1,4 +1,4 @@
-name: Tag Rift version
+name: Tag Wave version
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: tag-rift-version
+  group: tag-wave-version
   cancel-in-progress: false
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.sha }}
       - name: Verify default config is present
-        run: test -s rift.default.toml
+        run: test -s wave.default.toml
       - name: Tag changed root package version
         env:
           BEFORE: ${{ github.event.before }}

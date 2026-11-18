@@ -1,12 +1,12 @@
-//! A small, synchronous Rust client for Rift's Mach IPC API.
+//! A small, synchronous Rust client for Wave's Mach IPC API.
 //!
-//! The client talks to the same bootstrap service as `rift-cli` and includes
+//! The client talks to the same bootstrap service as `wave-cli` and includes
 //! the public request and response wire types.
 
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 #[cfg(not(target_os = "macos"))]
-compile_error!("rift-client only supports macOS");
+compile_error!("wave-client only supports macOS");
 
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -16,13 +16,13 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-pub use rift_protocol::*;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use thiserror::Error;
+pub use wave_protocol::*;
 
 const MAX_MESSAGE_SIZE: usize = 262_144;
-const DEFAULT_SERVICE_NAME: &str = "git.acsandmann.rift";
+const DEFAULT_SERVICE_NAME: &str = "com.moontourist.wave";
 
 type KernReturn = c_int;
 type MachPort = u32;
@@ -51,9 +51,9 @@ const TASK_BOOTSTRAP_PORT: c_int = 4;
 
 #[derive(Debug, Error)]
 pub enum ClientError {
-    #[error("Rift's Mach service is not registered")]
+    #[error("Wave's Mach service is not registered")]
     ServiceUnavailable,
-    #[error("Rift request timed out after 10 seconds")]
+    #[error("Wave request timed out after 10 seconds")]
     RequestTimedOut,
     #[error("invalid Mach service name")]
     InvalidServiceName,
@@ -64,7 +64,7 @@ pub enum ClientError {
     },
     #[error("IPC payload exceeds the {MAX_MESSAGE_SIZE}-byte limit")]
     MessageTooLarge,
-    #[error("Rift returned an empty response")]
+    #[error("Wave returned an empty response")]
     EmptyResponse,
     #[error("{kind} payload is missing its NUL terminator")]
     MissingTerminator { kind: &'static str },
@@ -76,28 +76,28 @@ pub enum ClientError {
         #[source]
         source: serde_json::Error,
     },
-    #[error("Rift rejected the subscription: {0}")]
+    #[error("Wave rejected the subscription: {0}")]
     SubscriptionRejected(Value),
-    #[error("Rift returned an error: {0}")]
+    #[error("Wave returned an error: {0}")]
     Server(Value),
-    #[error("Rift returned an unknown response shape")]
+    #[error("Wave returned an unknown response shape")]
     UnknownResponse,
     #[error("subscription event queue is poisoned by a panicked thread")]
     Poisoned,
 }
 
-/// A handle for issuing synchronous requests to the running Rift process.
+/// A handle for issuing synchronous requests to the running Wave process.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct RiftMachClient;
+pub struct WaveMachClient;
 
-impl RiftMachClient {
+impl WaveMachClient {
     /// Creates a client handle.
     ///
     /// Service discovery happens when a request is sent, allowing callers to
-    /// construct the client before Rift has finished starting.
+    /// construct the client before Wave has finished starting.
     pub fn connect() -> Result<Self, ClientError> { Ok(Self) }
 
-    /// Returns whether Rift's bootstrap service is currently registered.
+    /// Returns whether Wave's bootstrap service is currently registered.
     pub fn is_available(&self) -> bool {
         let service_port = service_name()
             .ok()
@@ -107,7 +107,7 @@ impl RiftMachClient {
     }
 
     /// Sends one request with a ten-second limit on each send and reply wait.
-    pub fn send_request(&self, request: &RiftRequest) -> Result<JsonRiftResponse, ClientError> {
+    pub fn send_request(&self, request: &WaveRequest) -> Result<JsonWaveResponse, ClientError> {
         self.send_typed_request(request)
     }
 
@@ -115,8 +115,8 @@ impl RiftMachClient {
     /// types. Sending and waiting for the reply each time out after ten seconds.
     pub fn send_typed_request<T: DeserializeOwned>(
         &self,
-        request: &RiftRequest,
-    ) -> Result<RiftResponse<T>, ClientError> {
+        request: &WaveRequest,
+    ) -> Result<WaveResponse<T>, ClientError> {
         let request_json = serde_json::to_vec(request).map_err(ClientError::Encode)?;
         let response = send_request(&request_json, None)?;
         parse_json_payload(&response, "response")
@@ -124,7 +124,7 @@ impl RiftMachClient {
 
     /// Lists virtual workspaces, optionally for a specific macOS space.
     pub fn get_workspaces(&self, space_id: Option<u64>) -> Result<Vec<WorkspaceData>, ClientError> {
-        self.request(RiftRequest::GetWorkspaces { space_id })
+        self.request(WaveRequest::GetWorkspaces { space_id })
     }
 
     /// Lists virtual workspaces for a display's current macOS space.
@@ -132,14 +132,14 @@ impl RiftMachClient {
         &self,
         display_uuid: impl Into<String>,
     ) -> Result<Vec<WorkspaceData>, ClientError> {
-        self.request(RiftRequest::GetWorkspacesForDisplay {
+        self.request(WaveRequest::GetWorkspacesForDisplay {
             display_uuid: display_uuid.into(),
         })
     }
 
     /// Lists managed windows, optionally filtered by a macOS space.
     pub fn get_windows(&self, space_id: Option<u64>) -> Result<Vec<WindowData>, ClientError> {
-        self.request(RiftRequest::GetWindows { space_id })
+        self.request(WaveRequest::GetWindows { space_id })
     }
 
     /// Lists managed windows for a display's current macOS space.
@@ -147,19 +147,19 @@ impl RiftMachClient {
         &self,
         display_uuid: impl Into<String>,
     ) -> Result<Vec<WindowData>, ClientError> {
-        self.request(RiftRequest::GetWindowsForDisplay {
+        self.request(WaveRequest::GetWindowsForDisplay {
             display_uuid: display_uuid.into(),
         })
     }
 
     /// Lists connected displays.
     pub fn get_displays(&self) -> Result<Vec<DisplayData>, ClientError> {
-        self.request(RiftRequest::GetDisplays)
+        self.request(WaveRequest::GetDisplays)
     }
 
     /// Returns information about a managed window.
     pub fn get_window_info(&self, window_id: WindowId) -> Result<WindowData, ClientError> {
-        self.request(RiftRequest::GetWindowInfo { window_id })
+        self.request(WaveRequest::GetWindowInfo { window_id })
     }
 
     /// Returns the layout state for a macOS space.
@@ -174,7 +174,7 @@ impl RiftMachClient {
         space_id: Option<u64>,
         workspace_id: Option<usize>,
     ) -> Result<LayoutStateData, ClientError> {
-        self.request(RiftRequest::GetLayoutState { space_id, workspace_id })
+        self.request(WaveRequest::GetLayoutState { space_id, workspace_id })
     }
 
     /// Returns layout state for a display's current macOS space and an optional
@@ -184,7 +184,7 @@ impl RiftMachClient {
         display_uuid: impl Into<String>,
         workspace_id: Option<usize>,
     ) -> Result<LayoutStateData, ClientError> {
-        self.request(RiftRequest::GetLayoutStateForDisplay {
+        self.request(WaveRequest::GetLayoutStateForDisplay {
             display_uuid: display_uuid.into(),
             workspace_id,
         })
@@ -196,7 +196,7 @@ impl RiftMachClient {
         space_id: Option<u64>,
         workspace_id: Option<usize>,
     ) -> Result<Vec<WorkspaceLayoutData>, ClientError> {
-        self.request(RiftRequest::GetWorkspaceLayouts { space_id, workspace_id })
+        self.request(WaveRequest::GetWorkspaceLayouts { space_id, workspace_id })
     }
 
     /// Returns layout modes for workspaces in a display's current macOS space.
@@ -205,44 +205,44 @@ impl RiftMachClient {
         display_uuid: impl Into<String>,
         workspace_id: Option<usize>,
     ) -> Result<Vec<WorkspaceLayoutData>, ClientError> {
-        self.request(RiftRequest::GetWorkspaceLayoutsForDisplay {
+        self.request(WaveRequest::GetWorkspaceLayoutsForDisplay {
             display_uuid: display_uuid.into(),
             workspace_id,
         })
     }
 
-    /// Lists running applications known to Rift.
+    /// Lists running applications known to Wave.
     pub fn get_applications(&self) -> Result<Vec<ApplicationData>, ClientError> {
-        self.request(RiftRequest::GetApplications)
+        self.request(WaveRequest::GetApplications)
     }
 
     /// Returns the active binding mode name.
     pub fn get_binding_mode(&self) -> Result<String, ClientError> {
-        self.request(RiftRequest::GetBindingMode)
+        self.request(WaveRequest::GetBindingMode)
     }
 
     /// Returns the current metrics payload.
     pub fn get_metrics(&self) -> Result<Value, ClientError> {
-        self.request(RiftRequest::GetMetrics)
+        self.request(WaveRequest::GetMetrics)
     }
 
     /// Returns the current configuration as JSON until the config model is
-    /// moved into `rift-protocol`.
-    pub fn get_config(&self) -> Result<Value, ClientError> { self.request(RiftRequest::GetConfig) }
+    /// moved into `wave-protocol`.
+    pub fn get_config(&self) -> Result<Value, ClientError> { self.request(WaveRequest::GetConfig) }
 
-    /// Executes a typed Rift command.
-    pub fn execute(&self, command: RiftCommand) -> Result<Value, ClientError> {
-        self.request(RiftRequest::ExecuteCommand { command })
+    /// Executes a typed Wave command.
+    pub fn execute(&self, command: WaveCommand) -> Result<Value, ClientError> {
+        self.request(WaveRequest::ExecuteCommand { command })
     }
 
-    /// Executes a typed Rift command.
-    pub fn execute_command(&self, command: RiftCommand) -> Result<Value, ClientError> {
+    /// Executes a typed Wave command.
+    pub fn execute_command(&self, command: WaveCommand) -> Result<Value, ClientError> {
         self.execute(command)
     }
 
     /// Subscribes to an event and returns a handle that blocks for future events.
-    pub fn subscribe(&self, event: EventKind) -> Result<RiftMachSubscription, ClientError> {
-        self.start_subscription::<Value>(RiftRequest::Subscribe { event })
+    pub fn subscribe(&self, event: EventKind) -> Result<WaveMachSubscription, ClientError> {
+        self.start_subscription::<Value>(WaveRequest::Subscribe { event })
             .map(|(_, subscription)| subscription)
     }
 
@@ -250,14 +250,14 @@ impl RiftMachClient {
     /// in one round trip. Changes racing the snapshot are retained for `recv_event`.
     pub fn initialize_settings<T: DeserializeOwned>(
         &self,
-    ) -> Result<(T, RiftMachSubscription), ClientError> {
-        self.start_subscription(RiftRequest::InitializeSettings)
+    ) -> Result<(T, WaveMachSubscription), ClientError> {
+        self.start_subscription(WaveRequest::InitializeSettings)
     }
 
     fn start_subscription<T: DeserializeOwned>(
         &self,
-        request: RiftRequest,
-    ) -> Result<(T, RiftMachSubscription), ClientError> {
+        request: WaveRequest,
+    ) -> Result<(T, WaveMachSubscription), ClientError> {
         let reply_port = ReplyPort::allocate(MACH_PORT_QLIMIT_LARGE)?;
         let request_json = serde_json::to_vec(&request).map_err(ClientError::Encode)?;
         let deadline = std::time::Instant::now() + Duration::from_millis(REQUEST_TIMEOUT_MS.into());
@@ -279,18 +279,18 @@ impl RiftMachClient {
                 payload = receive_message(reply_port.name, Some(timeout))?.1;
                 continue;
             }
-            return match parse_json_payload::<RiftResponse<T>>(&payload, "response")? {
-                RiftResponse::Success { data } => Ok((data, RiftMachSubscription {
+            return match parse_json_payload::<WaveResponse<T>>(&payload, "response")? {
+                WaveResponse::Success { data } => Ok((data, WaveMachSubscription {
                     reply_port,
                     pending: Mutex::new(pending),
                 })),
-                RiftResponse::Error { error } => Err(ClientError::SubscriptionRejected(error)),
+                WaveResponse::Error { error } => Err(ClientError::SubscriptionRejected(error)),
                 _ => Err(ClientError::UnknownResponse),
             };
         }
     }
 
-    /// Opens a session for claiming windows from Rift. Claims end when they are
+    /// Opens a session for claiming windows from Wave. Claims end when they are
     /// released or when the session is dropped (including process exit).
     pub fn window_management_session(&self) -> Result<WindowManagementSession, ClientError> {
         Ok(WindowManagementSession {
@@ -301,13 +301,13 @@ impl RiftMachClient {
 
     /// Synchronously acknowledge capture before the UI accepts a recorded keystroke.
     pub fn set_shortcut_recording(&self, pid: i32, recording: bool) -> Result<(), ClientError> {
-        self.request(RiftRequest::SetShortcutRecording { pid, recording })
+        self.request(WaveRequest::SetShortcutRecording { pid, recording })
     }
 
-    fn request<T: DeserializeOwned>(&self, request: RiftRequest) -> Result<T, ClientError> {
+    fn request<T: DeserializeOwned>(&self, request: WaveRequest) -> Result<T, ClientError> {
         match self.send_typed_request(&request)? {
-            RiftResponse::Success { data } => Ok(data),
-            RiftResponse::Error { error } => Err(ClientError::Server(error)),
+            WaveResponse::Success { data } => Ok(data),
+            WaveResponse::Error { error } => Err(ClientError::Server(error)),
             _ => Err(ClientError::UnknownResponse),
         }
     }
@@ -322,7 +322,7 @@ pub struct WindowManagementSession {
 }
 
 impl WindowManagementSession {
-    /// Excludes a window from Rift's management until it is released.
+    /// Excludes a window from Wave's management until it is released.
     pub fn claim_window(&mut self, window_id: WindowId) -> Result<(), ClientError> {
         self.claim_window_with_flags(window_id, WindowClaimFlags::default())
     }
@@ -333,26 +333,26 @@ impl WindowManagementSession {
         window_id: WindowId,
         flags: WindowClaimFlags,
     ) -> Result<(), ClientError> {
-        self.request(RiftRequest::ClaimWindow { window_id, flags })
+        self.request(WaveRequest::ClaimWindow { window_id, flags })
     }
 
-    /// Returns a claimed window to Rift. Releasing an unclaimed window succeeds.
+    /// Returns a claimed window to Wave. Releasing an unclaimed window succeeds.
     pub fn release_window(&mut self, window_id: WindowId) -> Result<(), ClientError> {
-        self.request(RiftRequest::ReleaseWindow { window_id })
+        self.request(WaveRequest::ReleaseWindow { window_id })
     }
 
     /// Claim and release are idempotent, so a request may be retried after a
     /// timeout. Replies carry the request id; a late reply to an abandoned
     /// request is discarded instead of being taken for the current one.
-    fn request(&mut self, request: RiftRequest) -> Result<(), ClientError> {
+    fn request(&mut self, request: WaveRequest) -> Result<(), ClientError> {
         let id = self.next_request_id();
         let payload = serde_json::to_vec(&request).map_err(ClientError::Encode)?;
         let port = self.reply_port.name;
         let first = send_request_with_id(&payload, Some((port, id)))?;
         let response = receive_reply(port, id, first)?;
-        match parse_json_payload::<RiftResponse>(&response, "response")? {
-            RiftResponse::Success { .. } => Ok(()),
-            RiftResponse::Error { error } => Err(ClientError::Server(error)),
+        match parse_json_payload::<WaveResponse>(&response, "response")? {
+            WaveResponse::Success { .. } => Ok(()),
+            WaveResponse::Error { error } => Err(ClientError::Server(error)),
             _ => Err(ClientError::UnknownResponse),
         }
     }
@@ -365,14 +365,14 @@ impl WindowManagementSession {
 
 /// A live event subscription. Dropping it releases its Mach receive right.
 #[derive(Debug)]
-pub struct RiftMachSubscription {
+pub struct WaveMachSubscription {
     reply_port: ReplyPort,
     pending: Mutex<VecDeque<Vec<u8>>>,
 }
 
-impl RiftMachSubscription {
+impl WaveMachSubscription {
     /// Blocks until the next event arrives on this subscription.
-    pub fn recv_event(&self) -> Result<RiftEvent, ClientError> { self.recv_event_as() }
+    pub fn recv_event(&self) -> Result<WaveEvent, ClientError> { self.recv_event_as() }
 
     /// Blocks until the next event arrives and returns its raw JSON payload.
     ///
@@ -411,7 +411,7 @@ fn parse_json_payload<T: DeserializeOwned>(
 }
 
 fn service_name() -> Result<CString, ClientError> {
-    let name = std::env::var("RIFT_BS_NAME").unwrap_or_else(|_| DEFAULT_SERVICE_NAME.to_owned());
+    let name = std::env::var("WAVE_BS_NAME").unwrap_or_else(|_| DEFAULT_SERVICE_NAME.to_owned());
     CString::new(name).map_err(|_| ClientError::InvalidServiceName)
 }
 
@@ -831,11 +831,11 @@ mod tests {
     const OK: &[u8] = b"{\"data\":null}\0";
 
     thread_local! {
-        /// Requests from this thread go to this port instead of Rift's bootstrap service.
+        /// Requests from this thread go to this port instead of Wave's bootstrap service.
         pub(super) static SERVICE: std::cell::Cell<MachPort> = const { std::cell::Cell::new(0) };
     }
 
-    /// Sends a message to `port` as a Rift reply would.
+    /// Sends a message to `port` as a Wave reply would.
     fn deliver(port: MachPort, id: i32, payload: &[u8]) {
         let header = MachMessageHeader {
             bits: message_bits(MACH_MSG_TYPE_COPY_SEND, 0),
@@ -857,10 +857,10 @@ mod tests {
         );
     }
 
-    /// Serves `count` requests on a fake Rift service port for this thread's clients.
+    /// Serves `count` requests on a fake Wave service port for this thread's clients.
     fn serve(
         count: usize,
-        mut respond: impl FnMut(i32, MachPort, RiftRequest) + Send + 'static,
+        mut respond: impl FnMut(i32, MachPort, WaveRequest) + Send + 'static,
     ) -> (ReplyPort, thread::JoinHandle<()>) {
         let service = ReplyPort::allocate(MACH_PORT_QLIMIT_LARGE).unwrap();
         let port = service.name;
@@ -897,8 +897,8 @@ mod tests {
     #[test]
     fn window_claim_api_matches_pr_519() {
         type Session = WindowManagementSession;
-        let _: fn(&RiftMachClient) -> Result<Session, ClientError> =
-            RiftMachClient::window_management_session;
+        let _: fn(&WaveMachClient) -> Result<Session, ClientError> =
+            WaveMachClient::window_management_session;
         let _: fn(&mut Session, WindowId) -> Result<(), ClientError> = Session::claim_window;
         let _: fn(&mut Session, WindowId, WindowClaimFlags) -> Result<(), ClientError> =
             Session::claim_window_with_flags;
@@ -917,7 +917,7 @@ mod tests {
 
     #[test]
     fn session_request_ids_never_collide_with_notification_ids() {
-        let mut session = RiftMachClient.window_management_session().unwrap();
+        let mut session = WaveMachClient.window_management_session().unwrap();
         for sequence in [
             0,
             63,
@@ -954,11 +954,11 @@ mod tests {
             );
             assert!(matches!(
                 request,
-                RiftRequest::ClaimWindow { .. } | RiftRequest::ReleaseWindow { .. }
+                WaveRequest::ClaimWindow { .. } | WaveRequest::ReleaseWindow { .. }
             ));
             deliver(reply, id, OK);
         });
-        let mut session = RiftMachClient.window_management_session().unwrap();
+        let mut session = WaveMachClient.window_management_session().unwrap();
         session.sequence = u32::MAX - (REQUESTS / 2) as u32;
         let window = WindowId { pid: 1, idx: 1 };
         for _ in 0..REQUESTS / 2 {
@@ -978,7 +978,7 @@ mod tests {
                 deliver(reply, id, OK);
             }
         });
-        let mut session = RiftMachClient.window_management_session().unwrap();
+        let mut session = WaveMachClient.window_management_session().unwrap();
         let window = WindowId { pid: 1, idx: 1 };
         assert!(matches!(
             session.claim_window(window),
@@ -1006,7 +1006,7 @@ mod tests {
         let service = ReplyPort::allocate(1).unwrap();
         SERVICE.set(service.name);
         deliver(service.name, 0, OK);
-        let mut session = RiftMachClient.window_management_session().unwrap();
+        let mut session = WaveMachClient.window_management_session().unwrap();
         let before = (refs(service.name), refs(session.reply_port.name));
         assert!(matches!(
             session.claim_window(WindowId { pid: 1, idx: 1 }),
@@ -1017,7 +1017,7 @@ mod tests {
 
     #[test]
     fn session_replies_are_matched_to_their_request() {
-        let session = RiftMachClient.window_management_session().unwrap();
+        let session = WaveMachClient.window_management_session().unwrap();
         let port = session.reply_port.name;
         // A reply to a timed-out request arrives before the current one.
         deliver(port, 1, b"late\0");
@@ -1032,20 +1032,20 @@ mod tests {
 
     #[test]
     fn parses_nul_terminated_response_with_alignment_padding() {
-        let response: RiftResponse =
+        let response: WaveResponse =
             parse_json_payload(b"{\"data\":true}\0\0\0", "response").unwrap();
         assert_eq!(response.into_result(), Ok(Value::Bool(true)));
     }
 
     #[test]
     fn rejects_payload_without_nul() {
-        let result = parse_json_payload::<RiftResponse>(b"{\"data\":true}", "response");
+        let result = parse_json_payload::<WaveResponse>(b"{\"data\":true}", "response");
         assert!(matches!(result, Err(ClientError::MissingTerminator { .. })));
     }
 
     #[test]
     fn request_uses_the_existing_wire_format() {
-        let request = RiftRequest::GetWindows { space_id: Some(7) };
+        let request = WaveRequest::GetWindows { space_id: Some(7) };
         assert_eq!(
             serde_json::to_value(request).unwrap(),
             serde_json::json!({ "get_windows": { "space_id": 7 } })
@@ -1054,7 +1054,7 @@ mod tests {
 
     #[test]
     fn response_is_untagged() {
-        let response = RiftResponse::Success {
+        let response = WaveResponse::Success {
             data: serde_json::json!({ "ok": true }),
         };
         assert_eq!(

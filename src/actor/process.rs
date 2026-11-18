@@ -70,7 +70,7 @@ pub struct ProcessActor {
 impl ProcessActor {
     #[expect(
         clippy::expect_used,
-        reason = "rift cannot track apps without the Carbon listener; failing at startup lets launchd restart it"
+        reason = "wave cannot track apps without the Carbon listener; failing at startup lets launchd restart it"
     )]
     pub fn new(sender: wm_controller::Sender, spaces_sender: spaces::Sender) -> Self {
         let types = [

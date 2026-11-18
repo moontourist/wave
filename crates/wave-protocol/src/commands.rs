@@ -46,7 +46,7 @@ pub struct ToggleWindowFloatingOptions {
     pub size: Option<FloatingWindowSize>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, rift_config_derive::CommandCatalog)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, wave_config_derive::CommandCatalog)]
 #[serde(rename_all = "snake_case")]
 #[command(
     group = 0,
@@ -169,7 +169,7 @@ pub enum LayoutCommand {
 }
 
 #[derive(
-    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, rift_config_derive::CommandCatalog,
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, wave_config_derive::CommandCatalog,
 )]
 #[serde(rename_all = "snake_case")]
 #[command(defaults(
@@ -239,7 +239,7 @@ pub enum ReactorCommand {
     },
     /// Move the active workspace to another display.
     ///
-    /// Rift workspaces are display-local, so windows move into the destination
+    /// Wave workspaces are display-local, so windows move into the destination
     /// display's workspace at the same ordinal and that workspace becomes active.
     #[command(group = 3, order = 37)]
     MoveWorkspaceToDisplay {
@@ -297,7 +297,7 @@ pub enum ConfigCommand {
     PartialEq,
     Serialize,
     Deserialize,
-    rift_config_derive::ConfigEnum,
+    wave_config_derive::ConfigEnum,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum AnimationEasing {
@@ -329,7 +329,7 @@ pub enum AnimationEasing {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RiftCommand {
+pub enum WaveCommand {
     Layout(LayoutCommand),
     Metrics(MetricsCommand),
     Reactor(ReactorCommand),
@@ -338,7 +338,7 @@ pub enum RiftCommand {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TypedRiftCommand {
+enum TypedWaveCommand {
     Layout(LayoutCommand),
     Metrics(MetricsCommand),
     Reactor(ReactorCommand),
@@ -361,24 +361,24 @@ enum LegacyReactorCommand {
     Reactor(ReactorCommand),
 }
 
-impl From<TypedRiftCommand> for RiftCommand {
-    fn from(command: TypedRiftCommand) -> Self {
+impl From<TypedWaveCommand> for WaveCommand {
+    fn from(command: TypedWaveCommand) -> Self {
         match command {
-            TypedRiftCommand::Layout(command) => Self::Layout(command),
-            TypedRiftCommand::Metrics(command) => Self::Metrics(command),
-            TypedRiftCommand::Reactor(command) => Self::Reactor(command),
-            TypedRiftCommand::Config(command) => Self::Config(command),
+            TypedWaveCommand::Layout(command) => Self::Layout(command),
+            TypedWaveCommand::Metrics(command) => Self::Metrics(command),
+            TypedWaveCommand::Reactor(command) => Self::Reactor(command),
+            TypedWaveCommand::Config(command) => Self::Config(command),
         }
     }
 }
 
-impl<'de> Deserialize<'de> for RiftCommand {
+impl<'de> Deserialize<'de> for WaveCommand {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: Deserializer<'de> {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum CommandInput {
-            Typed(TypedRiftCommand),
+            Typed(TypedWaveCommand),
             LegacyJson(String),
         }
 
@@ -389,20 +389,20 @@ impl<'de> Deserialize<'de> for RiftCommand {
     }
 }
 
-fn decode_legacy_command<E>(command: &str) -> Result<RiftCommand, E>
+fn decode_legacy_command<E>(command: &str) -> Result<WaveCommand, E>
 where E: DeError {
     match serde_json::from_str::<LegacyCommand>(command)
         .map_err(|error| E::custom(format!("invalid legacy command JSON: {error}")))?
     {
-        LegacyCommand::Config(command) => Ok(RiftCommand::Config(command)),
+        LegacyCommand::Config(command) => Ok(WaveCommand::Config(command)),
         LegacyCommand::Reactor(LegacyReactorCommand::Layout(command)) => {
-            Ok(RiftCommand::Layout(command))
+            Ok(WaveCommand::Layout(command))
         }
         LegacyCommand::Reactor(LegacyReactorCommand::Metrics(command)) => {
-            Ok(RiftCommand::Metrics(command))
+            Ok(WaveCommand::Metrics(command))
         }
         LegacyCommand::Reactor(LegacyReactorCommand::Reactor(command)) => {
-            Ok(RiftCommand::Reactor(command))
+            Ok(WaveCommand::Reactor(command))
         }
     }
 }

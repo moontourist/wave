@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use objc2_core_foundation::{CGRect, CGSize};
-pub use rift_protocol::{RestoreScope, RestoreSource};
 use serde::{Deserialize, Serialize};
+pub use wave_protocol::{RestoreScope, RestoreSource};
 
 use super::{FloatingManager, LayoutEngine};
 use crate::actor::app::{WindowId, pid_t};

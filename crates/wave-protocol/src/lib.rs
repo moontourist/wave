@@ -1,10 +1,10 @@
-//! Shared, platform-neutral protocol types for Rift.
+//! Shared, platform-neutral protocol types for Wave.
 //!
 //! The server owns the runtime model and the client owns the Mach transport,
 //! but both use these types at the wire boundary. JSON encoding remains an
 //! implementation detail of the transport crates.
 
-extern crate self as rift_protocol;
+extern crate self as wave_protocol;
 
 mod commands;
 mod events;
@@ -15,9 +15,9 @@ mod transport;
 
 pub use commands::{
     AnimationEasing, CommandArgument, ConfigCommand, FloatingWindowSize, FloatingWindowSizePreset,
-    LayoutCommand, MetricsCommand, ReactorCommand, RiftCommand, ToggleWindowFloatingOptions,
+    LayoutCommand, MetricsCommand, ReactorCommand, ToggleWindowFloatingOptions, WaveCommand,
 };
-pub use events::{EventKind, RiftEvent, StackInfo, WorkspaceId};
+pub use events::{EventKind, StackInfo, WaveEvent, WorkspaceId};
 pub use layout::{
     Direction, DirectionalDistance, LayoutKind, LayoutMode, Orientation, ParseDirectionError,
     ResizeOrientation,
@@ -27,4 +27,4 @@ pub use queries::{
     Rect, Size, WindowData, WindowId, WindowLayoutPosition, WorkspaceData, WorkspaceLayoutData,
 };
 pub use selectors::{DisplaySelector, RestoreScope, RestoreSource, WorkspaceSelector};
-pub use transport::{JsonRiftResponse, RiftRequest, RiftResponse, WindowClaimFlags};
+pub use transport::{JsonWaveResponse, WaveRequest, WaveResponse, WindowClaimFlags};

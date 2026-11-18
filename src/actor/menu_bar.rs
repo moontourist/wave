@@ -70,7 +70,7 @@ pub struct Menu {
     action_tx: UnboundedSender<MenuAction>,
     action_rx: tokio::sync::mpsc::UnboundedReceiver<MenuAction>,
     icon: Option<MenuIcon>,
-    /// The `rift --settings` process; checked only when Settings is requested.
+    /// The `wave --settings` process; checked only when Settings is requested.
     settings: Option<std::process::Child>,
     mtm: MainThreadMarker,
     config_path: std::path::PathBuf,
@@ -210,7 +210,7 @@ impl Menu {
             let mut command = std::process::Command::new(exe);
             if timing.is_some() {
                 command.env(
-                    "RIFT_SETTINGS_SPAWN_TIME_NS",
+                    "WAVE_SETTINGS_SPAWN_TIME_NS",
                     crate::ui::settings::timing::spawn_time_ns().to_string(),
                 );
             }
@@ -322,16 +322,10 @@ impl Menu {
                 )));
             }
             MenuAction::OpenGitHub => {
-                Self::open_path_or_url("https://github.com/acsandmann/rift");
+                Self::open_path_or_url("https://github.com/moontourist/wave");
             }
             MenuAction::OpenDocumentation => {
-                Self::open_path_or_url("https://acsandmann.github.io/rift-docs/");
-            }
-            MenuAction::OpenMatrix => {
-                Self::open_path_or_url("https://matrix.to/#/#rift:matrix.org");
-            }
-            MenuAction::OpenSponsor => {
-                Self::open_path_or_url("https://github.com/sponsors/acsandmann");
+                Self::open_path_or_url("https://github.com/moontourist/wave#readme");
             }
             MenuAction::OpenSettings => self.open_settings(),
             MenuAction::OpenConfig => {
@@ -343,7 +337,7 @@ impl Menu {
                     icon.refresh_layout_library();
                 }
             }
-            MenuAction::QuitRift => {
+            MenuAction::QuitWave => {
                 self.reactor_tx.send(reactor::Event::Command(reactor::Command::Reactor(
                     reactor::ReactorCommand::SaveAndExit,
                 )));

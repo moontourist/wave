@@ -7,9 +7,9 @@
 //! window and shrinks that picture away when the window closes.
 //!
 //! Opening:
-//! macOS gives rift no way to move, fade or scale another app's window
+//! macOS gives wave no way to move, fade or scale another app's window
 //! smoothly, so the animation runs on a picture of it. The window is captured
-//! where it opened, and a rift-owned overlay covers it with that picture, so
+//! where it opened, and a wave-owned overlay covers it with that picture, so
 //! nothing visibly changes. The real window then moves off screen unresized
 //! (its picture stays true), the picture flies into the tile on the GPU (Core
 //! Animation) while the neighbors slide, the real window lands in the tile
@@ -226,7 +226,7 @@ impl Job {
     // ponytail: one thread per opening window; fine at human window-opening rates.
     pub(super) fn spawn(self) {
         let fallback = self.clone();
-        let spawned = thread::Builder::new().name("rift-pop-in".into()).spawn(move || self.run());
+        let spawned = thread::Builder::new().name("wave-pop-in".into()).spawn(move || self.run());
         if let Err(error) = spawned {
             warn!(%error, "pop-in thread failed to start; placing window directly");
             fallback.place();
@@ -424,7 +424,7 @@ fn capture(wsid: WindowServerId, options: u32) -> Option<CFRetained<CGImage>> {
     images.iter().next()
 }
 
-/// A rift-owned window over the tile that shows the captured picture.
+/// A wave-owned window over the tile that shows the captured picture.
 struct Overlay {
     // The surface must be detached before its owning WindowServer window drops.
     surface: WindowSurface,
@@ -457,7 +457,7 @@ impl Overlay {
             root.setPosition(CGPoint::ZERO);
             root.setAnchorPoint(CGPoint::ZERO);
             root.setOpaque(false);
-            // Top-left origin, like the screen frames rift works in.
+            // Top-left origin, like the screen frames wave works in.
             root.setGeometryFlipped(true);
             picture.setAnchorPoint(CGPoint::ZERO);
             picture.setFrame(local(spot, frame));
@@ -525,7 +525,7 @@ impl Closer {
     pub(super) fn spawn() -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
         let spawned =
-            thread::Builder::new().name("rift-close".into()).spawn(move || run_closer(rx));
+            thread::Builder::new().name("wave-close".into()).spawn(move || run_closer(rx));
         if let Err(error) = spawned {
             warn!(%error, "close-animation thread failed to start; closes will not animate");
         }
@@ -580,7 +580,7 @@ fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
         if let Err(RecvTimeoutError::Disconnected) = msg {
             return;
         }
-        // This thread lives as long as rift, so nothing drains its autoreleased Core
+        // This thread lives as long as wave, so nothing drains its autoreleased Core
         // Animation objects unless each message gets its own pool. Without it every
         // close overlay, and the window picture it holds, stays in memory.
         autoreleasepool(|_| match msg {

@@ -1,4 +1,4 @@
-pub use rift_wm::{actor, common, layout_engine, sys, ui};
+pub use wave_wm::{actor, common, layout_engine, sys, ui};
 #[allow(dead_code, unused_imports)]
 #[path = "../src/ui/settings/mod.rs"]
 mod settings;

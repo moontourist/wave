@@ -3,21 +3,21 @@ use std::path::PathBuf;
 use std::process::{self};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use rift_protocol::{EventKind, ParseDirectionError, RiftRequest, RiftResponse};
-use rift_wm::actor::app::WindowId as InternalWindowId;
-use rift_wm::actor::reactor::{self, DisplaySelector};
-use rift_wm::common::config::{LayoutMode, WorkspaceSelector};
-use rift_wm::ipc::RiftMachClient;
-use rift_wm::layout_engine as layout;
-use rift_wm::sys::window_server::WindowServerId;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use wave_protocol::{EventKind, ParseDirectionError, WaveRequest, WaveResponse};
+use wave_wm::actor::app::WindowId as InternalWindowId;
+use wave_wm::actor::reactor::{self, DisplaySelector};
+use wave_wm::common::config::{LayoutMode, WorkspaceSelector};
+use wave_wm::ipc::WaveMachClient;
+use wave_wm::layout_engine as layout;
+use wave_wm::sys::window_server::WindowServerId;
 
 #[derive(Parser)]
-#[command(version = env!("RIFT_VERSION"))]
-#[command(name = "rift-cli")]
-#[command(about = "Command-line interface for rift window manager")]
+#[command(version = env!("WAVE_VERSION"))]
+#[command(name = "wave-cli")]
+#[command(about = "Command-line interface for wave window manager")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -25,19 +25,19 @@ struct Cli {
 
 enum CliCommand {
     Reactor(reactor::Command),
-    Config(rift_wm::common::config::ConfigCommand),
+    Config(wave_wm::common::config::ConfigCommand),
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Open Rift’s native Settings window
+    /// Open Wave’s native Settings window
     Settings,
-    /// Query information from rift
+    /// Query information from wave
     Query {
         #[command(subcommand)]
         query: QueryCommands,
     },
-    /// Execute commands in rift
+    /// Execute commands in wave
     Execute {
         #[command(subcommand)]
         command: ExecuteCommands,
@@ -47,7 +47,7 @@ enum Commands {
         #[command(subcommand)]
         subscribe: SubscribeCommands,
     },
-    /// Manage the launchd service for rift
+    /// Manage the launchd service for wave
     Service {
         #[command(subcommand)]
         service: ServiceCommands,
@@ -157,18 +157,18 @@ enum ExecuteCommands {
         #[command(subcommand)]
         space_cmd: SpaceCommands,
     },
-    /// Save the master file and exit Rift
+    /// Save the master file and exit Wave
     SaveAndExit,
-    /// Save Rift's current layout state without exiting
+    /// Save Wave's current layout state without exiting
     ///
-    /// Use --master instead of PATH to update Rift's master file.
+    /// Use --master instead of PATH to update Wave's master file.
     SaveLayout {
         #[command(flatten)]
         file: LayoutFileSelection,
     },
     /// Restore a layout file to the current workspace, macOS Space, or every display
     ///
-    /// Use --master instead of PATH to load Rift's master file.
+    /// Use --master instead of PATH to load Wave's master file.
     LoadLayout {
         #[command(flatten)]
         file: LayoutFileSelection,
@@ -176,11 +176,11 @@ enum ExecuteCommands {
         #[arg(long, value_enum, default_value_t = CliRestoreScope::Workspace)]
         scope: CliRestoreScope,
     },
-    /// Print layout tree debugging output in the running rift instance
+    /// Print layout tree debugging output in the running wave instance
     Debug,
     /// Serialize and print runtime state
     Serialize,
-    /// this command is deprecated, use `rift-cli execute space toggle-activated`
+    /// this command is deprecated, use `wave-cli execute space toggle-activated`
     #[deprecated]
     ToggleSpaceActivated,
     /// Show timing metrics
@@ -197,7 +197,7 @@ enum WindowCommands {
     Focus {
         /// Direction to focus (left, right, up, down)
         direction: Option<String>,
-        /// Rift window ID as JSON (`{"pid":123,"idx":456}`) or debug text
+        /// Wave window ID as JSON (`{"pid":123,"idx":456}`) or debug text
         #[arg(long, conflicts_with = "direction")]
         window_id: Option<String>,
         /// Optional macOS window server ID for the target window
@@ -226,8 +226,8 @@ enum WindowCommands {
     /// - Pass a signed floating value: positive to grow, negative to shrink.
     /// - The value is a fraction of the current size (e.g. `0.05` = 5%).
     /// Examples:
-    ///   rift-cli execute window resize-by --amount 0.05    # grow by 5%
-    ///   rift-cli execute window resize-by --amount -0.10   # shrink by 10%
+    ///   wave-cli execute window resize-by --amount 0.05    # grow by 5%
+    ///   wave-cli execute window resize-by --amount -0.10   # shrink by 10%
     ResizeBy {
         #[arg(long)]
         amount: f64,
@@ -254,7 +254,7 @@ enum CliResizeOrientation {
     Smart,
 }
 
-impl From<CliResizeOrientation> for rift_wm::layout_engine::ResizeOrientation {
+impl From<CliResizeOrientation> for wave_wm::layout_engine::ResizeOrientation {
     fn from(value: CliResizeOrientation) -> Self {
         match value {
             CliResizeOrientation::Horizontal => Self::Horizontal,
@@ -270,14 +270,14 @@ struct LayoutFileSelection {
     /// Layout file path.
     #[arg(value_name = "PATH")]
     path: Option<PathBuf>,
-    /// Use Rift's master file (~/.rift/layout.ron).
+    /// Use Wave's master file (~/.wave/layout.ron).
     #[arg(long)]
     master: bool,
 }
 
 #[derive(Subcommand)]
 enum SpaceCommands {
-    /// Toggle whether rift manages the current macOS space
+    /// Toggle whether wave manages the current macOS space
     ToggleActivated,
     /// Switch to an adjacent macOS space (Mission Control spaces, not virtual workspaces)
     Switch {
@@ -408,7 +408,7 @@ enum ConfigCommands {
     SetWorkspaceNames { names: Vec<String> },
 
     /// Generic set: set an arbitrary config key (dot-separated path) to a JSON value.
-    /// Example: rift-cli execute config set --key settings.animate --value true
+    /// Example: wave-cli execute config set --key settings.animate --value true
     Set {
         /// Dot-separated key path (e.g. settings.animate or settings.layout.gaps.outer.top)
         key: String,
@@ -549,7 +549,7 @@ fn main() {
     let request = match cli.command {
         Commands::Service { .. } => {
             println!(
-                "service commands have been moved to the `rift` binary. (ie `rift service install`)"
+                "service commands have been moved to the `wave` binary. (ie `wave service install`)"
             );
             process::exit(0);
         }
@@ -558,7 +558,7 @@ fn main() {
         } => {
             if let Err(e) = run_mach_subscription(event) {
                 eprintln!("Communication error: {}", e);
-                eprintln!("Hint: ensure the rift service is running (try `rift service start`).");
+                eprintln!("Hint: ensure the wave service is running (try `wave service start`).");
                 process::exit(1);
             }
             process::exit(0);
@@ -572,10 +572,10 @@ fn main() {
         },
     };
 
-    let client = match RiftMachClient::connect() {
+    let client = match WaveMachClient::connect() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to connect to rift: {}", e);
+            eprintln!("Failed to connect to wave: {}", e);
             process::exit(1);
         }
     };
@@ -583,16 +583,16 @@ fn main() {
     // Send request and handle response.
     match client.send_request(&request) {
         Ok(resp) => match resp {
-            RiftResponse::Success { data } => {
+            WaveResponse::Success { data } => {
                 if let Err(e) = write_json(
                     &data,
-                    std::env::var("RIFT_CLI_PRETTY").map(|v| v != "0").unwrap_or(false),
+                    std::env::var("WAVE_CLI_PRETTY").map(|v| v != "0").unwrap_or(false),
                 ) {
                     eprintln!("Failed to handle response: {}", e);
                     process::exit(1);
                 }
             }
-            RiftResponse::Error { error } => {
+            WaveResponse::Error { error } => {
                 match serde_json::to_string_pretty(&error) {
                     Ok(pretty) => eprintln!("{}", pretty),
                     Err(_) => eprintln!("Error: {}", error),
@@ -600,98 +600,98 @@ fn main() {
                 process::exit(1);
             }
             _ => {
-                eprintln!("Received an unknown response shape from rift");
+                eprintln!("Received an unknown response shape from wave");
                 process::exit(1);
             }
         },
         Err(e) => {
             eprintln!("Communication error: {}", e);
-            eprintln!("Hint: ensure the rift service is running (try `rift service start`).");
+            eprintln!("Hint: ensure the wave service is running (try `wave service start`).");
             process::exit(1);
         }
     }
 }
 
-fn build_request(command: Commands) -> Result<RiftRequest, String> {
+fn build_request(command: Commands) -> Result<WaveRequest, String> {
     match command {
-        Commands::Settings => Ok(RiftRequest::ExecuteCommand {
-            command: rift_protocol::RiftCommand::Reactor(reactor::ReactorCommand::OpenSettings),
+        Commands::Settings => Ok(WaveRequest::ExecuteCommand {
+            command: wave_protocol::WaveCommand::Reactor(reactor::ReactorCommand::OpenSettings),
         }),
         Commands::Query { query } => build_query_request(query),
         Commands::Execute { command } => build_execute_request(command),
         Commands::Subscribe { subscribe } => build_subscribe_request(subscribe),
         Commands::Service { .. } => Err(
-            "Service commands are handled locally and should not be sent to the rift server."
+            "Service commands are handled locally and should not be sent to the wave server."
                 .to_string(),
         ),
     }
 }
 
-fn build_query_request(query: QueryCommands) -> Result<RiftRequest, String> {
+fn build_query_request(query: QueryCommands) -> Result<WaveRequest, String> {
     match query {
         QueryCommands::Workspaces {
             scope: SpaceScopeArgs { space_id, display },
         } => match display {
-            Some(display_uuid) => Ok(RiftRequest::GetWorkspacesForDisplay { display_uuid }),
-            None => Ok(RiftRequest::GetWorkspaces { space_id }),
+            Some(display_uuid) => Ok(WaveRequest::GetWorkspacesForDisplay { display_uuid }),
+            None => Ok(WaveRequest::GetWorkspaces { space_id }),
         },
         QueryCommands::Windows {
             scope: SpaceScopeArgs { space_id, display },
         } => match display {
-            Some(display_uuid) => Ok(RiftRequest::GetWindowsForDisplay { display_uuid }),
-            None => Ok(RiftRequest::GetWindows { space_id }),
+            Some(display_uuid) => Ok(WaveRequest::GetWindowsForDisplay { display_uuid }),
+            None => Ok(WaveRequest::GetWindows { space_id }),
         },
-        QueryCommands::Displays => Ok(RiftRequest::GetDisplays),
+        QueryCommands::Displays => Ok(WaveRequest::GetDisplays),
         QueryCommands::Window { window_id } => {
             let window_id = protocol_window_id(&parse_window_id(&window_id)?)?;
-            Ok(RiftRequest::GetWindowInfo { window_id })
+            Ok(WaveRequest::GetWindowInfo { window_id })
         }
-        QueryCommands::Applications => Ok(RiftRequest::GetApplications),
+        QueryCommands::Applications => Ok(WaveRequest::GetApplications),
         QueryCommands::Layout {
             scope: SpaceScopeArgs { space_id, display },
             workspace_id,
         } => match display {
             Some(display_uuid) => {
-                Ok(RiftRequest::GetLayoutStateForDisplay { display_uuid, workspace_id })
+                Ok(WaveRequest::GetLayoutStateForDisplay { display_uuid, workspace_id })
             }
-            None => Ok(RiftRequest::GetLayoutState { space_id, workspace_id }),
+            None => Ok(WaveRequest::GetLayoutState { space_id, workspace_id }),
         },
         QueryCommands::WorkspaceLayout {
             scope: SpaceScopeArgs { space_id, display },
             workspace_id,
         } => match display {
             Some(display_uuid) => {
-                Ok(RiftRequest::GetWorkspaceLayoutsForDisplay { display_uuid, workspace_id })
+                Ok(WaveRequest::GetWorkspaceLayoutsForDisplay { display_uuid, workspace_id })
             }
-            None => Ok(RiftRequest::GetWorkspaceLayouts { space_id, workspace_id }),
+            None => Ok(WaveRequest::GetWorkspaceLayouts { space_id, workspace_id }),
         },
-        QueryCommands::BindingMode => Ok(RiftRequest::GetBindingMode),
-        QueryCommands::Metrics => Ok(RiftRequest::GetMetrics),
+        QueryCommands::BindingMode => Ok(WaveRequest::GetBindingMode),
+        QueryCommands::Metrics => Ok(WaveRequest::GetMetrics),
     }
 }
 
-fn build_subscribe_request(sub: SubscribeCommands) -> Result<RiftRequest, String> {
+fn build_subscribe_request(sub: SubscribeCommands) -> Result<WaveRequest, String> {
     match sub {
-        SubscribeCommands::Mach { event } => Ok(RiftRequest::Subscribe {
+        SubscribeCommands::Mach { event } => Ok(WaveRequest::Subscribe {
             event: parse_event_kind(&event)?,
         }),
-        SubscribeCommands::Cli { event, command, args } => Ok(RiftRequest::SubscribeCli {
+        SubscribeCommands::Cli { event, command, args } => Ok(WaveRequest::SubscribeCli {
             event: parse_event_kind(&event)?,
             command,
             args,
         }),
-        SubscribeCommands::UnsubMach { event } => Ok(RiftRequest::Unsubscribe {
+        SubscribeCommands::UnsubMach { event } => Ok(WaveRequest::Unsubscribe {
             event: parse_event_kind(&event)?,
         }),
-        SubscribeCommands::UnsubCli { event } => Ok(RiftRequest::UnsubscribeCli {
+        SubscribeCommands::UnsubCli { event } => Ok(WaveRequest::UnsubscribeCli {
             event: parse_event_kind(&event)?,
         }),
-        SubscribeCommands::ListCli => Ok(RiftRequest::ListCliSubscriptions),
+        SubscribeCommands::ListCli => Ok(WaveRequest::ListCliSubscriptions),
     }
 }
 
-fn build_execute_request(execute: ExecuteCommands) -> Result<RiftRequest, String> {
-    let rift_command = match execute {
+fn build_execute_request(execute: ExecuteCommands) -> Result<WaveRequest, String> {
+    let wave_command = match execute {
         ExecuteCommands::BindingMode { mode } => CliCommand::Reactor(reactor::Command::Reactor(
             reactor::ReactorCommand::BindingMode(mode),
         )),
@@ -709,7 +709,7 @@ fn build_execute_request(execute: ExecuteCommands) -> Result<RiftRequest, String
         }
         ExecuteCommands::SaveLayout { file } => {
             let path = if file.master {
-                rift_wm::common::config::restore_file()
+                wave_wm::common::config::restore_file()
             } else {
                 absolute_layout_path(file.path.ok_or("clap requires either PATH or --master")?)?
             };
@@ -720,7 +720,7 @@ fn build_execute_request(execute: ExecuteCommands) -> Result<RiftRequest, String
         ExecuteCommands::LoadLayout { file, scope } => {
             let (path, source) = if file.master {
                 (
-                    rift_wm::common::config::restore_file(),
+                    wave_wm::common::config::restore_file(),
                     layout::RestoreSource::CurrentSpace,
                 )
             } else {
@@ -751,37 +751,37 @@ fn build_execute_request(execute: ExecuteCommands) -> Result<RiftRequest, String
         }
         #[allow(deprecated)]
         ExecuteCommands::ToggleSpaceActivated => {
-            eprintln!("this command is deprecated, use rift-cli execute space toggle-activated");
+            eprintln!("this command is deprecated, use wave-cli execute space toggle-activated");
             CliCommand::Reactor(reactor::Command::Reactor(
                 reactor::ReactorCommand::ToggleSpaceActivated,
             ))
         }
         ExecuteCommands::ShowTiming => CliCommand::Reactor(reactor::Command::Metrics(
-            rift_wm::common::log::MetricsCommand::ShowTiming,
+            wave_wm::common::log::MetricsCommand::ShowTiming,
         )),
     };
 
-    if let CliCommand::Config(rift_wm::common::config::ConfigCommand::GetConfig) = &rift_command {
-        return Ok(RiftRequest::GetConfig);
+    if let CliCommand::Config(wave_wm::common::config::ConfigCommand::GetConfig) = &wave_command {
+        return Ok(WaveRequest::GetConfig);
     }
 
-    let command = into_protocol_command(rift_command)?;
-    Ok(RiftRequest::ExecuteCommand { command })
+    let command = into_protocol_command(wave_command)?;
+    Ok(WaveRequest::ExecuteCommand { command })
 }
 
-fn into_protocol_command(command: CliCommand) -> Result<rift_protocol::RiftCommand, String> {
+fn into_protocol_command(command: CliCommand) -> Result<wave_protocol::WaveCommand, String> {
     match command {
         CliCommand::Config(command) => {
-            Ok(rift_protocol::RiftCommand::Config(decode_protocol(command)?))
+            Ok(wave_protocol::WaveCommand::Config(decode_protocol(command)?))
         }
         CliCommand::Reactor(reactor::Command::Layout(command)) => {
-            Ok(rift_protocol::RiftCommand::Layout(decode_protocol(command)?))
+            Ok(wave_protocol::WaveCommand::Layout(decode_protocol(command)?))
         }
         CliCommand::Reactor(reactor::Command::Metrics(command)) => {
-            Ok(rift_protocol::RiftCommand::Metrics(decode_protocol(command)?))
+            Ok(wave_protocol::WaveCommand::Metrics(decode_protocol(command)?))
         }
         CliCommand::Reactor(reactor::Command::Reactor(command)) => {
-            Ok(rift_protocol::RiftCommand::Reactor(decode_protocol(command)?))
+            Ok(wave_protocol::WaveCommand::Reactor(decode_protocol(command)?))
         }
     }
 }
@@ -891,8 +891,8 @@ fn parse_window_id(input: &str) -> Result<InternalWindowId, String> {
     ))
 }
 
-fn protocol_window_id(window_id: &InternalWindowId) -> Result<rift_protocol::WindowId, String> {
-    rift_protocol::WindowId::new(window_id.pid, window_id.idx.get())
+fn protocol_window_id(window_id: &InternalWindowId) -> Result<wave_protocol::WindowId, String> {
+    wave_protocol::WindowId::new(window_id.pid, window_id.idx.get())
         .ok_or_else(|| "window id index must be non-zero".to_string())
 }
 
@@ -1034,7 +1034,7 @@ fn map_layout_command(cmd: LayoutCommands) -> Result<CliCommand, String> {
 }
 
 fn map_config_command(cmd: ConfigCommands) -> Result<CliCommand, String> {
-    use rift_wm::common::config::{AnimationEasing, ConfigCommand};
+    use wave_wm::common::config::{AnimationEasing, ConfigCommand};
 
     let cfg_cmd = match cmd {
         ConfigCommands::SetAnimate { value } => {
@@ -1208,8 +1208,8 @@ fn write_json<T: Serialize>(value: &T, pretty: bool) -> Result<(), String> {
 }
 
 fn run_mach_subscription(event: String) -> Result<(), String> {
-    let pretty = std::env::var("RIFT_CLI_PRETTY").map(|v| v != "0").unwrap_or(false);
-    let client = RiftMachClient::connect().map_err(|e| e.to_string())?;
+    let pretty = std::env::var("WAVE_CLI_PRETTY").map(|v| v != "0").unwrap_or(false);
+    let client = WaveMachClient::connect().map_err(|e| e.to_string())?;
     let event_kind = parse_event_kind(&event)?;
     let subscription = client.subscribe(event_kind).map_err(|e| e.to_string())?;
 
@@ -1231,13 +1231,13 @@ mod tests {
 
     #[test]
     fn binding_mode_query_and_subscription_parse() {
-        let cli = Cli::try_parse_from(["rift-cli", "query", "binding-mode"]).unwrap();
+        let cli = Cli::try_parse_from(["wave-cli", "query", "binding-mode"]).unwrap();
         assert!(matches!(cli.command, Commands::Query {
             query: QueryCommands::BindingMode
         }));
         assert_eq!(
             build_query_request(QueryCommands::BindingMode).unwrap(),
-            RiftRequest::GetBindingMode
+            WaveRequest::GetBindingMode
         );
         assert_eq!(
             parse_event_kind("binding_mode_changed").unwrap(),

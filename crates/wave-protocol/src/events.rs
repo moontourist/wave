@@ -48,7 +48,7 @@ impl fmt::Display for EventKind {
 /// CLI clients can continue consuming the same payloads unchanged.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum RiftEvent {
+pub enum WaveEvent {
     BindingModeChanged {
         previous_mode: String,
         mode: String,
@@ -115,7 +115,7 @@ pub enum RiftEvent {
     },
 }
 
-impl RiftEvent {
+impl WaveEvent {
     pub const fn kind(&self) -> EventKind {
         match self {
             Self::BindingModeChanged { .. } => EventKind::BindingModeChanged,
@@ -195,13 +195,13 @@ mod tests {
 
     #[test]
     fn binding_mode_event_has_global_context_and_round_trips() {
-        let event = RiftEvent::BindingModeChanged {
+        let event = WaveEvent::BindingModeChanged {
             previous_mode: "default".into(),
             mode: "resize".into(),
         };
         let json = serde_json::json!({"type": "binding_mode_changed", "previous_mode": "default", "mode": "resize"});
         assert_eq!(serde_json::to_value(&event).unwrap(), json);
-        assert_eq!(serde_json::from_value::<RiftEvent>(json).unwrap(), event);
+        assert_eq!(serde_json::from_value::<WaveEvent>(json).unwrap(), event);
         assert_eq!(event.kind().as_str(), "binding_mode_changed");
         assert_eq!(event.space_id(), 0);
         assert_eq!(event.space_id_opt(), None);
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn typed_event_preserves_the_legacy_wire_shape() {
-        let event = RiftEvent::WorkspaceChanged {
+        let event = WaveEvent::WorkspaceChanged {
             space_id: 42,
             workspace_id: WorkspaceId { idx: 3, version: 1 },
             workspace_name: "main".into(),
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn layout_changed_has_a_typed_subscription_and_workspace_context() {
-        let event = RiftEvent::LayoutChanged {
+        let event = WaveEvent::LayoutChanged {
             workspace_id: WorkspaceId { idx: 3, version: 1 },
             workspace_index: Some(2),
             workspace_name: "main".into(),

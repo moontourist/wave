@@ -24,8 +24,8 @@ fn latest() -> Result {
             "--header",
             "Accept: application/vnd.github+json",
             "--user-agent",
-            "Rift-update-check",
-            "https://api.github.com/repos/acsandmann/rift/releases/latest",
+            "Wave-update-check",
+            "https://api.github.com/repos/moontourist/wave/releases/latest",
         ])
         .output()
         .map_err(|_| {

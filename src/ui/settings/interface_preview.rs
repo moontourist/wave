@@ -30,7 +30,7 @@ struct StackState {
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[name = "RiftSettingsStackPreview"]
+    #[name = "WaveSettingsStackPreview"]
     #[ivars = StackState]
     struct StackPreviewView;
     impl StackPreviewView {

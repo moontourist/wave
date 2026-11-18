@@ -19,7 +19,7 @@ impl Config {
         clippy::unwrap_used,
         reason = "the bundled template is fixed at build time and parsed by the config tests"
     )]
-    pub fn default() -> Config { Self::parse(include_str!("../../../rift.default.toml")).unwrap() }
+    pub fn default() -> Config { Self::parse(include_str!("../../../wave.default.toml")).unwrap() }
 
     /// Validates the entire configuration and returns a list of issues found.
     pub fn validate(&self) -> Vec<String> {

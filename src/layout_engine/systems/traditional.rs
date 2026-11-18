@@ -711,7 +711,7 @@ impl LayoutSystem for TraditionalLayoutSystem {
         out
     }
 
-    fn container_tree(&self, layout: LayoutId) -> rift_protocol::ContainerTreeNode {
+    fn container_tree(&self, layout: LayoutId) -> wave_protocol::ContainerTreeNode {
         self.container_tree_with_roles(layout, &HashMap::default())
     }
 
@@ -1587,7 +1587,7 @@ impl TraditionalLayoutSystem {
 
         if self.equalize_nodes {
             // Sway initializes a new node to the average weight of the existing siblings,
-            // then normalizes the sibling weights. Rift keeps every sibling set normalized
+            // then normalizes the sibling weights. Wave keeps every sibling set normalized
             // to its child count, so that average is 1.0. Leaving the observer-initialized
             // weight intact gives identical proportions while preserving manual resizes.
             self.tree.data.layout.recompute_total(map, parent);
@@ -1858,21 +1858,21 @@ impl TraditionalLayoutSystem {
         &self,
         layout: LayoutId,
         roles: &HashMap<NodeId, &'static str>,
-    ) -> rift_protocol::ContainerTreeNode {
+    ) -> wave_protocol::ContainerTreeNode {
         fn snapshot(
             system: &TraditionalLayoutSystem,
             node: NodeId,
             selected: NodeId,
             roles: &HashMap<NodeId, &'static str>,
-        ) -> rift_protocol::ContainerTreeNode {
+        ) -> wave_protocol::ContainerTreeNode {
             let window = system.window_at(node);
             let info = system.tree.data.layout.info(node);
-            rift_protocol::ContainerTreeNode {
+            wave_protocol::ContainerTreeNode {
                 node_id: node.data().as_ffi(),
                 node_type: if window.is_some() {
-                    rift_protocol::ContainerNodeType::Window
+                    wave_protocol::ContainerNodeType::Window
                 } else {
-                    rift_protocol::ContainerNodeType::Container
+                    wave_protocol::ContainerNodeType::Container
                 },
                 frame: Default::default(),
                 layout_kind: window.is_none().then_some(info.kind),

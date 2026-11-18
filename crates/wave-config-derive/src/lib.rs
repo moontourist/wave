@@ -394,8 +394,8 @@ pub fn command_catalog(input: TokenStream) -> TokenStream {
                         let ty = &field.ty;
                         quote!(#binding == &<#ty>::default())
                     });
-                arguments.push(quote!(#pattern => Some((::rift_protocol::CommandArgument::#kind(#value.clone()), true #(&& #guards)*))));
-                argument_updates.push(quote!((#pattern, ::rift_protocol::CommandArgument::#kind(value)) => { *#value = value; }));
+                arguments.push(quote!(#pattern => Some((::wave_protocol::CommandArgument::#kind(#value.clone()), true #(&& #guards)*))));
+                argument_updates.push(quote!((#pattern, ::wave_protocol::CommandArgument::#kind(value)) => { *#value = value; }));
             }
             if skip {
                 continue;
@@ -424,10 +424,10 @@ pub fn command_catalog(input: TokenStream) -> TokenStream {
                 pub fn command_fields(&self) -> &'static [(&'static str, &'static str)] {
                     match self { #(#schemas),* }
                 }
-                pub fn command_argument(&self) -> Option<(::rift_protocol::CommandArgument, bool)> {
+                pub fn command_argument(&self) -> Option<(::wave_protocol::CommandArgument, bool)> {
                     match self { #(#arguments,)* _ => None }
                 }
-                pub fn with_command_argument(&self, value: ::rift_protocol::CommandArgument) -> Option<Self> {
+                pub fn with_command_argument(&self, value: ::wave_protocol::CommandArgument) -> Option<Self> {
                     let mut command = self.clone();
                     match (&mut command, value) { #(#argument_updates,)* _ => return None }
                     Some(command)

@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use regex::RegexBuilder;
-pub use rift_protocol::{AnimationEasing, ConfigCommand, LayoutMode, WorkspaceSelector};
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
+pub use wave_protocol::{AnimationEasing, ConfigCommand, LayoutMode, WorkspaceSelector};
 
 use super::{ConfigEnum, ConfigSchema};
 use crate::actor::wm_controller::WmCommand;
@@ -24,14 +24,14 @@ pub(super) const DEPRECATED_MAP: &[(&str, &str)] = &[
     clippy::unwrap_used,
     reason = "a logged-in macOS user always has a home directory"
 )]
-pub fn data_dir() -> PathBuf { dirs::home_dir().unwrap().join(".rift") }
+pub fn data_dir() -> PathBuf { dirs::home_dir().unwrap().join(".wave") }
 pub fn restore_file() -> PathBuf { data_dir().join("layout.ron") }
 #[expect(
     clippy::unwrap_used,
     reason = "a logged-in macOS user always has a home directory"
 )]
 pub fn config_file() -> PathBuf {
-    dirs::home_dir().unwrap().join(".config").join("rift").join("config.toml")
+    dirs::home_dir().unwrap().join(".config").join("wave").join("config.toml")
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default, Eq, ConfigEnum)]
@@ -160,9 +160,9 @@ pub struct AppWorkspaceRule {
     #[serde(default)]
     #[setting(custom)]
     pub focus: bool,
-    /// An explicit management override. `false` makes the window invisible to Rift;
+    /// An explicit management override. `false` makes the window invisible to Wave;
     /// `true` overrides normal manageability heuristics for a visible window. When
-    /// omitted, the matching rule leaves Rift's normal manageability decision intact.
+    /// omitted, the matching rule leaves Wave's normal manageability decision intact.
     #[serde(default)]
     #[setting(custom)]
     pub manage: Option<bool>,
@@ -176,7 +176,7 @@ pub struct AppWorkspaceRule {
     pub title_regex: Option<String>,
     /// Optional: Substring to search for in window title (applies to window.title)
     ///
-    /// If present, rift will internally treat this as a substring match and will
+    /// If present, wave will internally treat this as a substring match and will
     /// construct a regex to match titles containing this substring. This allows
     /// people who don't want to write full regexes to match by a simple substring.
     #[setting(custom)]
@@ -530,7 +530,7 @@ pub struct Settings {
     #[setting(ignore)]
     pub window_open_close_animation: bool,
     #[serde(default = "yes")]
-    /// Start Rift with automatic tiling turned off.
+    /// Start Wave with automatic tiling turned off.
     #[setting(
         label = "Start with tiling disabled",
         group = "general",
@@ -646,7 +646,7 @@ pub struct GestureSettings {
     #[serde(default)]
     #[setting(label = "Enabled", group = "main")]
     pub enabled: bool,
-    /// If true, consume horizontal swipe events owned by Rift so macOS and the
+    /// If true, consume horizontal swipe events owned by Wave so macOS and the
     /// foreground app do not also handle them.
     #[serde(default = "yes")]
     #[setting(label = "Consume macOS workspace swipe", group = "main")]
@@ -847,7 +847,7 @@ pub enum WorkspaceDisplayStyle {
 #[serde(deny_unknown_fields)]
 pub struct MenuBarSettings {
     #[serde(default = "yes")]
-    /// Show Rift and workspace information in the menu bar.
+    /// Show Wave and workspace information in the menu bar.
     #[setting(label = "Show menu bar indicator")]
     pub enabled: bool,
     #[serde(default)]
@@ -1105,7 +1105,7 @@ pub struct MissionControlSettings {
     #[setting(label = "Window previews", enabled_by = "enabled")]
     pub window_previews: bool,
     #[serde(default)]
-    /// Enable the workspace Overview. Requires restarting Rift.
+    /// Enable the workspace Overview. Requires restarting Wave.
     #[setting(label = "Enabled", order = 0)]
     pub enabled: bool,
     #[serde(default)]
@@ -1849,7 +1849,7 @@ fn default_animation_duration() -> f64 { 0.3 }
 
 fn default_animation_fps() -> f64 { 100.0 }
 
-fn default_layout_folder() -> PathBuf { PathBuf::from("~/.config/rift/layouts") }
+fn default_layout_folder() -> PathBuf { PathBuf::from("~/.config/wave/layouts") }
 
 fn default_workspace_count() -> usize { 4 }
 
@@ -2013,7 +2013,7 @@ impl ConfigSource {
     }
 
     fn rewrite_keymap_references(&mut self, old: &str, target: &str) {
-        use rift_protocol::ReactorCommand;
+        use wave_protocol::ReactorCommand;
 
         use crate::actor::reactor::Command;
         use crate::actor::wm_controller::WmCmd;

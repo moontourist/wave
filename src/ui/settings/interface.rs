@@ -28,7 +28,7 @@ pub(super) fn menu_bar(ui: Ui, model: &Rc<Model>) -> Page {
     indicator.height(24.0);
     let width = indicator.ns_view().widthAnchor().constraintEqualToConstant(100.0);
     width.setActive(true);
-    let disabled = Rc::new(Caption::single_line(&ui, "Rift indicator is hidden"));
+    let disabled = Rc::new(Caption::single_line(&ui, "Wave indicator is hidden"));
     let bar = HStack::new(&ui)
         .spacing(10.0)
         .insets(Insets {
@@ -286,7 +286,7 @@ pub(super) fn overview(ui: Ui, model: &Rc<Model>) -> Page {
             .section(transitions.row(duration))
             .section(Caption::new(
                 &ui,
-                "Changes are saved now and take effect after restarting Rift.",
+                "Changes are saved now and take effect after restarting Wave.",
             )),
     )
 }
@@ -295,7 +295,7 @@ fn screen_recording_status() -> &'static str {
     if CGPreflightScreenCaptureAccess() {
         "Screen Recording access is granted. Window previews are available."
     } else {
-        "Window previews require Screen Recording access. Allow Rift in System Settings > Privacy & Security > Screen Recording, then reopen Overview. macOS may require restarting Rift."
+        "Window previews require Screen Recording access. Allow Wave in System Settings > Privacy & Security > Screen Recording, then reopen Overview. macOS may require restarting Wave."
     }
 }
 

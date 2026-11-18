@@ -113,21 +113,21 @@ pub(super) fn editor(
                 ("Disabled".into(), json(false)),
             ]),
             "RestoreScope" => Some(
-                rift_protocol::RestoreScope::CONFIG_CHOICES
+                wave_protocol::RestoreScope::CONFIG_CHOICES
                     .iter()
                     .enumerate()
                     .filter_map(|(i, (title, _))| {
-                        let choice = rift_protocol::RestoreScope::from_config_choice(i)?;
+                        let choice = wave_protocol::RestoreScope::from_config_choice(i)?;
                         Some((title.to_string(), json(choice)))
                     })
                     .collect(),
             ),
             "RestoreSource" => Some(
-                rift_protocol::RestoreSource::CONFIG_CHOICES
+                wave_protocol::RestoreSource::CONFIG_CHOICES
                     .iter()
                     .enumerate()
                     .filter_map(|(i, (title, _))| {
-                        let choice = rift_protocol::RestoreSource::from_config_choice(i)?;
+                        let choice = wave_protocol::RestoreSource::from_config_choice(i)?;
                         Some((title.to_string(), json(choice)))
                     })
                     .collect(),

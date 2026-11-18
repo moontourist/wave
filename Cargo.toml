@@ -1,16 +1,16 @@
 [package]
-name = "rift-wm"
+name = "wave-wm"
 version = "0.8.3"
 edition = "2024"
 build = "build.rs"
 
 [workspace]
-members = [".", "crates/rift-client", "crates/rift-protocol", "crates/rift-config-derive"]
+members = [".", "crates/wave-client", "crates/wave-protocol", "crates/wave-config-derive"]
 resolver = "3"
 exclude = ["cgs"]
 
 [[bin]]
-name = "rift"
+name = "wave"
 test = false
 
 [profile.dev]
@@ -64,7 +64,7 @@ custom-event-loop = ["objc2-foundation/NSDate", "objc2-foundation/NSRunLoop"]
 disable-axuielement-destroyed = []
 
 [dependencies]
-rift-config-derive = { path = "crates/rift-config-derive" }
+wave-config-derive = { path = "crates/wave-config-derive" }
 cgs = { version = "0.5.2" }#, path = "cgs" }
 anyhow = { version = "1.0.83", default-features = false }
 ascii_tree = "0.1.1"
@@ -195,8 +195,8 @@ dashmap = "6.1.0"
 sigpipe = "0.1.3"
 embed_plist = "1.2.2"
 rustc-hash = "2.1.1"
-rift-client = { path = "crates/rift-client" }
-rift-protocol = { path = "crates/rift-protocol" }
+wave-client = { path = "crates/wave-client" }
+wave-protocol = { path = "crates/wave-protocol" }
 multitouch = "0.3.2"
 
 [dev-dependencies]

@@ -18,7 +18,7 @@ const REPOST: i64 = 0x5249465447455354;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Owner {
     Undecided,
-    Rift,
+    Wave,
     #[default]
     System,
 }
@@ -92,7 +92,7 @@ impl Arbitration {
         };
         owner.dock_owner = match self.sequence {
             Sequence::Passing => Some(Owner::System),
-            Sequence::Dropping => Some(Owner::Rift),
+            Sequence::Dropping => Some(Owner::Wave),
             _ => None,
         };
         if owner.dock_owner == Some(Owner::System) && owner.consume && owner.touching {
@@ -112,7 +112,7 @@ impl Arbitration {
             self.began = Some(now);
             self.sequence = if !owner.consume || !owner.touching || owner.owner == Owner::System {
                 Sequence::Passing
-            } else if owner.owner == Owner::Rift {
+            } else if owner.owner == Owner::Wave {
                 Sequence::Dropping
             } else {
                 Sequence::Holding
@@ -123,7 +123,7 @@ impl Arbitration {
                 _ => Decision::Forward,
             };
         }
-        let owns = owner.session == self.session && owner.consume && owner.owner == Owner::Rift;
+        let owns = owner.session == self.session && owner.consume && owner.owner == Owner::Wave;
         let decision = match self.sequence {
             // Native begin can precede physical acquisition. Late ownership
             // cancels delivery instead of leaving Dock with a partial stroke.
@@ -132,7 +132,7 @@ impl Arbitration {
             {
                 self.session = owner.session;
                 self.sequence = Sequence::Provisional;
-                if owner.owner == Owner::Rift {
+                if owner.owner == Owner::Wave {
                     self.sequence = Sequence::Dropping;
                     Decision::Cancel
                 } else {
@@ -236,7 +236,7 @@ impl Filter {
             let phase = if momentum & 4 != 0
                 || (phase & 4 != 0
                     && self.scroll.arbitration.sequence != Sequence::Dropping
-                    && owner.owner != Owner::Rift)
+                    && owner.owner != Owner::Wave)
             {
                 4
             } else if phase & 8 != 0 {
@@ -335,7 +335,7 @@ impl Filter {
                     .is_some_and(|t| now.duration_since(t) >= Duration::from_millis(60))
             {
                 if owner.session == s.arbitration.session
-                    && owner.owner == Owner::Rift
+                    && owner.owner == Owner::Wave
                     && owner.consume
                 {
                     s.held.clear();
@@ -408,7 +408,7 @@ mod tests {
             dock_owner: None,
         };
         assert_eq!(a.decide(1, o, now), Decision::Hold);
-        o.owner = Owner::Rift;
+        o.owner = Owner::Wave;
         assert_eq!(a.decide(2, o, now), Decision::Drop);
         o.touching = false;
         assert_eq!(a.decide(4, o, now), Decision::Drop);
@@ -422,7 +422,7 @@ mod tests {
             dock_owner: None,
         };
         assert_eq!(a.decide(2, o, now), Decision::Forward);
-        o.owner = Owner::Rift;
+        o.owner = Owner::Wave;
         assert_eq!(a.decide(2, o, now), Decision::Cancel);
         assert_eq!(a.decide(8, o, now), Decision::Drop);
         o.owner = Owner::Undecided;
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(a.decide(2, o, now), Decision::Replay);
         assert_eq!(a.decide(4, o, now), Decision::Forward);
         o.consume = false;
-        o.owner = Owner::Rift;
+        o.owner = Owner::Wave;
         assert_eq!(a.decide(1, o, now), Decision::Forward);
         assert_eq!(a.decide(2, o, now), Decision::Forward);
     }
@@ -461,7 +461,7 @@ mod tests {
         let mut f = Filter::default();
         let o = Ownership {
             session: 1,
-            owner: Owner::Rift,
+            owner: Owner::Wave,
             consume: true,
             touching: true,
             dock_owner: None,
@@ -563,7 +563,7 @@ mod tests {
         let mut filter = Filter::default();
         let owner = Ownership {
             session: 7,
-            owner: Owner::Rift,
+            owner: Owner::Wave,
             consume: true,
             touching: true,
             dock_owner: None,

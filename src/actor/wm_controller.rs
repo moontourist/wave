@@ -84,7 +84,7 @@ impl WmCommand {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfiguredLayoutCommand {
-    ToggleWindowFloating(rift_protocol::ToggleWindowFloatingOptions),
+    ToggleWindowFloating(wave_protocol::ToggleWindowFloatingOptions),
     SwitchPresetColumnWidth,
 }
 
@@ -96,7 +96,7 @@ pub enum ConfiguredLayoutCommand {
     PartialEq,
     Eq,
     strum_macros::VariantNames,
-    rift_config_derive::CommandCatalog,
+    wave_config_derive::CommandCatalog,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum WmCmd {
@@ -506,7 +506,7 @@ impl WmController {
     }
 
     fn new_app(&mut self, pid: pid_t, info: AppInfo, source: AppDiscoverySource) {
-        // Leave Rift's own UI to AppKit; managing it through AX causes focus feedback loops.
+        // Leave Wave's own UI to AppKit; managing it through AX causes focus feedback loops.
         if pid == std::process::id() as pid_t {
             return;
         }
@@ -518,7 +518,7 @@ impl WmController {
 
         let policy = running_app.activationPolicy();
         // A process started outside LaunchServices reads Prohibited until it
-        // sets its policy, and may show a window before rift reads Regular. A
+        // sets its policy, and may show a window before wave reads Regular. A
         // window shows it is an app, so wait for the policy as for Accessory.
         let prohibited = policy == NSApplicationActivationPolicy::Prohibited;
         if prohibited && source != AppDiscoverySource::WindowServer {

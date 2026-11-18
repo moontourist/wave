@@ -154,7 +154,7 @@ impl LayoutSystem for StackLayoutSystem {
 
     fn draw_tree(&self, layout: LayoutId) -> String { self.inner.draw_tree(layout) }
 
-    fn container_tree(&self, layout: LayoutId) -> rift_protocol::ContainerTreeNode {
+    fn container_tree(&self, layout: LayoutId) -> wave_protocol::ContainerTreeNode {
         self.inner.container_tree(layout)
     }
 

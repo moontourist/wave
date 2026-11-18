@@ -3,11 +3,11 @@ use tracing::{trace, warn};
 use crate::actor::reactor::LayoutEvent;
 use crate::actor::reactor::events::EventOutcome;
 use crate::actor::reactor::managers::{DragManager, LayoutManager};
-use crate::model::RiftState;
+use crate::model::WaveState;
 use crate::sys::screen::SpaceId;
 
 pub fn build_drag_scene(
-    state: &RiftState,
+    state: &WaveState,
     layout: &LayoutManager,
     source: crate::actor::app::WindowId,
     space: SpaceId,
@@ -61,7 +61,7 @@ pub fn handle_cancel(drag: &mut DragManager) -> EventOutcome {
 }
 
 pub fn handle_mouse_up(
-    state: &mut RiftState,
+    state: &mut WaveState,
     layout: &mut LayoutManager,
     drag: &mut DragManager,
     payload: MouseUpPayload,

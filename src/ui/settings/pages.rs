@@ -84,7 +84,7 @@ fn general(ui: Ui, model: &Rc<Model>) -> Page {
     f.finish(SettingsPage::new(&ui, "").section(section))
 }
 
-/// Stable window identities let the emblem demonstrate Rift without rebuilding views.
+/// Stable window identities let the emblem demonstrate Wave without rebuilding views.
 fn about_layout(index: usize) -> [PreviewWindow; 3] {
     let frames = match index {
         1 => [
@@ -129,7 +129,7 @@ fn about_identity(ui: &Ui) -> VStack {
     emblem.width(268.0);
     emblem.height(144.0);
     emblem.accessibility_label("Rearrange windows");
-    emblem.accessibility_help("Show another Rift layout. Respects Reduce Motion.");
+    emblem.accessibility_help("Show another Wave layout. Respects Reduce Motion.");
     emblem.tooltip("A place for every window. Click to try another layout.");
     emblem.ns_button().setFocusRingType(objc2_app_kit::NSFocusRingType::Exterior);
     emblem.ns_view().addSubview(preview.ns_view());
@@ -152,7 +152,7 @@ fn about_identity(ui: &Ui) -> VStack {
         .spacing(6.0)
         .push(stage(ui, emblem, None))
         .push(centered(
-            "Rift",
+            "Wave",
             // SAFETY: NSFontWeightSemibold is an immutable framework constant.
             &objc2_app_kit::NSFont::systemFontOfSize_weight(28.0, unsafe {
                 objc2_app_kit::NSFontWeightSemibold
@@ -206,7 +206,7 @@ fn about_updates(ui: &Ui, env: &Rc<Env>) -> Section {
             Action::CheckUpdates(Box::new(move |result| {
                 let (text, symbol, color) = match result {
                     Ok(updates::Release::Current) => (
-                        "Rift is up to date.".to_owned(),
+                        "Wave is up to date.".to_owned(),
                         "checkmark.circle",
                         cgs::style::Color::secondary_label(),
                     ),
@@ -244,23 +244,17 @@ fn about_updates(ui: &Ui, env: &Rc<Env>) -> Section {
 }
 
 fn about_resources(ui: &Ui) -> Section {
-    const RESOURCES: [(&str, &str, &str); 4] = [
+    const RESOURCES: [(&str, &str, &str); 2] = [
         (
             "Documentation",
             "book",
-            "https://acsandmann.github.io/rift-docs/",
+            "https://github.com/moontourist/wave#readme",
         ),
         (
             "Release Notes",
             "clock.arrow.circlepath",
-            "https://github.com/acsandmann/rift/releases",
+            "https://github.com/moontourist/wave/releases",
         ),
-        (
-            "Matrix Room",
-            "bubble.left.and.bubble.right",
-            "https://matrix.to/#/#rift:matrix.org",
-        ),
-        ("Sponsor Rift", "heart", "https://github.com/sponsors/acsandmann"),
     ];
     let resource_group = |rows: Vec<(&'static str, &'static str, &'static str)>| {
         let destinations = rows.clone();
@@ -280,12 +274,8 @@ fn about_resources(ui: &Ui) -> Section {
         list.set_rows(rows);
         list
     };
-    Section::new(ui, "Resources").content(
-        VStack::new(ui)
-            .spacing(12.0)
-            .push(resource_group(RESOURCES[..3].to_vec()))
-            .push(resource_group(RESOURCES[3..].to_vec())),
-    )
+    Section::new(ui, "Resources")
+        .content(VStack::new(ui).spacing(12.0).push(resource_group(RESOURCES.to_vec())))
 }
 
 fn about(ui: Ui, env: &Rc<Env>) -> SettingsPage {
@@ -309,7 +299,7 @@ fn about(ui: Ui, env: &Rc<Env>) -> SettingsPage {
         .spacing(4.0)
         .push(caption("made with"))
         .push(heart)
-        .push(caption("by acsandmann"));
+        .push(caption("by moontourist"));
     let (leading, trailing) = (Spacer::new(&ui), Spacer::new(&ui));
     let equal = leading
         .ns_view()
@@ -1076,7 +1066,7 @@ pub(super) fn optional_number(value: &str) -> Result<Option<f64>, String> {
 }
 
 fn focus_suspend(f: &mut FormBuilder) -> Section {
-    use super::commands::{from_rift_modifiers, recorded_key, to_rift_modifiers};
+    use super::commands::{from_wave_modifiers, recorded_key, to_wave_modifiers};
     use crate::sys::hotkey::{Hotkey, HotkeySpec};
     let ui = f.ui;
     let message = Rc::new(ValidationMessage::new(&ui));
@@ -1107,7 +1097,7 @@ fn focus_suspend(f: &mut FormBuilder) -> Section {
     let record = submit.clone();
     let modifier_recorder = Rc::new(ModifierRecorder::new(&ui).on_change(move |flags| {
         record((!flags.is_empty()).then(|| HotkeySpec::ModifiersOnly {
-            modifiers: to_rift_modifiers(flags),
+            modifiers: to_wave_modifiers(flags),
         }));
     }));
     f.sync_when(
@@ -1135,7 +1125,7 @@ fn focus_suspend(f: &mut FormBuilder) -> Section {
             (
                 match &s.settings.focus_follows_mouse_disable_hotkey {
                     Some(HotkeySpec::ModifiersOnly { modifiers }) => {
-                        from_rift_modifiers(*modifiers)
+                        from_wave_modifiers(*modifiers)
                     }
                     _ => Modifiers::empty(),
                 },
@@ -1144,7 +1134,7 @@ fn focus_suspend(f: &mut FormBuilder) -> Section {
         },
         |recorder, s| {
             recorder.set_value(match &s.settings.focus_follows_mouse_disable_hotkey {
-                Some(HotkeySpec::ModifiersOnly { modifiers }) => from_rift_modifiers(*modifiers),
+                Some(HotkeySpec::ModifiersOnly { modifiers }) => from_wave_modifiers(*modifiers),
                 _ => Modifiers::empty(),
             });
             recorder.set_enabled(s.settings.focus_follows_mouse);

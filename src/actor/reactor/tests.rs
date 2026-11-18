@@ -186,7 +186,7 @@ fn membership_removal_events_retile_once_and_ignore_repeated_notifications() {
 }
 
 #[test]
-fn inventory_does_not_replace_geometry_owned_by_pending_rift_transaction() {
+fn inventory_does_not_replace_geometry_owned_by_pending_wave_transaction() {
     let (mut reactor, wid, wsid, _, _, frame) = reactor_with_window_on_space1();
     reactor.discover_test_windows(
         wid.pid,
@@ -210,7 +210,7 @@ fn inventory_does_not_replace_geometry_owned_by_pending_rift_transaction() {
 
     assert!(
         reactor.state.windows.window(wid).unwrap().frame_monotonic.same_as(frame),
-        "inventory must not feed a transient Rift-owned frame back into model geometry"
+        "inventory must not feed a transient Wave-owned frame back into model geometry"
     );
     assert_eq!(reactor.transaction_manager.get_target_frame(wsid), Some(target));
     assert_eq!(
@@ -256,7 +256,7 @@ fn layout_query_exposes_active_and_inactive_workspace_container_trees() {
     assert_eq!(state.selected_window, state.container_tree.children[1].window_id);
     assert_eq!(
         state.container_tree.node_type,
-        rift_protocol::ContainerNodeType::Container
+        wave_protocol::ContainerNodeType::Container
     );
     assert_eq!(state.container_tree.children.len(), 2);
     assert!(state.container_tree.frame.size.width > 0.0);
@@ -621,7 +621,7 @@ fn forwarded_space_snapshot_respects_toggled_space_activation_policy() {
     );
 
     let displays = reactor.query_displays();
-    let display = serde_json::to_value(rift_protocol::DisplayData::from(displays[0].clone()))
+    let display = serde_json::to_value(wave_protocol::DisplayData::from(displays[0].clone()))
         .expect("serialize display query");
     assert_eq!(display["is_visible_space"], true);
     assert_eq!(display["is_active_space"], false);
@@ -1787,7 +1787,7 @@ fn window_server_destroyed(
 }
 
 #[test]
-fn appeared_waits_for_snapshot_before_reassigning_window_without_pending_rift_move() {
+fn appeared_waits_for_snapshot_before_reassigning_window_without_pending_wave_move() {
     let (mut reactor, wid, wsid, space1, space2, _frame) = reactor_with_window_on_space1();
 
     let (spaces_tx, mut spaces_rx) = actor::channel();
@@ -1818,7 +1818,7 @@ fn appeared_waits_for_snapshot_before_reassigning_window_without_pending_rift_mo
     assert_eq!(
         reactor.assigned_space_for_window_id(wid),
         Some(space2),
-        "window without an in-flight Rift move must follow a genuine external space change"
+        "window without an in-flight Wave move must follow a genuine external space change"
     );
 }
 
@@ -1857,7 +1857,7 @@ fn geometry_cross_display_frame_change_waits_for_authoritative_membership() {
 }
 
 #[test]
-fn matching_rift_frame_clears_pending_target() {
+fn matching_wave_frame_clears_pending_target() {
     let (mut reactor, wid, wsid, _space1, _space2, frame) = reactor_with_window_on_space1();
     let target_frame = CGRect::new(
         CGPoint::new(frame.origin.x + 40.0, frame.origin.y + 25.0),
@@ -1877,7 +1877,7 @@ fn matching_rift_frame_clears_pending_target() {
     assert_eq!(
         reactor.transaction_manager.get_target_frame(wsid),
         None,
-        "a confirmed Rift frame must clear the pending target"
+        "a confirmed Wave frame must clear the pending target"
     );
     assert!(
         reactor
@@ -2550,7 +2550,7 @@ fn stale_user_space_appearance_is_ignored_when_server_state_already_matches_pend
     assert_eq!(
         reactor.authoritative_space_for_window_id(wid),
         Some(space1),
-        "late appearance from the old display should be ignored once Rift has already committed the new server-space target"
+        "late appearance from the old display should be ignored once Wave has already committed the new server-space target"
     );
 }
 
@@ -3776,7 +3776,7 @@ fn pending_removal_refocus_during_auto_switch_uses_workspace_selection() {
     assert!(raise_rx.try_recv().is_err());
 
     // A queued fallback can finish after a subsequent workspace switch. Its
-    // activation belongs to Rift and must not take the user back again.
+    // activation belongs to Wave and must not take the user back again.
     reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(1));
     reactor.handle_event(Event::ApplicationGloballyActivated(window.pid));
     reactor.handle_event(Event::ApplicationMainWindowChanged(
@@ -5776,7 +5776,7 @@ fn non_active_workspace_windows_remain_hidden_even_if_frame_no_longer_matches_co
     assert_eq!(
         reactor.hidden_assigned_space_for_window_id(wid),
         Some(space),
-        "workspace-hidden status should follow Rift's workspace assignment, not stale corner geometry"
+        "workspace-hidden status should follow Wave's workspace assignment, not stale corner geometry"
     );
     assert_eq!(
         reactor.geometry_space_for_window(
@@ -7104,16 +7104,16 @@ fn window_hidden_requests_inventory_and_defers_during_display_churn() {
 #[test]
 fn clamshell_sleep_preserves_nested_layout_across_display_replacement() {
     fn without_frames(
-        mut node: rift_protocol::ContainerTreeNode,
-    ) -> rift_protocol::ContainerTreeNode {
+        mut node: wave_protocol::ContainerTreeNode,
+    ) -> wave_protocol::ContainerTreeNode {
         node.frame = Default::default();
         node.children = node.children.into_iter().map(without_frames).collect();
         node
     }
 
     fn without_frames_or_node_ids(
-        mut node: rift_protocol::ContainerTreeNode,
-    ) -> rift_protocol::ContainerTreeNode {
+        mut node: wave_protocol::ContainerTreeNode,
+    ) -> wave_protocol::ContainerTreeNode {
         node.frame = Default::default();
         node.node_id = 0;
         node.children = node.children.into_iter().map(without_frames_or_node_ids).collect();
@@ -9475,17 +9475,17 @@ fn disconnect_does_not_erase_display_layout_memory() {
     );
 }
 
-// Ported from rift-plus's display-attach stack regression: accepted native
+// Ported from wave-plus's display-attach stack regression: accepted native
 // membership really moves all four windows away and then returns them.
 #[test]
 fn authoritative_display_membership_round_trip_preserves_ordered_stack() {
     fn stacks(
-        node: &rift_protocol::ContainerTreeNode,
-    ) -> Vec<(rift_protocol::LayoutKind, Vec<u32>)> {
+        node: &wave_protocol::ContainerTreeNode,
+    ) -> Vec<(wave_protocol::LayoutKind, Vec<u32>)> {
         let mut result = Vec::new();
         if let Some(
-            kind @ (rift_protocol::LayoutKind::HorizontalStack
-            | rift_protocol::LayoutKind::VerticalStack),
+            kind @ (wave_protocol::LayoutKind::HorizontalStack
+            | wave_protocol::LayoutKind::VerticalStack),
         ) = node.layout_kind
         {
             let windows: Vec<_> = node
@@ -9657,7 +9657,7 @@ fn authoritative_display_membership_round_trip_preserves_ordered_stack() {
                 // A stack reveals only its selected member to Next/PrevWindow, so move
                 // along the stack's own axis to select the other survivor.
                 reactor.handle_test_layout_command(LayoutCommand::MoveFocus(match before[0].0 {
-                    rift_protocol::LayoutKind::HorizontalStack => Direction::Right,
+                    wave_protocol::LayoutKind::HorizontalStack => Direction::Right,
                     _ => Direction::Down,
                 }));
                 apps.simulate_until_quiet(&mut reactor);
@@ -9757,7 +9757,7 @@ fn authoritative_display_membership_round_trip_preserves_ordered_stack() {
                 "{case}"
             );
             if case == "resized" {
-                assert_eq!(tree.frame.size, rift_protocol::Size {
+                assert_eq!(tree.frame.size, wave_protocol::Size {
                     width: 1200.,
                     height: 800.
                 });
@@ -9768,12 +9768,12 @@ fn authoritative_display_membership_round_trip_preserves_ordered_stack() {
 
 #[test]
 fn simultaneous_display_membership_swap_preserves_both_original_layouts() {
-    fn has_four_member_stack(node: &rift_protocol::ContainerTreeNode) -> bool {
+    fn has_four_member_stack(node: &wave_protocol::ContainerTreeNode) -> bool {
         matches!(
             node.layout_kind,
             Some(
-                rift_protocol::LayoutKind::HorizontalStack
-                    | rift_protocol::LayoutKind::VerticalStack
+                wave_protocol::LayoutKind::HorizontalStack
+                    | wave_protocol::LayoutKind::VerticalStack
             )
         ) && node.children.iter().filter(|child| child.window_id.is_some()).count() == 4
             || node.children.iter().any(has_four_member_stack)
@@ -11388,7 +11388,7 @@ fn deminiaturized_window_restores_exact_layout_including_restart() {
                 None,
             );
             apps.simulate_until_quiet(&mut reactor);
-            // Restoring placement and Rift's quiet activations do not select the
+            // Restoring placement and Wave's quiet activations do not select the
             // workspace. Explicit user activation is covered separately.
             reactor.handle_event(Event::ApplicationMainWindowChanged(
                 1,
@@ -11619,7 +11619,7 @@ fn display_refresh_reapplies_frames_when_macos_resized_windows_without_notificat
         crate::model::hidden_window_placement::HiddenWindowPlacement::is_hidden(screen, *frame, &[])
     }));
     // macOS can resize windows during hotplug without a usable AX notification.
-    // Keep both Rift's observed frame and its transaction cache unchanged.
+    // Keep both Wave's observed frame and its transaction cache unchanged.
     for window in apps.windows.values_mut() {
         window.frame.size.height = 1065.;
     }
@@ -11646,7 +11646,7 @@ fn master_restore_returns_a_window_to_the_display_it_was_saved_on() {
     let (mut apps, mut reactor, a, b) = two_displays(Default::default());
     let window = WindowId::new(1, 1);
     reactor.state.windows.window_mut(window).unwrap().info.bundle_id = Some("com.example".into());
-    let path = std::env::temp_dir().join(format!("rift-displays-{}.ron", std::process::id()));
+    let path = std::env::temp_dir().join(format!("wave-displays-{}.ron", std::process::id()));
     let engine = &reactor.layout_manager.layout_engine;
     engine
         .save_current_layout(path.clone(), &reactor.state.windows, Some(a))
@@ -11682,7 +11682,7 @@ fn master_restore_returns_a_floating_window_to_its_saved_frame() {
     let state = reactor.state.windows.window_mut(window).unwrap();
     state.info.bundle_id = Some("com.example".into());
     state.frame_monotonic = saved;
-    let path = std::env::temp_dir().join(format!("rift-floating-{}.ron", std::process::id()));
+    let path = std::env::temp_dir().join(format!("wave-floating-{}.ron", std::process::id()));
     let engine = &reactor.layout_manager.layout_engine;
     engine
         .save_current_layout(path.clone(), &reactor.state.windows, Some(a))

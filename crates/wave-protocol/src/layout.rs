@@ -158,7 +158,7 @@ impl LayoutKind {
     PartialEq,
     Serialize,
     Deserialize,
-    rift_config_derive::ConfigEnum,
+    wave_config_derive::ConfigEnum,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum LayoutMode {

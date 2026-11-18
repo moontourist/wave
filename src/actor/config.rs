@@ -71,7 +71,7 @@ impl ConfigActor {
         let (tx, rx) = actor::channel();
         #[expect(
             clippy::unwrap_used,
-            reason = "rift cannot apply configuration without its config thread; a failed spawn at startup is fatal and launchd restarts the process"
+            reason = "wave cannot apply configuration without its config thread; a failed spawn at startup is fatal and launchd restarts the process"
         )]
         std::thread::Builder::new()
             .name("config".to_string())
@@ -222,7 +222,7 @@ impl ConfigActor {
                 self.config = config;
                 self.disk = Some(text);
                 self.publish();
-                "The config file changed on disk, so this change was not saved. Rift loaded \
+                "The config file changed on disk, so this change was not saved. Wave loaded \
                  the newer file; review it and try again."
                     .into()
             }
@@ -249,7 +249,7 @@ impl ConfigActor {
                 let text = read_disk(&self.config_path)
                     .map_err(|e| e.to_string())?
                     .ok_or("Config file not found")?;
-                // The watcher also reports Rift's own saves; unchanged files publish nothing.
+                // The watcher also reports Wave's own saves; unchanged files publish nothing.
                 if self.disk.as_ref() == Some(&text) && self.document.to_string() == text {
                     return Ok(());
                 }
@@ -414,7 +414,7 @@ mod tests {
     /// Settings sends whole sources as JSON; every source must read back unchanged.
     #[test]
     fn sources_round_trip_through_json() {
-        let text = include_str!("../../rift.default.toml");
+        let text = include_str!("../../wave.default.toml");
         let mut source = ConfigDocument::load(text).unwrap().0.source().unwrap();
         for spec in ["Alt", "Ctrl + Fn"] {
             source.settings.focus_follows_mouse_disable_hotkey =
@@ -431,7 +431,7 @@ mod tests {
     fn commands_save_and_reload_the_source_document() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
-        let text = include_str!("../../rift.default.toml");
+        let text = include_str!("../../wave.default.toml");
         std::fs::write(&path, text).unwrap();
         let (reactor_tx, _updates) = actor::channel();
         let mut actor =

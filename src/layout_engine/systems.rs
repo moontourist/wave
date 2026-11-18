@@ -145,7 +145,7 @@ pub trait LayoutSystem: Serialize + for<'de> Deserialize<'de> {
 
     fn draw_tree(&self, layout: LayoutId) -> String;
     /// Return a stable, platform-neutral view of the layout topology for IPC consumers.
-    fn container_tree(&self, layout: LayoutId) -> rift_protocol::ContainerTreeNode;
+    fn container_tree(&self, layout: LayoutId) -> wave_protocol::ContainerTreeNode;
 
     /// Reconcile screen/constraint changes before reading frames. Layouts with
     /// cached world geometry can keep viewport-only updates independent of sizing.
@@ -570,10 +570,10 @@ mod tests {
     }
 
     fn window_nodes(
-        tree: &rift_protocol::ContainerTreeNode,
-    ) -> Vec<&rift_protocol::ContainerTreeNode> {
+        tree: &wave_protocol::ContainerTreeNode,
+    ) -> Vec<&wave_protocol::ContainerTreeNode> {
         let mut windows = Vec::new();
-        if tree.node_type == rift_protocol::ContainerNodeType::Window {
+        if tree.node_type == wave_protocol::ContainerNodeType::Window {
             windows.push(tree);
         }
         for child in &tree.children {
@@ -582,7 +582,7 @@ mod tests {
         windows
     }
 
-    fn node_ids(tree: &rift_protocol::ContainerTreeNode) -> Vec<u64> {
+    fn node_ids(tree: &wave_protocol::ContainerTreeNode) -> Vec<u64> {
         let mut ids = vec![tree.node_id];
         for child in &tree.children {
             ids.extend(node_ids(child));
@@ -591,8 +591,8 @@ mod tests {
     }
 
     fn assert_stable_unique_ids(
-        before: &rift_protocol::ContainerTreeNode,
-        after: &rift_protocol::ContainerTreeNode,
+        before: &wave_protocol::ContainerTreeNode,
+        after: &wave_protocol::ContainerTreeNode,
     ) {
         let before_ids = node_ids(before);
         let after_ids = node_ids(after);
@@ -608,7 +608,7 @@ mod tests {
         traditional.add_window_after_selection(layout, w(1));
         traditional.add_window_after_selection(layout, w(2));
         let tree = traditional.container_tree(layout);
-        assert_eq!(tree.node_type, rift_protocol::ContainerNodeType::Container);
+        assert_eq!(tree.node_type, wave_protocol::ContainerNodeType::Container);
         assert_eq!(window_nodes(&tree).len(), 2);
         assert_eq!(
             window_nodes(&tree).iter().filter(|node| node.is_selected).count(),

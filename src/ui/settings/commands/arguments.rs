@@ -35,7 +35,7 @@ pub(super) fn actions() -> &'static [(usize, &'static str, WmCommand)] {
 }
 pub(super) fn floating_options(
     cmd: &WmCommand,
-) -> Option<rift_protocol::ToggleWindowFloatingOptions> {
+) -> Option<wave_protocol::ToggleWindowFloatingOptions> {
     match cmd {
         WmCommand::ConfiguredLayout(ConfiguredLayoutCommand::ToggleWindowFloating(options))
         | WmCommand::ReactorCommand(Command::Layout(L::ToggleWindowFloatingWithOptions(options))) => {
@@ -110,8 +110,8 @@ pub(super) fn argument(
         }
         if let Some(size) = options.size {
             parts.push(match size {
-                rift_protocol::FloatingWindowSize::Preset(_) => "smart size".into(),
-                rift_protocol::FloatingWindowSize::Dimensions { w, h } => format!("{w} × {h}"),
+                wave_protocol::FloatingWindowSize::Preset(_) => "smart size".into(),
+                wave_protocol::FloatingWindowSize::Dimensions { w, h } => format!("{w} × {h}"),
             });
         }
         return Some(parts.join(", "));
@@ -347,8 +347,8 @@ pub(super) fn summary(cmd: &WmCommand, source: &ConfigSource, displays: &[Screen
         };
         let size = match options.size {
             None => "Original size".into(),
-            Some(rift_protocol::FloatingWindowSize::Preset(_)) => "Smart size".into(),
-            Some(rift_protocol::FloatingWindowSize::Dimensions { w, h }) => format!("{w} × {h}"),
+            Some(wave_protocol::FloatingWindowSize::Preset(_)) => "Smart size".into(),
+            Some(wave_protocol::FloatingWindowSize::Dimensions { w, h }) => format!("{w} × {h}"),
         };
         return format!("{placement} · {size}");
     }
@@ -517,13 +517,13 @@ pub(super) fn parameters(
                 options.center,
                 |center| {
                     WmCommand::ConfiguredLayout(ConfiguredLayoutCommand::ToggleWindowFloating(
-                        rift_protocol::ToggleWindowFloatingOptions { center, size: None },
+                        wave_protocol::ToggleWindowFloatingOptions { center, size: None },
                     ))
                 },
                 &center_set,
             );
             center.accessibility_label("Floating placement");
-            use rift_protocol::{FloatingWindowSize as Size, FloatingWindowSizePreset as Preset};
+            use wave_protocol::{FloatingWindowSize as Size, FloatingWindowSizePreset as Preset};
             let (w, h) = match options.size {
                 Some(Size::Dimensions { w, h }) => (w, h),
                 _ => (640.0, 480.0),
@@ -575,7 +575,7 @@ pub(super) fn parameters(
                 options.size,
                 |size| {
                     WmCommand::ConfiguredLayout(ConfiguredLayoutCommand::ToggleWindowFloating(
-                        rift_protocol::ToggleWindowFloatingOptions { center: false, size },
+                        wave_protocol::ToggleWindowFloatingOptions { center: false, size },
                     ))
                 },
                 &size_set,

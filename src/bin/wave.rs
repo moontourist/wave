@@ -5,40 +5,40 @@ use std::process;
 use clap::{Parser, Subcommand};
 use objc2::MainThreadMarker;
 use objc2_application_services::AXUIElement;
-use rift_wm::actor::config::ConfigActor;
-use rift_wm::actor::config_watcher::ConfigWatcher;
-use rift_wm::actor::input::Input;
-use rift_wm::actor::menu_bar::Menu;
-use rift_wm::actor::mission_control::MissionControlActor;
-use rift_wm::actor::mission_control_observer::NativeMissionControl;
-use rift_wm::actor::notification_center::NotificationCenter;
-use rift_wm::actor::process::ProcessActor;
-use rift_wm::actor::reactor::{self, Reactor};
-use rift_wm::actor::spaces::SpacesActor;
-use rift_wm::actor::stack_line::StackLine;
-use rift_wm::actor::window_notify as window_notify_actor;
-use rift_wm::actor::wm_controller::{self, WmController};
-use rift_wm::common::config::{Config, config_file, restore_file};
-use rift_wm::common::log;
-use rift_wm::common::util::execute_startup_commands;
-use rift_wm::ipc;
-use rift_wm::layout_engine::LayoutEngine;
-use rift_wm::model::tx_store::WindowTxStore;
-use rift_wm::sys::accessibility::ensure_accessibility_permission;
-use rift_wm::sys::executor::Executor;
-use rift_wm::sys::mach::init_window_sub_level_server_port;
-use rift_wm::sys::screen::{CoordinateConverter, displays_have_separate_spaces};
-use rift_wm::sys::service::{ServiceCommands, handle_service_command};
-use rift_wm::sys::skylight::{
+use tokio::join;
+use wave_wm::actor::config::ConfigActor;
+use wave_wm::actor::config_watcher::ConfigWatcher;
+use wave_wm::actor::input::Input;
+use wave_wm::actor::menu_bar::Menu;
+use wave_wm::actor::mission_control::MissionControlActor;
+use wave_wm::actor::mission_control_observer::NativeMissionControl;
+use wave_wm::actor::notification_center::NotificationCenter;
+use wave_wm::actor::process::ProcessActor;
+use wave_wm::actor::reactor::{self, Reactor};
+use wave_wm::actor::spaces::SpacesActor;
+use wave_wm::actor::stack_line::StackLine;
+use wave_wm::actor::window_notify as window_notify_actor;
+use wave_wm::actor::wm_controller::{self, WmController};
+use wave_wm::common::config::{Config, config_file, restore_file};
+use wave_wm::common::log;
+use wave_wm::common::util::execute_startup_commands;
+use wave_wm::ipc;
+use wave_wm::layout_engine::LayoutEngine;
+use wave_wm::model::tx_store::WindowTxStore;
+use wave_wm::sys::accessibility::ensure_accessibility_permission;
+use wave_wm::sys::executor::Executor;
+use wave_wm::sys::mach::init_window_sub_level_server_port;
+use wave_wm::sys::screen::{CoordinateConverter, displays_have_separate_spaces};
+use wave_wm::sys::service::{ServiceCommands, handle_service_command};
+use wave_wm::sys::skylight::{
     CGEnableEventStateCombining, CGSEventType, CGSetLocalEventsSuppressionInterval, KnownCGSEvent,
     SLSWindowManagementBridgeSetDelegate,
 };
-use tokio::join;
 
 embed_plist::embed_info_plist!(concat!(env!("OUT_DIR"), "/Info.plist"));
 
 #[derive(Parser)]
-#[command(name = "rift", version = env!("RIFT_VERSION"))]
+#[command(name = "wave", version = env!("WAVE_VERSION"))]
 struct Cli {
     /// Only run the window manager on the current space.
     #[arg(long)]
@@ -85,7 +85,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Manage the launchd service for rift
+    /// Manage the launchd service for wave
     Service {
         #[command(subcommand)]
         service: ServiceCommands,
@@ -95,7 +95,7 @@ enum Commands {
 /// Actors cannot recover after exiting; panic so the service can restart.
 #[expect(
     clippy::panic,
-    reason = "an exited actor is fatal; the panic hook logs it and launchd restarts rift"
+    reason = "an exited actor is fatal; the panic hook logs it and launchd restarts wave"
 )]
 async fn supervise(name: &'static str, fut: impl Future<Output = ()>) {
     fut.await;
@@ -104,7 +104,7 @@ async fn supervise(name: &'static str, fut: impl Future<Output = ()>) {
 
 #[expect(
     clippy::panic,
-    reason = "a failed thread spawn at startup is fatal; launchd restarts rift"
+    reason = "a failed thread spawn at startup is fatal; launchd restarts wave"
 )]
 fn spawn_supervised<F: Future<Output = ()> + 'static>(
     name: &'static str,
@@ -119,22 +119,22 @@ fn spawn_supervised<F: Future<Output = ()> + 'static>(
 #[expect(
     clippy::unwrap_used,
     clippy::expect_used,
-    reason = "startup failures are fatal; the panic hook logs them and launchd restarts rift"
+    reason = "startup failures are fatal; the panic hook logs them and launchd restarts wave"
 )]
 fn main() {
-    let entry = rift_wm::ui::settings::timing::start();
+    let entry = wave_wm::ui::settings::timing::start();
     let opt = Cli::parse();
 
     if let Some(pid) = opt.recover_windows {
-        rift_wm::sys::window_recovery::run(pid).expect("window recovery failed");
+        wave_wm::sys::window_recovery::run(pid).expect("window recovery failed");
         return;
     }
     sigpipe::reset();
 
     if opt.settings {
-        rift_wm::ui::settings::timing::finish(entry, "entry/argument parsing");
+        wave_wm::ui::settings::timing::finish(entry, "entry/argument parsing");
         log::init_logging();
-        rift_wm::ui::settings::process::run(opt.config.unwrap_or_else(config_file));
+        wave_wm::ui::settings::process::run(opt.config.unwrap_or_else(config_file));
     }
 
     if let Some(Commands::Service { service }) = &opt.command {
@@ -174,14 +174,14 @@ fn main() {
 
     if !displays_have_separate_spaces() {
         eprintln!(
-            "Rift detected that the macOS setting \"Displays have separate Spaces\" \
-is disabled. Rift currently requires this setting to be enabled. \
-Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift."
+            "Wave detected that the macOS setting \"Displays have separate Spaces\" \
+is disabled. Wave currently requires this setting to be enabled. \
+Enable it in System Settings > Desktop & Dock (Mission Control) and restart Wave."
         );
         std::process::exit(1);
     }
 
-    rift_wm::sys::hotkey::refresh_virtual_keymap(mtm);
+    wave_wm::sys::hotkey::refresh_virtual_keymap(mtm);
 
     let config_path = opt.config.clone().unwrap_or_else(|| config_file());
     let mut config = if config_path.exists() {
@@ -206,7 +206,7 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
 
     let startup_commands = config.settings.run_on_start.clone();
 
-    let (broadcast_tx, broadcast_rx) = rift_wm::actor::channel();
+    let (broadcast_tx, broadcast_rx) = wave_wm::actor::channel();
 
     let mut layout = if opt.restore {
         let path = restore_file();
@@ -239,10 +239,10 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
         eprintln!("Could not apply workspace settings to restored layout: {error}");
         process::exit(1);
     }
-    let (input_tx, input_rx) = rift_wm::actor::channel();
-    let (menu_tx, menu_rx) = rift_wm::actor::channel();
-    let (stack_line_tx, stack_line_rx) = rift_wm::actor::channel();
-    let (wnd_tx, wnd_rx) = rift_wm::actor::channel();
+    let (input_tx, input_rx) = wave_wm::actor::channel();
+    let (menu_tx, menu_rx) = wave_wm::actor::channel();
+    let (stack_line_tx, stack_line_rx) = wave_wm::actor::channel();
+    let (wnd_tx, wnd_rx) = wave_wm::actor::channel();
     let window_tx_store = WindowTxStore::new();
     let native_motion_active: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
     let (reactor, startup_ready) = Reactor::spawn(
@@ -277,7 +277,7 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
     };
 
     let _window_recovery =
-        rift_wm::sys::window_recovery::start().expect("could not start window recovery");
+        wave_wm::sys::window_recovery::start().expect("could not start window recovery");
 
     let mach_bridge_rx = broadcast_rx;
 
@@ -302,9 +302,9 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
         config: config.clone(),
     };
     let mc_channel =
-        rift_wm::actor::mission_control::channel_if_enabled(&config.settings.ui.mission_control);
+        wave_wm::actor::mission_control::channel_if_enabled(&config.settings.ui.mission_control);
     let mc_tx = mc_channel.as_ref().map(|(tx, _)| tx.clone());
-    let (_mc_native_tx, mc_native_rx) = rift_wm::actor::channel();
+    let (_mc_native_tx, mc_native_rx) = wave_wm::actor::channel();
     let (wm_controller, wm_controller_sender) = WmController::new(
         wm_config,
         config_tx.clone(),
@@ -376,7 +376,7 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
     let mission_control = mc_channel.map(|(tx, rx)| {
         MissionControlActor::new(
             config.settings.ui.mission_control.clone(),
-            config.virtual_workspaces.mode == rift_wm::common::config::WorkspaceMode::Global,
+            config.virtual_workspaces.mode == wave_wm::common::config::WorkspaceMode::Global,
             rx,
             tx,
             reactor.clone(),
@@ -389,7 +389,7 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
 
     if config.settings.default_disable {
         println!(
-            "NOTICE: by default rift starts in a deactivated state.
+            "NOTICE: by default wave starts in a deactivated state.
             you must activate it by using the toggle_spaces_activated command.
             by default this is bound to Alt+Z but can be changed in the config file."
         );

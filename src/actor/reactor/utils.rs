@@ -2,7 +2,7 @@ use objc2_app_kit::NSNormalWindowLevel;
 
 use crate::actor::app::WindowId;
 use crate::actor::reactor::managers::LayoutManager;
-use crate::model::RiftState;
+use crate::model::WaveState;
 use crate::sys::app::{WindowInfo, is_ax_transient, is_ibkr_desktop_dialog};
 use crate::sys::screen::SpaceId;
 use crate::sys::window_server::{WindowServerId, WindowServerInfo, window_is_sticky, window_level};
@@ -13,7 +13,7 @@ pub(crate) struct AdmissionTransition {
 }
 
 pub(crate) fn refresh_heuristic(
-    state: &mut RiftState,
+    state: &mut WaveState,
     wid: WindowId,
 ) -> Option<AdmissionTransition> {
     let window = state.windows.window(wid)?;
@@ -30,7 +30,7 @@ pub(crate) fn refresh_heuristic(
 }
 
 pub(crate) fn rejection_needs_removal(
-    state: &RiftState,
+    state: &WaveState,
     layout: &LayoutManager,
     wid: WindowId,
     space: SpaceId,
@@ -45,7 +45,7 @@ pub(crate) fn rejection_needs_removal(
         || engine.is_window_floating(wid)
 }
 
-pub(crate) fn clear_rule_admission(state: &mut RiftState, wid: WindowId) {
+pub(crate) fn clear_rule_admission(state: &mut WaveState, wid: WindowId) {
     if let Some(window) = state.windows.window_mut(wid) {
         window.manage_override = None;
     }

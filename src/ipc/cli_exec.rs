@@ -49,13 +49,13 @@ impl DefaultCliExecutor {
         let mut env_vars: HashMap<String, String> = HashMap::default();
         match event {
             BroadcastEvent::BindingModeChanged { previous_mode, mode } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "binding_mode_changed".into());
-                env_vars.insert("RIFT_PREVIOUS_BINDING_MODE".into(), previous_mode.clone());
-                env_vars.insert("RIFT_BINDING_MODE".into(), mode.clone());
+                env_vars.insert("WAVE_EVENT_TYPE".into(), "binding_mode_changed".into());
+                env_vars.insert("WAVE_PREVIOUS_BINDING_MODE".into(), previous_mode.clone());
+                env_vars.insert("WAVE_BINDING_MODE".into(), mode.clone());
             }
             BroadcastEvent::ConfigChanged { revision } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "config_changed".into());
-                env_vars.insert("RIFT_CONFIG_REVISION".into(), revision.to_string());
+                env_vars.insert("WAVE_EVENT_TYPE".into(), "config_changed".into());
+                env_vars.insert("WAVE_CONFIG_REVISION".into(), revision.to_string());
             }
             BroadcastEvent::WorkspaceChanged {
                 workspace_id,
@@ -63,12 +63,12 @@ impl DefaultCliExecutor {
                 space_id,
                 display_uuid,
             } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "workspace_changed".into());
-                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
-                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
-                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                env_vars.insert("WAVE_EVENT_TYPE".into(), "workspace_changed".into());
+                env_vars.insert("WAVE_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("WAVE_WORKSPACE_NAME".into(), workspace_name.clone());
+                env_vars.insert("WAVE_SPACE_ID".into(), space_id.to_string());
                 if let Some(display_uuid) = display_uuid.as_ref() {
-                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                    env_vars.insert("WAVE_DISPLAY_UUID".into(), display_uuid.clone());
                 }
             }
             BroadcastEvent::WindowsChanged {
@@ -78,14 +78,14 @@ impl DefaultCliExecutor {
                 space_id,
                 display_uuid,
             } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "windows_changed".into());
-                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
-                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
-                env_vars.insert("RIFT_WINDOW_COUNT".into(), windows.len().to_string());
-                env_vars.insert("RIFT_WINDOWS".into(), windows.join(","));
-                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                env_vars.insert("WAVE_EVENT_TYPE".into(), "windows_changed".into());
+                env_vars.insert("WAVE_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("WAVE_WORKSPACE_NAME".into(), workspace_name.clone());
+                env_vars.insert("WAVE_WINDOW_COUNT".into(), windows.len().to_string());
+                env_vars.insert("WAVE_WINDOWS".into(), windows.join(","));
+                env_vars.insert("WAVE_SPACE_ID".into(), space_id.to_string());
                 if let Some(display_uuid) = display_uuid.as_ref() {
-                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                    env_vars.insert("WAVE_DISPLAY_UUID".into(), display_uuid.clone());
                 }
             }
             BroadcastEvent::WindowTitleChanged {
@@ -98,18 +98,18 @@ impl DefaultCliExecutor {
                 space_id,
                 display_uuid,
             } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "window_title_changed".into());
-                env_vars.insert("RIFT_WINDOW_ID".into(), window_id.to_debug_string());
-                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
-                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+                env_vars.insert("WAVE_EVENT_TYPE".into(), "window_title_changed".into());
+                env_vars.insert("WAVE_WINDOW_ID".into(), window_id.to_debug_string());
+                env_vars.insert("WAVE_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("WAVE_WORKSPACE_NAME".into(), workspace_name.clone());
                 if let Some(workspace_index) = workspace_index {
-                    env_vars.insert("RIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+                    env_vars.insert("WAVE_WORKSPACE_INDEX".into(), workspace_index.to_string());
                 }
-                env_vars.insert("RIFT_PREVIOUS_WINDOW_TITLE".into(), previous_title.clone());
-                env_vars.insert("RIFT_WINDOW_TITLE".into(), new_title.clone());
-                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                env_vars.insert("WAVE_PREVIOUS_WINDOW_TITLE".into(), previous_title.clone());
+                env_vars.insert("WAVE_WINDOW_TITLE".into(), new_title.clone());
+                env_vars.insert("WAVE_SPACE_ID".into(), space_id.to_string());
                 if let Some(display_uuid) = display_uuid.as_ref() {
-                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                    env_vars.insert("WAVE_DISPLAY_UUID".into(), display_uuid.clone());
                 }
             }
             BroadcastEvent::FocusedWindowChanged {
@@ -120,16 +120,16 @@ impl DefaultCliExecutor {
                 space_id,
                 display_uuid,
             } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "focused_window_changed".into());
-                env_vars.insert("RIFT_WINDOW_ID".into(), window_id.to_debug_string());
-                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
-                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+                env_vars.insert("WAVE_EVENT_TYPE".into(), "focused_window_changed".into());
+                env_vars.insert("WAVE_WINDOW_ID".into(), window_id.to_debug_string());
+                env_vars.insert("WAVE_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("WAVE_WORKSPACE_NAME".into(), workspace_name.clone());
                 if let Some(workspace_index) = workspace_index {
-                    env_vars.insert("RIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+                    env_vars.insert("WAVE_WORKSPACE_INDEX".into(), workspace_index.to_string());
                 }
-                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                env_vars.insert("WAVE_SPACE_ID".into(), space_id.to_string());
                 if let Some(display_uuid) = display_uuid.as_ref() {
-                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                    env_vars.insert("WAVE_DISPLAY_UUID".into(), display_uuid.clone());
                 }
             }
             BroadcastEvent::StacksChanged {
@@ -141,20 +141,20 @@ impl DefaultCliExecutor {
                 space_id,
                 display_uuid,
             } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "stacks_changed".into());
-                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
-                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+                env_vars.insert("WAVE_EVENT_TYPE".into(), "stacks_changed".into());
+                env_vars.insert("WAVE_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("WAVE_WORKSPACE_NAME".into(), workspace_name.clone());
                 if let Some(workspace_index) = workspace_index {
-                    env_vars.insert("RIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+                    env_vars.insert("WAVE_WORKSPACE_INDEX".into(), workspace_index.to_string());
                 }
-                env_vars.insert("RIFT_STACK_COUNT".into(), stacks.len().to_string());
+                env_vars.insert("WAVE_STACK_COUNT".into(), stacks.len().to_string());
                 env_vars.insert(
-                    "RIFT_ACTIVE_WORKSPACE_HAS_FULLSCREEN".into(),
+                    "WAVE_ACTIVE_WORKSPACE_HAS_FULLSCREEN".into(),
                     active_workspace_has_fullscreen.to_string(),
                 );
-                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                env_vars.insert("WAVE_SPACE_ID".into(), space_id.to_string());
                 if let Some(display_uuid) = display_uuid.as_ref() {
-                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                    env_vars.insert("WAVE_DISPLAY_UUID".into(), display_uuid.clone());
                 }
             }
             BroadcastEvent::LayoutChanged {
@@ -173,15 +173,15 @@ impl DefaultCliExecutor {
                 display_uuid,
                 layout: _,
             } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), event.kind().as_str().into());
-                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
-                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+                env_vars.insert("WAVE_EVENT_TYPE".into(), event.kind().as_str().into());
+                env_vars.insert("WAVE_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("WAVE_WORKSPACE_NAME".into(), workspace_name.clone());
                 if let Some(workspace_index) = workspace_index {
-                    env_vars.insert("RIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+                    env_vars.insert("WAVE_WORKSPACE_INDEX".into(), workspace_index.to_string());
                 }
-                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                env_vars.insert("WAVE_SPACE_ID".into(), space_id.to_string());
                 if let Some(display_uuid) = display_uuid.as_ref() {
-                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                    env_vars.insert("WAVE_DISPLAY_UUID".into(), display_uuid.clone());
                 }
             }
         }
@@ -204,7 +204,7 @@ impl DefaultCliExecutor {
         for k in env_vars.keys() {
             override_keys.insert(k.as_bytes());
         }
-        override_keys.insert(b"RIFT_EVENT_JSON");
+        override_keys.insert(b"WAVE_EVENT_JSON");
         let mut env_storage: Vec<CString> = Vec::new();
         for (k, v) in std::env::vars_os() {
             if override_keys.contains(k.as_bytes()) {
@@ -222,7 +222,7 @@ impl DefaultCliExecutor {
             env_storage.push(CString::new(kv)?);
         }
         env_storage.push(
-            CString::new(format!("RIFT_EVENT_JSON={event_json}")).map_err(|_| {
+            CString::new(format!("WAVE_EVENT_JSON={event_json}")).map_err(|_| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, "event JSON contains NUL")
             })?,
         );
