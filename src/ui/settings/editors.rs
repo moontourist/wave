@@ -649,6 +649,7 @@ fn workspace_display_row(f: &mut FormBuilder, model: &Rc<Model>, i: usize) -> Se
             "Add Display Preference",
         )));
         // The button retains the menu; this also exposes it to secondary clicks.
+        // SAFETY: The button retains the menu, so it stays valid while attached.
         unsafe { add.setMenu(Some(state.menu.ns_menu())) };
     }
     let owner = Rc::downgrade(&state);

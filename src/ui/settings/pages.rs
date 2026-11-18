@@ -153,6 +153,7 @@ fn about_identity(ui: &Ui) -> VStack {
         .push(stage(ui, emblem, None))
         .push(centered(
             "Rift",
+            // SAFETY: NSFontWeightSemibold is an immutable framework constant.
             &objc2_app_kit::NSFont::systemFontOfSize_weight(28.0, unsafe {
                 objc2_app_kit::NSFontWeightSemibold
             }),
@@ -606,6 +607,7 @@ pub(super) fn layout_options(ui: Ui, model: &Rc<Model>, mode: LayoutMode) -> Pag
             .ns_text_field()
             .setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(
                 objc2_app_kit::NSFont::smallSystemFontSize(),
+                // SAFETY: NSFontWeightMedium is an immutable framework constant.
                 unsafe { objc2_app_kit::NSFontWeightMedium },
             )));
         Section::form(&ui, "").content(title)

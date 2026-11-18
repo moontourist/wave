@@ -562,6 +562,8 @@ fn workspace_cell_rect(x: f64, width: f64, height: f64) -> CGRect {
 }
 
 fn as_any_object<T: Message>(obj: &T) -> &AnyObject {
+    // SAFETY: Every Message type is an Objective-C object, so a reference to it is a valid
+    // &AnyObject.
     unsafe { &*(obj as *const T as *const AnyObject) }
 }
 
@@ -1619,6 +1621,8 @@ mod layout_library_tests {
 
 fn build_text_attrs(font: &NSFont) -> Retained<NSDictionary<NSAttributedStringKey, AnyObject>> {
     let dict = NSMutableDictionary::<NSAttributedStringKey, AnyObject>::new();
+    // SAFETY: Both keys are immutable framework constants, and each value has the type its
+    // attribute expects: an NSFont and a boolean NSNumber.
     unsafe {
         dict.setObject_forKeyedSubscript(
             Some(as_any_object(font)),
@@ -1631,6 +1635,8 @@ fn build_text_attrs(font: &NSFont) -> Retained<NSDictionary<NSAttributedStringKe
             ),
         );
     }
+    // SAFETY: The dictionary holds NSAttributedStringKey keys and object values, the target type's
+    // layout.
     unsafe { Retained::cast_unchecked(dict) }
 }
 
@@ -1646,13 +1652,17 @@ fn build_cached_text_line(
     let cf_string: &CFString = label_ns.as_ref();
     let cf_dict_ref: &CFDictionary<NSAttributedStringKey, AnyObject> = attrs.as_ref();
     let cf_dict: &CFDictionary = cf_dict_ref.as_opaque();
+    // SAFETY: `cf_string` and `cf_dict` are live, toll-free bridged views of NSString and
+    // NSDictionary.
     let attr_string = unsafe { CFAttributedString::new(None, Some(cf_string), Some(cf_dict)) }?;
+    // SAFETY: `attr_string` is a live attributed string for the call.
     let line: CFRetained<CTLine> = unsafe { CTLine::with_attributed_string(attr_string.as_ref()) };
 
     let mut ascent: CGFloat = 0.0;
     let mut descent: CGFloat = 0.0;
     let mut leading: CGFloat = 0.0;
     let line_ref: &CTLine = line.as_ref();
+    // SAFETY: The three out-pointers are live locals.
     let width = unsafe { line_ref.typographic_bounds(&mut ascent, &mut descent, &mut leading) };
 
     Some(CachedTextLine {
@@ -1667,6 +1677,7 @@ impl MenuIconView {
     fn new(mtm: MainThreadMarker) -> Self { Self::build(mtm, true) }
 
     fn build(mtm: MainThreadMarker, clear_background: bool) -> Self {
+        // SAFETY: NSFontWeightMedium is an immutable framework constant.
         let font = NSFont::systemFontOfSize_weight(FONT_SIZE, unsafe { NSFontWeightMedium });
         let text_attrs = build_text_attrs(font.as_ref());
         let layout = Rc::new(RefCell::new(MenuIconLayout::default()));
@@ -1853,6 +1864,7 @@ fn build_layout(
             } else {
                 let line = separator_line.get_or_insert_with(|| {
                     // AeroSpace's largeTitle.bold pipe, rendered at half scale.
+                    // SAFETY: NSFontWeightBold is an immutable framework constant.
                     let font = NSFont::systemFontOfSize_weight(13.0, unsafe { NSFontWeightBold });
                     #[expect(
                         clippy::expect_used,
@@ -1970,6 +1982,8 @@ fn draw_menu_icon(cg: &CGContext, bounds: CGRect, layout: &MenuIconLayout, clear
     });
     CGContext::set_alpha(Some(cg), 1.0);
     CGContext::set_blend_mode(Some(cg), CGBlendMode::Normal);
+    // SAFETY: `cg` is the live drawing context; a transparency layer with no auxiliary info is
+    // valid, and end_transparency_layer below balances it.
     unsafe {
         CGContext::begin_transparency_layer(Some(cg), None);
     }
@@ -1997,6 +2011,8 @@ fn draw_menu_icon(cg: &CGContext, bounds: CGRect, layout: &MenuIconLayout, clear
         );
         if is_label {
             foreground.setStroke();
+            // SAFETY: `cg` is the live drawing context, and the end_transparency_layer below
+            // balances this layer.
             unsafe {
                 CGContext::begin_transparency_layer(Some(cg), None);
             }
@@ -2102,6 +2118,7 @@ fn draw_menu_icon(cg: &CGContext, bounds: CGRect, layout: &MenuIconLayout, clear
             }
             CGContext::set_text_position(Some(cg), text_x as CGFloat, baseline_y as CGFloat);
             let line_ref: &CTLine = label_line.line.as_ref();
+            // SAFETY: `cg` is the live drawing context with its text position set.
             unsafe { line_ref.draw(cg) };
             CGContext::restore_g_state(Some(cg));
         }
@@ -2115,6 +2132,7 @@ fn draw_menu_icon(cg: &CGContext, bounds: CGRect, layout: &MenuIconLayout, clear
         let baseline = centered_origin(y_offset, layout.size.height, line.ascent + line.descent)
             + line.descent;
         CGContext::set_text_position(Some(cg), *x, baseline);
+        // SAFETY: `cg` is the live drawing context with its text position set.
         unsafe { line.line.draw(cg) };
     }
 
@@ -2130,6 +2148,7 @@ fn draw_menu_icon(cg: &CGContext, bounds: CGRect, layout: &MenuIconLayout, clear
             + SEPARATOR_BOTTOM_PADDING;
         for &x in &layout.separators {
             CGContext::set_text_position(Some(cg), x, baseline);
+            // SAFETY: `cg` is the live drawing context with its text position set.
             unsafe {
                 line.line.draw(cg);
             }

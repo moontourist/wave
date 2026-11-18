@@ -46,7 +46,7 @@ pub struct DragPreview {
     visible: bool,
 }
 
-// The preview is exclusively owned by Reactor. Reactor itself is moved once to
+// SAFETY: The preview is exclusively owned by Reactor. Reactor itself is moved once to
 // its dedicated thread before a preview can be created; the CA objects are
 // never accessed concurrently or moved again after creation.
 unsafe impl Send for DragPreview {}

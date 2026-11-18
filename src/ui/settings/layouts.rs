@@ -103,6 +103,7 @@ impl Inspector {
             );
             let group = gallery.ns_view();
             group.setAccessibilityElement(true);
+            // SAFETY: NSAccessibilityRadioGroupRole is an immutable framework constant.
             group.setAccessibilityRole(Some(unsafe {
                 objc2_app_kit::NSAccessibilityRadioGroupRole
             }));
@@ -518,6 +519,7 @@ fn floating_note(ui: &Ui) -> HStack {
         image.setSymbolConfiguration(Some(
             &objc2_app_kit::NSImageSymbolConfiguration::configurationWithPointSize_weight(
                 22.0,
+                // SAFETY: NSFontWeightRegular is an immutable framework constant.
                 unsafe { objc2_app_kit::NSFontWeightRegular },
             ),
         ));

@@ -228,6 +228,7 @@ async fn open(
         let updated = std::cell::Cell::new(false);
         let update = RcBlock::new(move |note: NonNull<NSNotification>| {
             // Activation can update an invisible window. Only count an update after ordering.
+            // SAFETY: NSNotificationCenter passes a live notification for the block's duration.
             let visible = unsafe { note.as_ref() }
                 .object()
                 .and_then(|object| object.downcast::<objc2_app_kit::NSWindow>().ok())
@@ -242,6 +243,8 @@ async fn open(
                 );
             }
         });
+        // SAFETY: NSWindowDidUpdateNotification is an immutable framework constant. The block and
+        // window outlive the observer, which lives for the process.
         let _ = unsafe {
             NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
                 Some(objc2_app_kit::NSWindowDidUpdateNotification),
@@ -251,6 +254,7 @@ async fn open(
             )
         };
     }
+    // SAFETY: Both AppKit notification names are immutable framework constants.
     for (name, activation) in unsafe {
         [
             (NSApplicationDidBecomeActiveNotification, true),
@@ -272,6 +276,7 @@ async fn open(
                 Message::RefreshRuntime
             });
         });
+        // SAFETY: The block is retained by the notification center for the life of the process.
         let _ = unsafe {
             NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
                 Some(name),

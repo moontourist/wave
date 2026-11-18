@@ -204,8 +204,11 @@ fn layer(frame: CGRect, scale: f64) -> Retained<CALayer> {
     l
 }
 fn fade(layer: &CALayer, to: f32) {
+    // SAFETY: presentationLayer returns a copy of the layer's in-flight render state and only reads
+    // it.
     let from = unsafe { layer.presentationLayer() }.map_or(layer.opacity(), |p| p.opacity());
     let animation = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("opacity")));
+    // SAFETY: The opacity key path animates NSNumber values.
     unsafe {
         animation.setFromValue(Some(&NSNumber::new_f32(from)));
         animation.setToValue(Some(&NSNumber::new_f32(to)));
@@ -216,6 +219,8 @@ fn fade(layer: &CALayer, to: f32) {
 }
 
 fn decoration_fade(layer: &CALayer, shadow: bool, to: f32, duration: f64) {
+    // SAFETY: presentationLayer returns a copy of the layer's in-flight render state and only reads
+    // it.
     let displayed = unsafe { layer.presentationLayer() };
     let from = if shadow {
         displayed.as_deref().unwrap_or(layer).shadowOpacity()
@@ -224,6 +229,7 @@ fn decoration_fade(layer: &CALayer, shadow: bool, to: f32, duration: f64) {
     };
     let key = NSString::from_str(if shadow { "shadowOpacity" } else { "opacity" });
     let animation = CABasicAnimation::animationWithKeyPath(Some(&key));
+    // SAFETY: The opacity and shadowOpacity key paths animate NSNumber values.
     unsafe {
         animation.setFromValue(Some(&NSNumber::new_f32(from)));
         animation.setToValue(Some(&NSNumber::new_f32(to)));
@@ -243,6 +249,8 @@ fn decoration_fade(layer: &CALayer, shadow: bool, to: f32, duration: f64) {
 
 fn set_text(l: &CATextLayer, text: &str) {
     let text = CFString::from_str(text);
+    // SAFETY: CFString is toll-free bridged to NSString, which CATextLayer's string property
+    // accepts.
     unsafe {
         l.setString(Some(&*(text.as_ref() as *const AnyObject)));
     }
@@ -258,6 +266,8 @@ fn text(
     l.setFrame(frame);
     l.setContentsScale(scale);
     let font = NSFont::systemFontOfSize(size);
+    // SAFETY: NSFont is toll-free bridged to CTFont, which CATextLayer's font property accepts;
+    // kCATruncationEnd is an immutable framework constant.
     unsafe {
         l.setFont(Some(&*(Retained::as_ptr(&font) as *const CFType)));
         l.setTruncationMode(objc2_quartz_core::kCATruncationEnd);
@@ -298,7 +308,11 @@ fn symbol(parent: &CALayer, name: &str, x: f64, scale: f64) {
     if let Some(image) =
         cgs::image::Symbol::header(name).and_then(|i| i.imageWithSymbolConfiguration(&config))
         && let Some(cg) =
-            unsafe { image.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None) }
+            // SAFETY: A null proposed rect asks for the image's own size, and no context or
+            // hints are needed.
+            unsafe {
+                image.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None)
+            }
     {
         let l = layer(rect(x, 11., 13., 13.), scale);
         image_contents(&l, &cg);
@@ -306,12 +320,15 @@ fn symbol(parent: &CALayer, name: &str, x: f64, scale: f64) {
     }
 }
 fn image_contents(l: &CALayer, image: &CGImage) {
+    // SAFETY: CALayer's contents property accepts a CGImage.
     unsafe {
         l.setContents(Some(&*(image as *const CGImage as *const AnyObject)));
     }
 }
 fn app_icon(pid: i32) -> Option<Retained<CGImage>> {
     let image = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?.icon()?;
+    // SAFETY: A null proposed rect asks for the image's own size, and no context or hints are
+    // needed.
     unsafe { image.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None) }
 }
 
@@ -436,6 +453,7 @@ impl SceneWindow {
         }
         let bounds = CGRect::new(CGPoint::ZERO, self.world.size);
         if self.preview.layer().bounds() != bounds {
+            // SAFETY: A null transform leaves the rounded-rect path untransformed.
             let path = unsafe { CGPath::with_rounded_rect(bounds, 10., 10., std::ptr::null()) };
             self.shadow.setShadowPath(Some(&path));
             self.preview.layer().setFrame(bounds);
@@ -509,6 +527,7 @@ impl WorkspaceRegion {
             if let Some(image) = image {
                 image_contents(layer, image);
             } else {
+                // SAFETY: Clearing a layer's contents with None is always valid.
                 unsafe {
                     layer.setContents(None);
                 }
@@ -603,6 +622,8 @@ impl DisplayOverview {
             image_contents(&background, image);
         } else if let Some(url) = NSWorkspace::sharedWorkspace().desktopImageURLForScreen(&screen)
             && let Some(image) = NSImage::initWithContentsOfURL(NSImage::alloc(), &url)
+            // SAFETY: A null proposed rect asks for the image's own size, and no context or hints
+            // are needed.
             && let Some(image) = unsafe {
                 image.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None)
             }
@@ -612,6 +633,7 @@ impl DisplayOverview {
             // No usable image file; retain a neutral background if snapshot capture also fails.
             background.setBackgroundColor(Some(&NSColor::windowBackgroundColor().CGColor()));
         }
+        // SAFETY: kCAGravityResizeAspectFill is an immutable framework constant.
         unsafe {
             background.setContentsGravity(objc2_quartz_core::kCAGravityResizeAspectFill);
         }
@@ -955,8 +977,11 @@ impl DisplayOverview {
                 // reproduce the camera math exactly without sampled keyframes.
                 let animation =
                     CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("transform")));
+                // SAFETY: valueWithCATransform3D boxes a plain CATransform3D struct.
                 let from = unsafe { NSValue::valueWithCATransform3D(motion.from.transform()) };
+                // SAFETY: valueWithCATransform3D boxes a plain CATransform3D struct.
                 let to = unsafe { NSValue::valueWithCATransform3D(motion.to.transform()) };
+                // SAFETY: The transform key path animates NSValue-wrapped CATransform3D values.
                 unsafe {
                     animation.setFromValue(Some(&from));
                     animation.setToValue(Some(&to));
@@ -984,6 +1009,8 @@ impl DisplayOverview {
                 let completion = CameraCompletion::alloc()
                     .set_ivars((motion.completed.clone(), self.wake.clone()));
                 let completion: Retained<CameraCompletion> =
+                    // SAFETY: `completion` is a freshly allocated CameraCompletion with its ivars
+                    // set, and NSObject's init takes no arguments.
                     unsafe { objc2::msg_send![super(completion), init] };
                 animation.setDelegate(Some(ProtocolObject::from_ref(&*completion)));
                 self.pictures.setPosition(CGPoint::ZERO);
@@ -1033,6 +1060,8 @@ impl DisplayOverview {
                 if self.motion.is_none() {
                     region.label.removeAnimationForKey(&NSString::from_str("position"));
                 }
+                // SAFETY: presentationLayer returns a copy of the layer's in-flight render state
+                // and only reads it.
                 let position = unsafe { region.label.presentationLayer() }
                     .map_or(region.label.position(), |p| p.position());
                 region.label.setPosition(CGPoint::new(x, y));
@@ -1040,6 +1069,7 @@ impl DisplayOverview {
                     let animation = CABasicAnimation::animationWithKeyPath(Some(
                         &NSString::from_str("position"),
                     ));
+                    // SAFETY: The position key path animates NSValue-wrapped CGPoint values.
                     unsafe {
                         animation.setFromValue(Some(&NSValue::valueWithPoint(position)));
                         animation.setToValue(Some(&NSValue::valueWithPoint(CGPoint::new(x, y))));
@@ -1185,6 +1215,8 @@ impl DisplayOverview {
     fn sample(&mut self, now: Instant) {
         if let Some(motion) = &self.motion {
             let (camera, done) = motion.sample(now);
+            // SAFETY: presentationLayer returns a copy of the layer's in-flight render state and
+            // only reads it.
             self.camera = unsafe { self.pictures.presentationLayer() }
                 .filter(|_| motion.submitted)
                 .map(|layer| {
@@ -2260,6 +2292,7 @@ impl OverviewSession {
                 tx: to.mid().x - from.mid().x,
                 ty: to.mid().y - from.mid().y,
             });
+            // SAFETY: valueWithCATransform3D boxes a plain CATransform3D struct.
             let values = unsafe {
                 [
                     NSValue::valueWithCATransform3D(w.shadow.transform()),
@@ -2268,6 +2301,7 @@ impl OverviewSession {
             };
             let animation =
                 CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("transform")));
+            // SAFETY: The transform key path animates NSValue-wrapped CATransform3D values.
             unsafe {
                 animation.setFromValue(Some(&values[0]));
                 animation.setToValue(Some(&values[1]));
@@ -2355,6 +2389,8 @@ impl OverviewSession {
             d.applied = None;
             d.background.setOpacity(1.);
             for w in &mut d.windows {
+                // SAFETY: presentationLayer returns a copy of the layer's in-flight render state
+                // and only reads it.
                 if let Some(presentation) = unsafe { w.shadow.presentationLayer() } {
                     w.world = presentation.frame();
                 }

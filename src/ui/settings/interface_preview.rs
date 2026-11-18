@@ -36,10 +36,13 @@ define_class!(
     impl StackPreviewView {
         #[unsafe(method(isFlipped))] fn flipped(&self) -> bool { true }
         #[unsafe(method(viewDidChangeEffectiveAppearance))] fn appearance(&self) {
+            // SAFETY: NSView implements viewDidChangeEffectiveAppearance with no arguments and no
+            // return value.
             unsafe { let _: () = msg_send![super(self), viewDidChangeEffectiveAppearance]; }
             self.setNeedsDisplay(true);
         }
         #[unsafe(method(layout))] fn arrange(&self) {
+            // SAFETY: NSView implements layout with no arguments and no return value.
             unsafe { let _: () = msg_send![super(self), layout]; }
             let reserve = self.reserve();
             let settings = self.ivars().settings.borrow();
@@ -68,16 +71,23 @@ impl NativeView for StackPreview {
 }
 impl StackPreview {
     pub(super) fn new(ui: &Ui) -> Self {
-        let font = NSFont::systemFontOfSize_weight(12.0, unsafe { NSFontWeightMedium });
+        // SAFETY: These AppKit weight and attribute names are immutable framework constants.
+        let (weight, font_key, color_key) = unsafe {
+            (
+                NSFontWeightMedium,
+                NSFontAttributeName,
+                NSForegroundColorAttributeName,
+            )
+        };
+        let font = NSFont::systemFontOfSize_weight(12.0, weight);
         let color = NSColor::labelColor();
-        let attrs = NSDictionary::from_slices(
-            &[unsafe { NSFontAttributeName }, unsafe {
-                NSForegroundColorAttributeName
-            }],
-            &[&*font as &objc2::runtime::AnyObject, &*color],
-        );
+        let attrs = NSDictionary::from_slices(&[font_key, color_key], &[
+            &*font as &objc2::runtime::AnyObject,
+            &*color,
+        ]);
         let labels = APPS
             .iter()
+            // SAFETY: `attrs` maps attribute names to values of the types each attribute expects.
             .map(|(title, _)| unsafe {
                 NSAttributedString::initWithString_attributes(
                     NSAttributedString::alloc(),
@@ -86,6 +96,8 @@ impl StackPreview {
                 )
             })
             .collect();
+        // SAFETY: The view is freshly allocated on the main thread with its ivars set, and NSView's
+        // init takes no arguments.
         let view: Retained<StackPreviewView> = unsafe {
             msg_send![
                 super(StackPreviewView::alloc(ui.mtm()).set_ivars(StackState {

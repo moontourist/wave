@@ -682,6 +682,8 @@ impl Shortcuts {
         if let Some(button) = option_button {
             menu.add(MenuItem::new(&ui, "Edit Options…").on_click(move || {
                 if let Some(button) = button.load() {
+                    // SAFETY: `button` is a live NSButton on the main thread, and a None sender is
+                    // valid for performClick:.
                     unsafe {
                         button.performClick(None);
                     }
@@ -726,6 +728,7 @@ impl Shortcuts {
                 }
             }
         }
+        // SAFETY: The menu outlives the view's use of it; the view retains it.
         unsafe { presentation.view.ns_view().setMenu(Some(menu.ns_menu())) };
         RowControls {
             view: presentation.view,
@@ -1236,6 +1239,7 @@ pub(super) fn keyboard(ui: Ui, model: &Rc<Model>) -> Page {
                             controls.conflicts.set_hidden(true);
                         }
                     }
+                    // SAFETY: `clicked` is a live menu item on the main thread.
                     if let Some(menu) = unsafe { clicked.menu() } {
                         for item in menu.itemArray() {
                             item.setState(if std::ptr::eq(&*item, clicked) { 1 } else { 0 });
