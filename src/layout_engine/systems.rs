@@ -1,0 +1,820 @@
+use enum_dispatch::enum_dispatch;
+use objc2_core_foundation::CGRect;
+use serde::{Deserialize, Serialize};
+
+use crate::actor::app::{WindowId, pid_t};
+use crate::common::collections::HashMap;
+use crate::layout_engine::{Direction, LayoutKind, ResizeOrientation};
+
+slotmap::new_key_type! { pub struct LayoutId; }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct WindowLayoutConstraints {
+    pub is_resizable: bool,
+    pub locked_width: f64,
+    pub locked_height: f64,
+    pub min_width: f64,
+    pub min_height: f64,
+    pub max_width: f64,
+    pub max_height: f64,
+}
+
+impl WindowLayoutConstraints {
+    pub fn normalized(self) -> Self {
+        let clean = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        let min_width = clean(self.min_width);
+        let min_height = clean(self.min_height);
+        let mut max_width = clean(self.max_width);
+        let mut max_height = clean(self.max_height);
+        if max_width > 0.0 && max_width < min_width {
+            max_width = min_width;
+        }
+        if max_height > 0.0 && max_height < min_height {
+            max_height = min_height;
+        }
+        Self {
+            is_resizable: self.is_resizable,
+            locked_width: clean(self.locked_width),
+            locked_height: clean(self.locked_height),
+            min_width,
+            min_height,
+            max_width,
+            max_height,
+        }
+    }
+
+    pub fn min_for_axis(self, horizontal: bool) -> f64 {
+        if horizontal {
+            self.min_width
+        } else {
+            self.min_height
+        }
+    }
+
+    pub fn max_for_axis(self, horizontal: bool) -> f64 {
+        if horizontal {
+            self.max_width
+        } else {
+            self.max_height
+        }
+    }
+
+    pub fn fixed_for_axis(self, horizontal: bool) -> Option<f64> {
+        let locked = if horizontal {
+            self.locked_width
+        } else {
+            self.locked_height
+        };
+        let min = self.min_for_axis(horizontal);
+        let max = self.max_for_axis(horizontal);
+        // Axis-specific lock: when min/max collapse to the same positive value,
+        // treat that axis as fixed even if the window is generally resizable.
+        if min > 0.0 && max > 0.0 && (min - max).abs() <= f64::EPSILON {
+            return Some(max);
+        }
+        if !self.is_resizable {
+            return (locked > 0.0).then_some(locked);
+        }
+        None
+    }
+
+    pub fn resizable_for_axis(self, horizontal: bool) -> bool {
+        self.fixed_for_axis(horizontal).is_none()
+    }
+
+    pub fn resizable_any_axis(self) -> bool {
+        self.resizable_for_axis(true) || self.resizable_for_axis(false)
+    }
+}
+
+pub(crate) struct AppMembershipDelta {
+    pub additions: Vec<WindowId>,
+    pub removals: Vec<WindowId>,
+}
+
+/// Compute the identity changes needed to reconcile one application's layout membership.
+/// Representations remain responsible for insertion placement and protected-node removal rules.
+pub(crate) fn reconcile_app_membership(
+    pid: pid_t,
+    mut current: Vec<WindowId>,
+    mut desired: Vec<WindowId>,
+    participates: impl Fn(WindowId) -> bool,
+) -> AppMembershipDelta {
+    debug_assert!(current.iter().all(|wid| wid.pid == pid));
+    debug_assert!(desired.iter().all(|wid| wid.pid == pid));
+    current.sort_unstable();
+    desired.sort_unstable();
+
+    let mut additions = Vec::new();
+    let mut removals = Vec::new();
+    let (mut current_idx, mut desired_idx) = (0, 0);
+    while current_idx < current.len() || desired_idx < desired.len() {
+        match (current.get(current_idx), desired.get(desired_idx)) {
+            (Some(current), Some(desired)) if current == desired => {
+                current_idx += 1;
+                desired_idx += 1;
+            }
+            (Some(current), Some(desired)) if current < desired => {
+                removals.push(*current);
+                current_idx += 1;
+            }
+            (_, Some(desired)) => {
+                additions.push(*desired);
+                desired_idx += 1;
+            }
+            (Some(current), None) => {
+                removals.push(*current);
+                current_idx += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    removals.retain(|window| participates(*window));
+    AppMembershipDelta { additions, removals }
+}
+
+#[enum_dispatch]
+pub trait LayoutSystem: Serialize + for<'de> Deserialize<'de> {
+    fn window_participates(&self, _window: WindowId) -> bool { true }
+    /// Change eligibility without changing canonical membership or sizing.
+    fn set_window_participation(&mut self, _window: WindowId, _participates: bool) -> bool { false }
+    fn create_layout(&mut self) -> LayoutId;
+    fn contains_layout(&self, layout: LayoutId) -> bool;
+    fn clone_layout(&mut self, layout: LayoutId) -> LayoutId;
+    fn remove_layout(&mut self, layout: LayoutId);
+
+    fn draw_tree(&self, layout: LayoutId) -> String;
+    /// Return a stable, platform-neutral view of the layout topology for IPC consumers.
+    fn container_tree(&self, layout: LayoutId) -> rift_protocol::ContainerTreeNode;
+
+    /// Reconcile screen/constraint changes before reading frames. Layouts with
+    /// cached world geometry can keep viewport-only updates independent of sizing.
+    fn prepare_layout(
+        &mut self,
+        _layout: LayoutId,
+        _screen: CGRect,
+        _constraints: &HashMap<WindowId, WindowLayoutConstraints>,
+        _gaps: &crate::common::config::GapSettings,
+    ) {
+    }
+
+    fn calculate_layout(
+        &self,
+        layout: LayoutId,
+        screen: CGRect,
+        stack_offset: f64,
+        constraints: &HashMap<WindowId, WindowLayoutConstraints>,
+        gaps: &crate::common::config::GapSettings,
+        stack_line: crate::common::config::StackLineReserve,
+    ) -> Vec<(WindowId, CGRect)>;
+
+    fn selected_window(&self, layout: LayoutId) -> Option<WindowId>;
+    fn selection_contains_window(&self, layout: LayoutId, window: WindowId) -> bool {
+        self.selected_window(layout) == Some(window)
+    }
+    /// Return every window stored in this layout, including members hidden by a stack.
+    /// Persistence validation must not confuse "currently visible" with "serialized" or an
+    /// unmatchable hidden member can survive forever as a ghost.
+    fn all_windows_in_layout(&self, layout: LayoutId) -> Vec<WindowId>;
+    /// Structural location of a window, independent of its rendered frame.
+    fn window_slot(&self, layout: LayoutId, window: WindowId) -> Option<Vec<usize>> {
+        self.all_windows_in_layout(layout)
+            .iter()
+            .position(|&candidate| candidate == window)
+            .map(|index| vec![index])
+    }
+    fn visible_windows_in_layout(&self, layout: LayoutId) -> Vec<WindowId>;
+    /// Members sharing the stack/group that directly contains `window`.
+    fn stack_members(&self, _layout: LayoutId, _window: WindowId) -> Vec<WindowId> { Vec::new() }
+    fn visible_windows_under_selection(&self, layout: LayoutId) -> Vec<WindowId>;
+    fn ascend_selection(&mut self, layout: LayoutId) -> bool;
+    fn descend_selection(&mut self, layout: LayoutId) -> bool;
+    fn move_focus(
+        &mut self,
+        layout: LayoutId,
+        direction: Direction,
+    ) -> (Option<WindowId>, Vec<WindowId>);
+    fn window_in_direction(&self, layout: LayoutId, direction: Direction) -> Option<WindowId>;
+    fn add_window_after_selection(&mut self, layout: LayoutId, wid: WindowId);
+    /// Insert a window arriving from another display at the edge it crossed.
+    fn add_window_from_direction(
+        &mut self,
+        layout: LayoutId,
+        wid: WindowId,
+        _direction: Direction,
+    ) {
+        self.add_window_after_selection(layout, wid);
+    }
+    /// Replace a window identity in-place without changing its layout position.
+    fn replace_window(&mut self, from: WindowId, to: WindowId);
+    fn remove_window(&mut self, wid: WindowId);
+    fn remove_window_and_rebalance_parent(&mut self, wid: WindowId) { self.remove_window(wid) }
+    fn remove_windows_for_app(&mut self, pid: pid_t);
+    fn windows_for_app(&self, layout: LayoutId, pid: pid_t) -> Vec<WindowId> {
+        self.all_windows_in_layout(layout)
+            .into_iter()
+            .filter(|wid| wid.pid == pid)
+            .collect()
+    }
+    fn set_windows_for_app(&mut self, layout: LayoutId, pid: pid_t, desired: Vec<WindowId>);
+    fn has_windows_for_app(&self, layout: LayoutId, pid: pid_t) -> bool {
+        self.all_windows_in_layout(layout).into_iter().any(|wid| wid.pid == pid)
+    }
+    fn contains_window(&self, layout: LayoutId, wid: WindowId) -> bool;
+    fn select_window(&mut self, layout: LayoutId, wid: WindowId) -> bool;
+    fn on_window_resized(
+        &mut self,
+        layout: LayoutId,
+        wid: WindowId,
+        old_frame: CGRect,
+        new_frame: CGRect,
+        screen: CGRect,
+        gaps: &crate::common::config::GapSettings,
+    );
+
+    fn swap_windows(&mut self, layout: LayoutId, a: WindowId, b: WindowId) -> bool;
+
+    /// Reorder a stack: move `window`'s tab into `target`'s slot. Both must share a stack.
+    fn move_stack_tab(&mut self, _layout: LayoutId, _window: WindowId, _target: WindowId) -> bool {
+        false
+    }
+
+    /// Route source-slot drags through the same operation as keyboard MoveNode.
+    fn apply_window_drop(
+        &mut self,
+        layout: LayoutId,
+        source: WindowId,
+        target: WindowId,
+        action: crate::layout_engine::WindowDropAction,
+    ) -> bool {
+        if !self.window_participates(source) || !self.window_participates(target) {
+            return false;
+        }
+        if let crate::layout_engine::WindowDropAction::Move(direction) = action {
+            return self.select_window(layout, source) && self.move_selection(layout, direction);
+        }
+        if let crate::layout_engine::WindowDropAction::ConsumeOrExpel(direction) = action {
+            if !self.select_window(layout, source) {
+                return false;
+            }
+            self.consume_or_expel_selection(layout, direction);
+            return true;
+        }
+        self.apply_target_drop(layout, source, target, action)
+    }
+
+    fn apply_target_drop(
+        &mut self,
+        _layout: LayoutId,
+        _source: WindowId,
+        _target: WindowId,
+        _action: crate::layout_engine::WindowDropAction,
+    ) -> bool {
+        false
+    }
+
+    fn move_selection(&mut self, layout: LayoutId, direction: Direction) -> bool;
+    /// Give the adjacent display priority over creating a new outer split.
+    fn move_selection_with_display_neighbor(
+        &mut self,
+        layout: LayoutId,
+        direction: Direction,
+        _has_neighbor: bool,
+    ) -> bool {
+        self.move_selection(layout, direction)
+    }
+    fn move_selection_to_layout_after_selection(
+        &mut self,
+        from_layout: LayoutId,
+        to_layout: LayoutId,
+    );
+    fn split_selection(&mut self, _layout: LayoutId, _kind: LayoutKind) {}
+
+    fn toggle_fullscreen_of_selection(&mut self, layout: LayoutId) -> Vec<WindowId>;
+    fn toggle_fullscreen_within_gaps_of_selection(&mut self, layout: LayoutId) -> Vec<WindowId>;
+    fn has_any_fullscreen_node(&self, layout: LayoutId) -> bool;
+
+    fn join_selection_with_direction(&mut self, _layout: LayoutId, _direction: Direction) {}
+    fn consume_or_expel_selection(&mut self, layout: LayoutId, direction: Direction) {
+        self.join_selection_with_direction(layout, direction);
+    }
+    fn apply_stacking_to_parent_of_selection(
+        &mut self,
+        _layout: LayoutId,
+        _default_orientation: crate::common::config::StackDefaultOrientation,
+    ) -> Vec<WindowId> {
+        Vec::new()
+    }
+    fn unstack_parent_of_selection(
+        &mut self,
+        _layout: LayoutId,
+        _default_orientation: crate::common::config::StackDefaultOrientation,
+    ) -> Vec<WindowId> {
+        Vec::new()
+    }
+    fn parent_of_selection_is_stacked(&self, _layout: LayoutId) -> bool { false }
+    fn unjoin_selection(&mut self, _layout: LayoutId) {}
+    fn resize_selection_by(
+        &mut self,
+        layout: LayoutId,
+        amount: f64,
+        orientation: ResizeOrientation,
+    );
+    fn rebalance(&mut self, _layout: LayoutId) {}
+    fn toggle_tile_orientation(&mut self, _layout: LayoutId) {}
+}
+
+pub(super) fn node_slot(
+    mut node: crate::model::tree::NodeId,
+    root: crate::model::tree::NodeId,
+    map: &crate::model::tree::NodeMap,
+) -> Option<Vec<usize>> {
+    let mut path = Vec::new();
+    while node != root {
+        let parent = node.parent(map)?;
+        path.push(parent.children(map).position(|child| child == node)?);
+        node = parent;
+    }
+    path.reverse();
+    Some(path)
+}
+
+/// Forward representation-level operations shared by tree-backed layout policies.
+/// Policy implementations still spell out every operation that can change their invariants.
+macro_rules! delegate_traditional_layout_system {
+    (@tree) => {
+        fn window_participates(&self, window: WindowId) -> bool {
+            self.inner.window_participates(window)
+        }
+        fn set_window_participation(&mut self, window: WindowId, participates: bool) -> bool {
+            self.inner.set_window_participation(window, participates)
+        }
+        fn contains_layout(&self, layout: LayoutId) -> bool { self.inner.contains_layout(layout) }
+        fn selected_window(&self, layout: LayoutId) -> Option<WindowId> {
+            self.inner.selected_window(layout)
+        }
+        fn selection_contains_window(&self, layout: LayoutId, window: WindowId) -> bool {
+            self.inner.selection_contains_window(layout, window)
+        }
+        fn visible_windows_in_layout(&self, layout: LayoutId) -> Vec<WindowId> {
+            self.inner.visible_windows_in_layout(layout)
+        }
+        fn stack_members(&self, layout: LayoutId, window: WindowId) -> Vec<WindowId> {
+            self.inner.stack_members(layout, window)
+        }
+        fn visible_windows_under_selection(&self, layout: LayoutId) -> Vec<WindowId> {
+            self.inner.visible_windows_under_selection(layout)
+        }
+        fn ascend_selection(&mut self, layout: LayoutId) -> bool {
+            self.inner.ascend_selection(layout)
+        }
+        fn descend_selection(&mut self, layout: LayoutId) -> bool {
+            self.inner.descend_selection(layout)
+        }
+        fn contains_window(&self, layout: LayoutId, wid: WindowId) -> bool {
+            self.inner.contains_window(layout, wid)
+        }
+        fn select_window(&mut self, layout: LayoutId, wid: WindowId) -> bool {
+            self.inner.select_window(layout, wid)
+        }
+        fn swap_windows(&mut self, layout: LayoutId, a: WindowId, b: WindowId) -> bool {
+            self.inner.swap_windows(layout, a, b)
+        }
+        fn move_stack_tab(&mut self, layout: LayoutId, window: WindowId, target: WindowId) -> bool {
+            self.inner.move_stack_tab(layout, window, target)
+        }
+        fn toggle_fullscreen_of_selection(&mut self, layout: LayoutId) -> Vec<WindowId> {
+            self.inner.toggle_fullscreen_of_selection(layout)
+        }
+        fn toggle_fullscreen_within_gaps_of_selection(
+            &mut self,
+            layout: LayoutId,
+        ) -> Vec<WindowId> {
+            self.inner.toggle_fullscreen_within_gaps_of_selection(layout)
+        }
+        fn has_any_fullscreen_node(&self, layout: LayoutId) -> bool {
+            self.inner.has_any_fullscreen_node(layout)
+        }
+    };
+    () => {
+        delegate_traditional_layout_system!(@tree);
+        fn remove_layout(&mut self, layout: LayoutId) { self.inner.remove_layout(layout); }
+
+
+        fn move_focus(
+            &mut self,
+            layout: LayoutId,
+            direction: Direction,
+        ) -> (Option<WindowId>, Vec<WindowId>) {
+            self.inner.move_focus(layout, direction)
+        }
+        fn window_in_direction(&self, layout: LayoutId, direction: Direction) -> Option<WindowId> {
+            self.inner.window_in_direction(layout, direction)
+        }
+        fn replace_window(&mut self, from: WindowId, to: WindowId) {
+            self.inner.replace_window(from, to);
+        }
+
+        fn on_window_resized(
+            &mut self,
+            layout: LayoutId,
+            wid: WindowId,
+            old_frame: CGRect,
+            new_frame: CGRect,
+            screen: CGRect,
+            gaps: &crate::common::config::GapSettings,
+        ) {
+            self.inner.on_window_resized(layout, wid, old_frame, new_frame, screen, gaps);
+        }
+
+
+    };
+}
+
+mod traditional;
+pub use traditional::TraditionalLayoutSystem;
+mod bsp;
+pub(crate) mod constraints;
+pub use bsp::BspLayoutSystem;
+mod master_stack;
+pub use master_stack::MasterStackLayoutSystem;
+pub(crate) mod scrolling;
+pub use scrolling::{ScrollingLayoutSystem, ViewportRelease};
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BspLayoutSystem, LayoutSystem, MasterStackLayoutSystem, ScrollingLayoutSystem,
+        TraditionalLayoutSystem, WindowLayoutConstraints,
+    };
+    use crate::actor::app::WindowId;
+    use crate::common::config::{ScrollingLayoutSettings, WindowInsertionPoint};
+
+    fn w(idx: u32) -> WindowId { WindowId::new(1, idx) }
+
+    #[test]
+    fn app_membership_reconciliation_is_representation_neutral() {
+        let delta =
+            super::reconcile_app_membership(1, vec![w(1), w(3)], vec![w(2), w(3)], |_| true);
+        assert_eq!(delta.additions, vec![w(2)]);
+        assert_eq!(delta.removals, vec![w(1)]);
+    }
+
+    #[test]
+    fn common_insertion_point_controls_tree_and_linear_layouts() {
+        let mut traditional = TraditionalLayoutSystem::new(WindowInsertionPoint::EndOfTree, false);
+        let traditional_layout = traditional.create_layout();
+        traditional.add_window_after_selection(traditional_layout, w(1));
+        traditional.add_window_after_selection(traditional_layout, w(2));
+        traditional.select_window(traditional_layout, w(1));
+        traditional.add_window_after_selection(traditional_layout, w(3));
+        assert_eq!(traditional.all_windows_in_layout(traditional_layout), vec![
+            w(1),
+            w(2),
+            w(3)
+        ]);
+
+        let mut scrolling_settings = ScrollingLayoutSettings::default();
+        scrolling_settings.base.window_insertion_point = Some(WindowInsertionPoint::EndOfTree);
+        let mut scrolling = ScrollingLayoutSystem::new(&scrolling_settings);
+        let scrolling_layout = scrolling.create_layout();
+        scrolling.add_window_after_selection(scrolling_layout, w(1));
+        scrolling.add_window_after_selection(scrolling_layout, w(2));
+        scrolling.select_window(scrolling_layout, w(1));
+        scrolling.add_window_after_selection(scrolling_layout, w(3));
+        assert_eq!(scrolling.all_windows_in_layout(scrolling_layout), vec![
+            w(1),
+            w(2),
+            w(3)
+        ]);
+    }
+
+    #[test]
+    fn axis_specific_fixed_detection_supports_one_axis_locked_other_resizable() {
+        let c = WindowLayoutConstraints {
+            is_resizable: true,
+            locked_width: 700.0,
+            locked_height: 400.0,
+            min_width: 723.0,
+            min_height: 470.0,
+            max_width: 723.0,
+            max_height: 0.0,
+        }
+        .normalized();
+
+        assert_eq!(c.fixed_for_axis(true), Some(723.0));
+        assert_eq!(c.fixed_for_axis(false), None);
+        assert!(!c.resizable_for_axis(true));
+        assert!(c.resizable_for_axis(false));
+        assert!(c.resizable_any_axis());
+    }
+
+    #[test]
+    fn non_resizable_zero_locked_size_is_not_treated_as_fixed() {
+        let c = WindowLayoutConstraints {
+            is_resizable: false,
+            locked_width: 0.0,
+            locked_height: 0.0,
+            min_width: 0.0,
+            min_height: 0.0,
+            max_width: 0.0,
+            max_height: 0.0,
+        }
+        .normalized();
+
+        assert_eq!(c.fixed_for_axis(true), None);
+        assert_eq!(c.fixed_for_axis(false), None);
+        assert!(c.resizable_for_axis(true));
+        assert!(c.resizable_for_axis(false));
+    }
+
+    #[test]
+    fn non_resizable_positive_locked_size_remains_fixed() {
+        let c = WindowLayoutConstraints {
+            is_resizable: false,
+            locked_width: 640.0,
+            locked_height: 360.0,
+            min_width: 0.0,
+            min_height: 0.0,
+            max_width: 0.0,
+            max_height: 0.0,
+        }
+        .normalized();
+
+        assert_eq!(c.fixed_for_axis(true), Some(640.0));
+        assert_eq!(c.fixed_for_axis(false), Some(360.0));
+        assert!(!c.resizable_for_axis(true));
+        assert!(!c.resizable_for_axis(false));
+        assert!(!c.resizable_any_axis());
+    }
+
+    #[test]
+    fn positive_max_only_constraint_is_not_treated_as_fixed() {
+        let c = WindowLayoutConstraints {
+            is_resizable: true,
+            locked_width: 0.0,
+            locked_height: 0.0,
+            min_width: 0.0,
+            min_height: 0.0,
+            max_width: 600.0,
+            max_height: 480.0,
+        }
+        .normalized();
+
+        assert_eq!(c.fixed_for_axis(true), None);
+        assert_eq!(c.fixed_for_axis(false), None);
+        assert_eq!(c.max_for_axis(true), 600.0);
+        assert_eq!(c.max_for_axis(false), 480.0);
+        assert!(c.resizable_for_axis(true));
+        assert!(c.resizable_for_axis(false));
+    }
+
+    fn window_nodes(
+        tree: &rift_protocol::ContainerTreeNode,
+    ) -> Vec<&rift_protocol::ContainerTreeNode> {
+        let mut windows = Vec::new();
+        if tree.node_type == rift_protocol::ContainerNodeType::Window {
+            windows.push(tree);
+        }
+        for child in &tree.children {
+            windows.extend(window_nodes(child));
+        }
+        windows
+    }
+
+    fn node_ids(tree: &rift_protocol::ContainerTreeNode) -> Vec<u64> {
+        let mut ids = vec![tree.node_id];
+        for child in &tree.children {
+            ids.extend(node_ids(child));
+        }
+        ids
+    }
+
+    fn assert_stable_unique_ids(
+        before: &rift_protocol::ContainerTreeNode,
+        after: &rift_protocol::ContainerTreeNode,
+    ) {
+        let before_ids = node_ids(before);
+        let after_ids = node_ids(after);
+        assert_eq!(before_ids, after_ids);
+        let unique: std::collections::HashSet<_> = after_ids.iter().copied().collect();
+        assert_eq!(unique.len(), after_ids.len());
+    }
+
+    #[test]
+    fn normalized_container_trees_expose_layout_topology() {
+        let mut traditional = TraditionalLayoutSystem::default();
+        let layout = traditional.create_layout();
+        traditional.add_window_after_selection(layout, w(1));
+        traditional.add_window_after_selection(layout, w(2));
+        let tree = traditional.container_tree(layout);
+        assert_eq!(tree.node_type, rift_protocol::ContainerNodeType::Container);
+        assert_eq!(window_nodes(&tree).len(), 2);
+        assert_eq!(
+            window_nodes(&tree).iter().filter(|node| node.is_selected).count(),
+            1
+        );
+        traditional.select_window(layout, w(1));
+        assert_stable_unique_ids(&tree, &traditional.container_tree(layout));
+
+        let mut bsp = BspLayoutSystem::default();
+        let layout = bsp.create_layout();
+        bsp.add_window_after_selection(layout, w(1));
+        bsp.add_window_after_selection(layout, w(2));
+        let tree = bsp.container_tree(layout);
+        assert_eq!(tree.children.len(), 2);
+        let total_weight: f64 = tree.children.iter().filter_map(|node| node.weight).sum();
+        assert!((total_weight - 1.0).abs() < f64::EPSILON);
+        bsp.select_window(layout, w(1));
+        assert_stable_unique_ids(&tree, &bsp.container_tree(layout));
+
+        let mut master_stack = MasterStackLayoutSystem::default();
+        let layout = master_stack.create_layout();
+        master_stack.add_window_after_selection(layout, w(1));
+        master_stack.add_window_after_selection(layout, w(2));
+        let tree = master_stack.container_tree(layout);
+        let roles: Vec<_> = tree.children.iter().filter_map(|node| node.role.as_deref()).collect();
+        assert!(roles.contains(&"master"), "{tree:#?}");
+        assert!(roles.contains(&"stack"), "{tree:#?}");
+
+        let mut scrolling = ScrollingLayoutSystem::default();
+        let layout = scrolling.create_layout();
+        scrolling.add_window_after_selection(layout, w(1));
+        scrolling.add_window_after_selection(layout, w(2));
+        let tree = scrolling.container_tree(layout);
+        assert!(tree.children.iter().all(|node| node.role.as_deref() == Some("column")));
+        assert_eq!(window_nodes(&tree).len(), 2);
+        scrolling.select_window(layout, w(1));
+        assert_stable_unique_ids(&tree, &scrolling.container_tree(layout));
+    }
+}
+mod floating;
+pub use floating::FloatingLayoutSystem;
+mod stack;
+pub use stack::StackLayoutSystem;
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Debug)]
+#[enum_dispatch(LayoutSystem)]
+pub enum LayoutSystemKind {
+    Traditional(TraditionalLayoutSystem),
+    Bsp(BspLayoutSystem),
+    MasterStack(MasterStackLayoutSystem),
+    Scrolling(ScrollingLayoutSystem),
+    Stack(StackLayoutSystem),
+    Floating(FloatingLayoutSystem),
+}
+
+impl LayoutSystemKind {
+    pub(crate) fn preview_clone(&self) -> Option<Self> {
+        match self {
+            Self::Traditional(system) => Some(Self::Traditional(system.clone())),
+            Self::Bsp(system) => Some(Self::Bsp(system.clone())),
+            Self::MasterStack(system) => Some(Self::MasterStack(system.clone())),
+            Self::Scrolling(system) => Some(Self::Scrolling(system.clone())),
+            Self::Stack(system) => Some(Self::Stack(system.clone())),
+            Self::Floating(_) => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod participation_tests {
+    use objc2_core_foundation::{CGPoint, CGSize};
+
+    use super::*;
+
+    #[test]
+    fn suspended_members_preserve_slots_and_geometry_in_every_backend() {
+        let mut systems = [
+            LayoutSystemKind::Traditional(Default::default()),
+            LayoutSystemKind::Bsp(Default::default()),
+            LayoutSystemKind::Stack(Default::default()),
+            LayoutSystemKind::MasterStack(Default::default()),
+            LayoutSystemKind::Scrolling(Default::default()),
+            LayoutSystemKind::Floating(Default::default()),
+        ];
+        let screen = CGRect::new(CGPoint::ZERO, CGSize::new(1200.0, 800.0));
+        let constraints = HashMap::default();
+        let mut gaps = crate::common::config::GapSettings::default();
+        gaps.inner.horizontal = 16.0;
+        gaps.inner.vertical = 12.0;
+        for (system, mode) in systems.iter_mut().zip([
+            "traditional",
+            "bsp",
+            "stack",
+            "master_stack",
+            "scrolling",
+            "floating",
+        ]) {
+            let layout = system.create_layout();
+            let frames = |system: &mut LayoutSystemKind| {
+                system.prepare_layout(layout, screen, &constraints, &gaps);
+                system.calculate_layout(
+                    layout,
+                    screen,
+                    20.0,
+                    &constraints,
+                    &gaps,
+                    Default::default(),
+                )
+            };
+            let windows = [1, 2, 3, 4].map(|i| WindowId::new(1, i));
+            for (index, &window) in windows.iter().enumerate() {
+                if index == 2 {
+                    system.split_selection(layout, LayoutKind::Vertical);
+                }
+                system.add_window_after_selection(layout, window);
+            }
+            system.select_window(layout, windows[1]);
+            system.resize_selection_by(layout, 0.13, ResizeOrientation::Horizontal);
+            system.select_window(layout, windows[0]);
+            let slots: Vec<_> = windows.iter().map(|&w| system.window_slot(layout, w)).collect();
+            let original = frames(system);
+            for &window in &windows[1..] {
+                system.set_window_participation(window, false);
+            }
+            let projected = frames(system);
+            assert_eq!(
+                projected.iter().map(|(w, _)| *w).collect::<Vec<_>>(),
+                vec![windows[0]],
+                "{mode}"
+            );
+            if mode != "scrolling" && mode != "floating" {
+                assert_eq!(
+                    projected[0].1,
+                    crate::layout_engine::utils::compute_tiling_area(screen, &gaps),
+                    "{mode}: an inactive subtree cannot reserve geometry"
+                );
+            }
+            for index in [2, 1, 3] {
+                system.set_window_participation(windows[index], true);
+            }
+            assert_eq!(frames(system), original, "{mode}");
+            assert_eq!(
+                windows.iter().map(|&w| system.window_slot(layout, w)).collect::<Vec<_>>(),
+                slots
+            );
+
+            for &window in &windows {
+                system.set_window_participation(window, false);
+            }
+            assert!(frames(system).is_empty());
+            for &window in windows.iter().rev() {
+                system.set_window_participation(window, true);
+            }
+            assert_eq!(
+                windows.iter().map(|&w| system.window_slot(layout, w)).collect::<Vec<_>>(),
+                slots
+            );
+
+            let returned = frames(system);
+            assert_eq!(
+                returned.iter().map(|(w, frame)| (*w, frame.size)).collect::<Vec<_>>(),
+                original.iter().map(|(w, frame)| (*w, frame.size)).collect::<Vec<_>>(),
+                "{mode}"
+            );
+
+            system.set_window_participation(windows[1], false);
+            assert!(!system.select_window(layout, windows[1]));
+            assert!(!system.swap_windows(layout, windows[0], windows[1]));
+            let replacement = WindowId::new(1, 20);
+            system.replace_window(windows[1], replacement);
+            assert_eq!(system.window_slot(layout, replacement), slots[1]);
+            assert!(!system.window_participates(replacement));
+            system.remove_window(windows[2]);
+            let inserted = WindowId::new(1, 5);
+            system.add_window_after_selection(layout, inserted);
+            system.set_windows_for_app(layout, 1, vec![windows[0], windows[3], inserted]);
+            assert!(
+                system.contains_window(layout, replacement),
+                "inventory must retain suspended members"
+            );
+            assert!(!system.contains_window(layout, windows[2]));
+            let serialized = ron::ser::to_string(&system).unwrap();
+            let mut restarted: LayoutSystemKind = ron::de::from_str(&serialized).unwrap();
+            assert!(restarted.contains_window(layout, replacement));
+            assert!(!restarted.contains_window(layout, windows[1]));
+            restarted.remove_windows_for_app(1);
+            assert!(restarted.all_windows_in_layout(layout).is_empty());
+            system.set_window_participation(replacement, true);
+            system.remove_window(replacement);
+            assert!(!system.contains_window(layout, replacement));
+            assert!(system.contains_window(layout, inserted));
+            let retained = system.all_windows_in_layout(layout);
+            for &window in &retained {
+                system.set_window_participation(window, false);
+            }
+            let newcomer = WindowId::new(1, 6);
+            system.add_window_after_selection(layout, newcomer);
+            assert_eq!(frames(system).iter().map(|(w, _)| *w).collect::<Vec<_>>(), vec![
+                newcomer
+            ]);
+            for &window in &retained {
+                system.set_window_participation(window, true);
+                assert!(system.contains_window(layout, window));
+            }
+        }
+    }
+}

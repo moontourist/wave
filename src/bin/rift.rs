@@ -1,0 +1,461 @@
+use std::future::Future;
+use std::path::PathBuf;
+use std::process;
+
+use clap::{Parser, Subcommand};
+use objc2::MainThreadMarker;
+use objc2_application_services::AXUIElement;
+use rift_wm::actor::config::ConfigActor;
+use rift_wm::actor::config_watcher::ConfigWatcher;
+use rift_wm::actor::input::Input;
+use rift_wm::actor::menu_bar::Menu;
+use rift_wm::actor::mission_control::MissionControlActor;
+use rift_wm::actor::mission_control_observer::NativeMissionControl;
+use rift_wm::actor::notification_center::NotificationCenter;
+use rift_wm::actor::process::ProcessActor;
+use rift_wm::actor::reactor::{self, Reactor};
+use rift_wm::actor::spaces::SpacesActor;
+use rift_wm::actor::stack_line::StackLine;
+use rift_wm::actor::window_notify as window_notify_actor;
+use rift_wm::actor::wm_controller::{self, WmController};
+use rift_wm::common::config::{Config, config_file, restore_file};
+use rift_wm::common::log;
+use rift_wm::common::util::execute_startup_commands;
+use rift_wm::ipc;
+use rift_wm::layout_engine::LayoutEngine;
+use rift_wm::model::tx_store::WindowTxStore;
+use rift_wm::sys::accessibility::ensure_accessibility_permission;
+use rift_wm::sys::executor::Executor;
+use rift_wm::sys::mach::init_window_sub_level_server_port;
+use rift_wm::sys::screen::{CoordinateConverter, displays_have_separate_spaces};
+use rift_wm::sys::service::{ServiceCommands, handle_service_command};
+use rift_wm::sys::skylight::{
+    CGEnableEventStateCombining, CGSEventType, CGSetLocalEventsSuppressionInterval, KnownCGSEvent,
+    SLSWindowManagementBridgeSetDelegate,
+};
+use tokio::join;
+
+embed_plist::embed_info_plist!(concat!(env!("OUT_DIR"), "/Info.plist"));
+
+#[derive(Parser)]
+#[command(name = "rift", version = env!("RIFT_VERSION"))]
+struct Cli {
+    /// Only run the window manager on the current space.
+    #[arg(long)]
+    one: bool,
+
+    /// Disable new spaces by default.
+    ///
+    /// Ignored if --one is used.
+    #[arg(long)]
+    default_disable: bool,
+
+    /// Disable animations.
+    #[arg(long)]
+    no_animate: bool,
+
+    /// Check whether the saved layout snapshot can be loaded.
+    #[arg(long)]
+    validate: bool,
+
+    /// Restore the master layout file saved at shutdown.
+    #[arg(long)]
+    restore: bool,
+
+    /// Record reactor events to the specified file path. Overwrites the file if
+    /// exists.
+    #[arg(long)]
+    record: Option<PathBuf>,
+
+    /// Path to configuration file to use (overrides default).
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// Internal: run only the Settings window, connected to the running daemon.
+    #[arg(long, hide = true)]
+    settings: bool,
+
+    /// Internal: recover offscreen windows after this daemon PID exits.
+    #[arg(long, hide = true)]
+    recover_windows: Option<i32>,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Manage the launchd service for rift
+    Service {
+        #[command(subcommand)]
+        service: ServiceCommands,
+    },
+}
+
+/// Actors cannot recover after exiting; panic so the service can restart.
+#[expect(
+    clippy::panic,
+    reason = "an exited actor is fatal; the panic hook logs it and launchd restarts rift"
+)]
+async fn supervise(name: &'static str, fut: impl Future<Output = ()>) {
+    fut.await;
+    panic!("{name} exited");
+}
+
+#[expect(
+    clippy::panic,
+    reason = "a failed thread spawn at startup is fatal; launchd restarts rift"
+)]
+fn spawn_supervised<F: Future<Output = ()> + 'static>(
+    name: &'static str,
+    task: impl FnOnce() -> F + Send + 'static,
+) {
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || Executor::run(supervise(name, task())))
+        .unwrap_or_else(|error| panic!("failed to spawn {name} thread: {error}"));
+}
+
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "startup failures are fatal; the panic hook logs them and launchd restarts rift"
+)]
+fn main() {
+    let entry = rift_wm::ui::settings::timing::start();
+    let opt = Cli::parse();
+
+    if let Some(pid) = opt.recover_windows {
+        rift_wm::sys::window_recovery::run(pid).expect("window recovery failed");
+        return;
+    }
+    sigpipe::reset();
+
+    if opt.settings {
+        rift_wm::ui::settings::timing::finish(entry, "entry/argument parsing");
+        log::init_logging();
+        rift_wm::ui::settings::process::run(opt.config.unwrap_or_else(config_file));
+    }
+
+    if let Some(Commands::Service { service }) = &opt.command {
+        match handle_service_command(service) {
+            Ok(msg) => {
+                println!("{}", msg);
+                process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                process::exit(1);
+            }
+        }
+    }
+
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        // SAFETY: We are single threaded at this point.
+        unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
+    }
+    log::init_logging();
+    install_panic_hook();
+
+    let mtm = MainThreadMarker::new().unwrap();
+    {
+        use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+        let app = NSApplication::sharedApplication(mtm);
+        let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        app.finishLaunching();
+        NSApplication::load();
+    }
+
+    // SAFETY: A null delegate clears SkyLight's window-management bridge delegate.
+    unsafe { SLSWindowManagementBridgeSetDelegate(std::ptr::null_mut()) };
+
+    ensure_accessibility_permission();
+    init_window_sub_level_server_port();
+
+    if !displays_have_separate_spaces() {
+        eprintln!(
+            "Rift detected that the macOS setting \"Displays have separate Spaces\" \
+is disabled. Rift currently requires this setting to be enabled. \
+Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift."
+        );
+        std::process::exit(1);
+    }
+
+    rift_wm::sys::hotkey::refresh_virtual_keymap(mtm);
+
+    let config_path = opt.config.clone().unwrap_or_else(|| config_file());
+    let mut config = if config_path.exists() {
+        Config::read(&config_path).unwrap()
+    } else {
+        Config::default()
+    };
+    config.settings.animate &= !opt.no_animate;
+    config.settings.default_disable |= opt.default_disable;
+
+    if opt.validate {
+        let path = restore_file();
+        match LayoutEngine::validate_file(path.clone()) {
+            Ok(_) => println!("Master file is valid: {}", path.display()),
+            Err(error) => {
+                eprintln!("Could not load master file at {}: {error}", path.display());
+                process::exit(1);
+            }
+        }
+        process::exit(0);
+    }
+
+    let startup_commands = config.settings.run_on_start.clone();
+
+    let (broadcast_tx, broadcast_rx) = rift_wm::actor::channel();
+
+    let mut layout = if opt.restore {
+        let path = restore_file();
+        match LayoutEngine::load_for_startup_restore(path.clone()) {
+            Ok(layout) => layout,
+            Err(error) => {
+                eprintln!(
+                    "Could not restore master file at {}; starting with a fresh layout: {error}",
+                    path.display()
+                );
+                LayoutEngine::new(
+                    &config.virtual_workspaces,
+                    &config.settings.layout,
+                    Some(broadcast_tx.clone()),
+                )
+            }
+        }
+    } else {
+        LayoutEngine::new(
+            &config.virtual_workspaces,
+            &config.settings.layout,
+            Some(broadcast_tx.clone()),
+        )
+    };
+    if let Err(error) = layout.finish_loading(
+        &config.virtual_workspaces,
+        &config.settings.layout,
+        Some(broadcast_tx.clone()),
+    ) {
+        eprintln!("Could not apply workspace settings to restored layout: {error}");
+        process::exit(1);
+    }
+    let (input_tx, input_rx) = rift_wm::actor::channel();
+    let (menu_tx, menu_rx) = rift_wm::actor::channel();
+    let (stack_line_tx, stack_line_rx) = rift_wm::actor::channel();
+    let (wnd_tx, wnd_rx) = rift_wm::actor::channel();
+    let window_tx_store = WindowTxStore::new();
+    let native_motion_active: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+    let (reactor, startup_ready) = Reactor::spawn(
+        config.clone(),
+        layout,
+        reactor::Record::new(opt.record.as_deref()),
+        input_tx.clone(),
+        broadcast_tx.clone(),
+        menu_tx.clone(),
+        stack_line_tx.clone(),
+        Some((wnd_tx.clone(), window_tx_store.clone())),
+        opt.one,
+        native_motion_active.clone(),
+    );
+    let events_tx = reactor.sender();
+
+    let config_tx = ConfigActor::spawn_with_path(
+        config.clone(),
+        events_tx.clone(),
+        broadcast_tx.clone(),
+        config_path.clone(),
+    );
+
+    ConfigWatcher::spawn(config_tx.clone(), config_path.clone());
+
+    let server_state = match ipc::run_mach_server(reactor.clone(), config_tx.clone()) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("{}", err);
+            process::exit(1);
+        }
+    };
+
+    let _window_recovery =
+        rift_wm::sys::window_recovery::start().expect("could not start window recovery");
+
+    let mach_bridge_rx = broadcast_rx;
+
+    let server_state_for_bridge = server_state.clone();
+    std::thread::spawn(move || {
+        let mut rx = mach_bridge_rx;
+        let server_state = server_state_for_bridge;
+        loop {
+            match rx.blocking_recv() {
+                Some((_span, event)) => {
+                    server_state.publish(event);
+                }
+                None => {
+                    break;
+                }
+            }
+        }
+    });
+
+    let wm_config = wm_controller::Config {
+        restore_file: restore_file(),
+        config: config.clone(),
+    };
+    let mc_channel =
+        rift_wm::actor::mission_control::channel_if_enabled(&config.settings.ui.mission_control);
+    let mc_tx = mc_channel.as_ref().map(|(tx, _)| tx.clone());
+    let (_mc_native_tx, mc_native_rx) = rift_wm::actor::channel();
+    let (wm_controller, wm_controller_sender) = WmController::new(
+        wm_config,
+        config_tx.clone(),
+        events_tx.clone(),
+        input_tx.clone(),
+        stack_line_tx.clone(),
+        mc_tx.clone(),
+        Some(window_tx_store.clone()),
+    );
+
+    let (spaces_actor, spaces_tx) =
+        SpacesActor::new(events_tx.clone(), wm_controller_sender.clone());
+    events_tx.send(reactor::Event::RegisterSenders {
+        wm: wm_controller_sender.clone(),
+        spaces: spaces_tx.clone(),
+        topology_guard: spaces_actor.topology_guard(),
+    });
+    let wn_actor = window_notify_actor::WindowNotify::new(
+        events_tx.clone(),
+        spaces_tx.clone(),
+        wnd_rx,
+        &[
+            // this event seems bugged
+            //CGSEventType::Known(KnownCGSEvent::SpaceCurrentChanged),
+            // repl for aboce
+            CGSEventType::Known(KnownCGSEvent::WorkspaceDidChange),
+            CGSEventType::Known(KnownCGSEvent::ManagedSpaceMembershipUpdated),
+            CGSEventType::Known(KnownCGSEvent::SpaceWindowManagementCapabilitiesChanged),
+            CGSEventType::Known(KnownCGSEvent::SpaceWindowDestroyed),
+            CGSEventType::Known(KnownCGSEvent::SpaceWindowCreated),
+            CGSEventType::Known(KnownCGSEvent::WindowClosed),
+            // Native focus wakeups. Payload identities are racy, so adjacent
+            // events are coalesced before re-querying WindowServer key focus.
+            CGSEventType::Known(KnownCGSEvent::WindowReordered),
+            CGSEventType::Known(KnownCGSEvent::WindowUnhidden),
+            CGSEventType::Known(KnownCGSEvent::WindowHidden),
+            CGSEventType::Known(KnownCGSEvent::WindowManagerSpaceFrontConnectionChanged),
+            CGSEventType::Known(KnownCGSEvent::WindowManagerGlobalFrontConnectionChanged),
+            CGSEventType::Known(KnownCGSEvent::SpaceCreated),
+            CGSEventType::Known(KnownCGSEvent::SpaceDestroyed),
+            //CGSEventType::Known(KnownCGSEvent::WindowMoved),
+            //CGSEventType::Known(KnownCGSEvent::WindowResized),
+        ],
+        Some(window_tx_store.clone()),
+    );
+
+    let notification_center =
+        NotificationCenter::new(wm_controller_sender.clone(), spaces_tx.clone());
+
+    let process_actor = ProcessActor::new(wm_controller_sender.clone(), spaces_tx);
+
+    let menu = Menu::new(
+        config.clone(),
+        menu_rx,
+        events_tx.clone(),
+        config_tx.clone(),
+        mtm,
+        config_path.clone(),
+    );
+    let stack_line = StackLine::new(
+        config.clone(),
+        stack_line_rx,
+        stack_line_tx.clone(),
+        mtm,
+        events_tx.clone(),
+        CoordinateConverter::default(),
+    );
+
+    let mission_control = mc_channel.map(|(tx, rx)| {
+        MissionControlActor::new(
+            config.settings.ui.mission_control.clone(),
+            config.virtual_workspaces.mode == rift_wm::common::config::WorkspaceMode::Global,
+            rx,
+            tx,
+            reactor.clone(),
+            mtm,
+            input_tx.clone(),
+            stack_line_tx.clone(),
+        )
+    });
+    let mission_control_native = NativeMissionControl::new(events_tx.clone(), mc_native_rx);
+
+    if config.settings.default_disable {
+        println!(
+            "NOTICE: by default rift starts in a deactivated state.
+            you must activate it by using the toggle_spaces_activated command.
+            by default this is bound to Alt+Z but can be changed in the config file."
+        );
+    }
+
+    // SAFETY: AXUIElementCreateSystemWide takes no arguments.
+    let system_wide = unsafe { AXUIElement::new_system_wide() };
+    // SAFETY: `system_wide` is a live AXUIElement for the call.
+    unsafe { system_wide.set_messaging_timeout(1.0) };
+
+    CGSetLocalEventsSuppressionInterval(0.0);
+    CGEnableEventStateCombining(false);
+
+    // Construct the unified HID tap on its dedicated input CFRunLoop thread.
+    let input_config = config.clone();
+    let input_wm_sender = wm_controller_sender.clone();
+    let input_mc_tx = mc_tx;
+    spawn_supervised("input", move || {
+        Input::new(
+            input_config,
+            events_tx,
+            input_rx,
+            input_wm_sender,
+            input_mc_tx,
+            native_motion_active,
+        )
+        .run()
+    });
+
+    Executor::run_main(mtm, async move {
+        join!(
+            async move {
+                if startup_ready.await.is_ok() {
+                    execute_startup_commands(&startup_commands);
+                }
+            },
+            supervise("wm_controller", wm_controller.run()),
+            supervise(
+                "notification_center",
+                notification_center.watch_for_notifications()
+            ),
+            supervise("spaces", spaces_actor.run()),
+            supervise("menu", menu.run()),
+            supervise("stack_line", stack_line.run()),
+            supervise("window_notify", wn_actor.run()),
+            supervise("mc_native", mission_control_native.run()),
+            async move {
+                if let Some(actor) = mission_control {
+                    actor.run().await;
+                }
+            },
+            supervise("process_actor", process_actor.run()),
+        );
+    });
+}
+
+#[cfg(panic = "unwind")]
+fn install_panic_hook() {
+    // Abort on panic instead of propagating panics to the main thread.
+    // See Cargo.toml for why we don't use panic=abort everywhere.
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        original_hook(info);
+        std::process::abort();
+    }));
+}
+
+#[cfg(not(panic = "unwind"))]
+fn install_panic_hook() {}

@@ -1,0 +1,210 @@
+[package]
+name = "rift-wm"
+version = "0.8.3"
+edition = "2024"
+build = "build.rs"
+
+[workspace]
+members = [".", "crates/rift-client", "crates/rift-protocol", "crates/rift-config-derive"]
+resolver = "3"
+exclude = ["cgs"]
+
+[[bin]]
+name = "rift"
+test = false
+
+[profile.dev]
+opt-level = 0
+debug = "line-tables-only"
+incremental = true
+codegen-units = 256
+debug-assertions = true
+overflow-checks = true
+split-debuginfo = "unpacked"
+panic = "unwind"
+
+# Keep native dispatch fast during ordinary cargo run. Signature validation walks
+# Objective-C metadata on every message; application debug assertions stay enabled.
+[profile.dev.package.objc2]
+opt-level = 2
+debug-assertions = false
+
+[profile.dev.package.cgs]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+debug = 1
+codegen-units = 1
+panic = "unwind"
+incremental = false
+lto = "thin"
+strip = true
+
+[profile.release-fast]
+inherits = "release"
+opt-level = 2
+codegen-units = 16
+incremental = true
+lto = "off"
+strip = false
+
+[profile.profiling]
+inherits = "release"
+strip = false
+
+[lib]
+doctest = false
+
+[features]
+default = []
+timing = ["dep:tracing-timing"]
+experimental = ["disable-axuielement-destroyed"]
+custom-event-loop = ["objc2-foundation/NSDate", "objc2-foundation/NSRunLoop"]
+disable-axuielement-destroyed = []
+
+[dependencies]
+rift-config-derive = { path = "crates/rift-config-derive" }
+cgs = { version = "0.5.2" }#, path = "cgs" }
+anyhow = { version = "1.0.83", default-features = false }
+ascii_tree = "0.1.1"
+thiserror = { version = "2.0.17", default-features = false }
+bitflags = "2.4.1"
+block2 = { version = "0.6.2", default-features = false, features = ["alloc"] }
+clap = { version = "4.5.4", features = ["derive"] }
+dirs = "6.0.0"
+dispatchr = { git = "https://github.com/drewcrawford/dispatchr" }
+nix = { version = "0.30.1", features = ["process", "user"] }
+objc2 = { version = "0.6.2", default-features = false, features = ["exception"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+	"NSAlert",
+	"NSApplication",
+	"NSAttributedString",
+	"NSColor",
+	"NSColorSpace",
+	"NSCursor",
+	"NSEvent",
+	"NSFont",
+	"NSGraphics",
+	"NSImage",
+	"NSImageRep",
+	"NSBitmapImageRep",
+	"NSMenu",
+	"NSMenuItem",
+	"NSResponder",
+	"NSRunningApplication",
+	"NSSavePanel",
+	"NSScreen",
+	"NSTouch",
+	"NSView",
+	"NSWindow",
+	"NSWorkspace",
+	"libc",
+	"objc2-core-foundation",
+	"objc2-core-graphics",
+	"objc2-quartz-core"
+]}
+objc2-application-services = { version = "0.3.2", default-features = false, features = [
+	"AXError",
+	"AXUIElement",
+	"AXValue",
+	"HIServices",
+	"libc"
+]}
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+	"CFArray",
+	"CFAttributedString",
+	"CFMachPort",
+	"CFNumber",
+	"CFRunLoop",
+	"CFString"
+]}
+objc2-core-text = { version = "0.3.2", default-features = false, features = [
+	"CTLine",
+	"CTStringAttributes",
+	"objc2-core-graphics"
+]}
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = [
+	"CGColor",
+	"CGBitmapContext",
+	"CGDirectDisplay",
+	"CGError",
+	"CGEvent",
+	"CGEventSource",
+	"CGEventTypes",
+	"CGRemoteOperation",
+	"CGWindow",
+	"libc",
+	"objc2"
+]}
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+	"block2",
+	"NSArray",
+	"NSDictionary",
+	"NSEnumerator",
+	"NSAttributedString",
+	"NSDistributedNotificationCenter",
+	"NSString",
+	"NSKeyValueCoding",
+	"NSNotification",
+	"NSOperation",
+	"NSError",
+	"NSProcessInfo",
+	"NSRunLoop",
+	"NSURL",
+	"NSValue"
+]}
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
+	"CAAnimation",
+	"CAMediaTiming",
+	"CATransform3D",
+	"CADisplayLink",
+	"CAFrameRateRange",
+	"CABase",
+	"CATextLayer",
+	"CATransaction",
+	"objc2-core-foundation",
+	"objc2-core-graphics",
+]}
+once_cell = { version = "1.21.3", default-features = false }
+parking_lot = "0.12"
+ron = "0.11.0"
+serde = { version = "1.0.201", default-features = false }
+serde_json = "1.0.145"
+serde_with = "3.9.0"
+slotmap = { version = "1.0.7", features = ["serde"], default-features = false }
+static_assertions = "1.1.0"
+tokio = { version = "1.35.1", features = ["libc", "macros"] }
+tokio-stream = "0.1.16"
+tokio-util = "0.7.15"
+toml_edit = { version = "0.23.10", features = ["serde"] }
+tempfile = { version = "3.17.1", default-features = false }
+toml = { version = "0.9.2", features = ["display", "parse", "serde"], default-features = false }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["std", "tracing", "env-filter"], default-features = false }
+tracing-timing = { version = "0.7.0", optional = true }
+tracing-tree = { version = "0.4.0", features = ["time"], default-features = false }
+regex = "1.11.0"
+enum_dispatch = "0.3.13"
+crossbeam-channel = "0.5"
+num_enum = "0.7.4"
+strum = { version = "0.27.2", default-features = false, features = ["derive"] }
+strum_macros = "0.27.2"
+notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
+dashmap = "6.1.0"
+sigpipe = "0.1.3"
+embed_plist = "1.2.2"
+rustc-hash = "2.1.1"
+rift-client = { path = "crates/rift-client" }
+rift-protocol = { path = "crates/rift-protocol" }
+multitouch = "0.3.2"
+
+[dev-dependencies]
+pretty_assertions = "1.4.0"
+tokio = { version = "1.35.1", features = ["sync", "tokio-macros"] }
+test-log = { version = "0.2.16", default-features = false }
+test_bin = "0.5.0"
+
+[[test]]
+name = "settings_native"
+harness = false

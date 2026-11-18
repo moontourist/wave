@@ -1,0 +1,366 @@
+use super::Event;
+use crate::actor::app::{Quiet, WindowId, pid_t};
+use crate::common::collections::HashMap;
+
+#[derive(Default)]
+pub(crate) struct MainWindowTracker {
+    apps: HashMap<pid_t, AppState>,
+    global_frontmost: Option<pid_t>,
+    window_server_focus: Option<WindowId>,
+    window_server_focus_authoritative: bool,
+}
+
+struct AppState {
+    is_frontmost: bool,
+    frontmost_is_quiet: Quiet,
+    main_window: Option<WindowId>,
+}
+
+impl MainWindowTracker {
+    #[must_use]
+    pub fn handle_event(&mut self, event: &Event) -> Option<WindowId> {
+        let (event_pid, quiet_edge) = match event {
+            &Event::ApplicationLaunched {
+                pid, is_frontmost, main_window, ..
+            } => {
+                self.apps.insert(pid, AppState {
+                    is_frontmost,
+                    frontmost_is_quiet: Quiet::No,
+                    main_window,
+                });
+                (pid, Quiet::No)
+            }
+            &Event::ApplicationThreadTerminated(pid) => {
+                self.apps.remove(&pid);
+                if self.window_server_focus.is_some_and(|wid| wid.pid == pid) {
+                    self.window_server_focus = None;
+                }
+                return None;
+            }
+            &Event::WindowDestroyed(wid) => {
+                if self.window_server_focus == Some(wid) {
+                    self.window_server_focus = None;
+                }
+                return None;
+            }
+            &Event::ApplicationActivated(pid, quiet) => {
+                let app = self.apps.get_mut(&pid)?;
+                app.is_frontmost = true;
+                app.frontmost_is_quiet = quiet;
+                (pid, quiet)
+            }
+            &Event::ApplicationDeactivated(pid) => {
+                let app = self.apps.get_mut(&pid)?;
+                app.is_frontmost = false;
+                return None;
+            }
+            &Event::ApplicationGloballyActivated(pid) => {
+                self.global_frontmost = Some(pid);
+                let Some(app) = self.apps.get_mut(&pid) else {
+                    return None;
+                };
+                app.is_frontmost = true;
+                (pid, app.frontmost_is_quiet)
+            }
+            &Event::ApplicationGloballyDeactivated(pid) => {
+                if self.global_frontmost == Some(pid) {
+                    self.global_frontmost = None;
+                }
+                if let Some(app) = self.apps.get_mut(&pid) {
+                    app.is_frontmost = false;
+                }
+                return None;
+            }
+            &Event::ApplicationMainWindowChanged(pid, wid, quiet) => {
+                let app = self.apps.get_mut(&pid)?;
+                app.main_window = wid;
+                (pid, quiet)
+            }
+            &Event::WindowServerFocusChanged(wid, _) => {
+                self.window_server_focus_authoritative = true;
+                self.window_server_focus = Some(wid);
+                return None;
+            }
+            _ => return None,
+        };
+        // Once WindowServer focus has produced a result, AX activation/main-window
+        // events remain useful as metadata and cold-start fallback only. Letting
+        // them emit focus here can replay the previous native focus while the new
+        // 808/815 resolution is still in flight.
+        if self.window_server_focus_authoritative {
+            return None;
+        }
+        if Some(event_pid) == self.global_frontmost && quiet_edge == Quiet::No {
+            if let Some(wid) = self.main_window() {
+                return Some(wid);
+            }
+        }
+        None
+    }
+
+    pub fn main_window(&self) -> Option<WindowId> {
+        let Some(pid) = self.global_frontmost else {
+            return None;
+        };
+        if let Some(window) = self.window_server_focus.filter(|window| window.pid == pid) {
+            return Some(window);
+        }
+        match self.apps.get(&pid) {
+            Some(&AppState {
+                is_frontmost: true,
+                main_window: Some(window),
+                ..
+            }) => Some(window),
+            _ => None,
+        }
+    }
+
+    pub fn window_server_focus(&self) -> Option<WindowId> { self.window_server_focus }
+
+    pub fn is_globally_frontmost(&self, pid: pid_t) -> bool { self.global_frontmost == Some(pid) }
+
+    pub fn app_main_window(&self, pid: pid_t) -> Option<WindowId> {
+        self.apps.get(&pid)?.main_window
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+    use test_log::test;
+
+    use super::super::testing::{Apps, make_windows, space_state_event};
+    use super::super::{Event, Quiet, Reactor, SpaceId, WindowId};
+    use super::{AppState, MainWindowTracker};
+    use crate::layout_engine::LayoutEngine;
+
+    #[test]
+    fn window_server_focus_supersedes_ax_focus_events() {
+        let ax_window = WindowId::new(7, 1);
+        let server_window = WindowId::new(7, 2);
+        let stale_window = WindowId::new(7, 3);
+        let mut tracker = MainWindowTracker::default();
+        tracker.global_frontmost = Some(7);
+        tracker.apps.insert(7, AppState {
+            is_frontmost: true,
+            frontmost_is_quiet: Quiet::No,
+            main_window: Some(ax_window),
+        });
+
+        assert_eq!(tracker.main_window(), Some(ax_window));
+        assert_eq!(
+            tracker.handle_event(&Event::WindowServerFocusChanged(server_window, SpaceId::new(1),)),
+            None
+        );
+        assert_eq!(tracker.main_window(), Some(server_window));
+
+        assert_eq!(
+            tracker.handle_event(&Event::ApplicationMainWindowChanged(
+                7,
+                Some(stale_window),
+                Quiet::No,
+            )),
+            None,
+            "AX must not drive focus after native authority is initialized"
+        );
+        assert_eq!(tracker.main_window(), Some(server_window));
+
+        let _ = tracker.handle_event(&Event::ApplicationMainWindowChanged(
+            7,
+            Some(ax_window),
+            Quiet::No,
+        ));
+
+        let _ = tracker.handle_event(&Event::WindowDestroyed(server_window));
+        assert_eq!(tracker.main_window(), Some(ax_window));
+    }
+
+    #[test]
+    fn it_tracks_frontmost_app_and_main_window_correctly() {
+        use Event::*;
+        let mut apps = Apps::new();
+        let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+            &crate::common::config::VirtualWorkspaceSettings::default(),
+            &crate::common::config::LayoutSettings::default(),
+            None,
+        ));
+        let space = SpaceId::new(1);
+        let screen_frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1920., 1080.));
+        reactor.handle_event(space_state_event(vec![screen_frame], vec![Some(space)]));
+        assert_eq!(None, reactor.main_window());
+
+        reactor.handle_event(ApplicationGloballyActivated(1));
+        reactor.handle_events(apps.make_app_with_opts(
+            1,
+            make_windows(2),
+            Some(WindowId::new(1, 1)),
+            true,
+            true,
+        ));
+        reactor.handle_events(apps.make_app_with_opts(2, make_windows(2), None, false, true));
+        assert_eq!(Some(WindowId::new(1, 1)), reactor.main_window());
+        assert_eq!(
+            reactor.layout_manager.layout_engine.selected_window(space),
+            Some(WindowId::new(1, 1))
+        );
+
+        reactor.handle_event(ApplicationGloballyDeactivated(1));
+        assert_eq!(None, reactor.main_window());
+        reactor.handle_event(ApplicationActivated(2, Quiet::No));
+        reactor.handle_event(ApplicationGloballyActivated(2));
+        assert_eq!(None, reactor.main_window());
+        reactor.handle_event(ApplicationMainWindowChanged(
+            2,
+            Some(WindowId::new(2, 2)),
+            Quiet::No,
+        ));
+        assert_eq!(Some(WindowId::new(2, 2)), reactor.main_window());
+        assert_eq!(
+            reactor.layout_manager.layout_engine.selected_window(space),
+            Some(WindowId::new(2, 2))
+        );
+        reactor.handle_event(ApplicationMainWindowChanged(
+            1,
+            Some(WindowId::new(1, 2)),
+            Quiet::No,
+        ));
+        assert_eq!(Some(WindowId::new(2, 2)), reactor.main_window());
+        reactor.handle_event(ApplicationDeactivated(1));
+        assert_eq!(Some(WindowId::new(2, 2)), reactor.main_window());
+        reactor.handle_event(ApplicationDeactivated(2));
+        assert_eq!(None, reactor.main_window());
+
+        reactor.handle_event(ApplicationGloballyActivated(3));
+        assert_eq!(None, reactor.main_window());
+
+        reactor.handle_events(apps.make_app_with_opts(
+            3,
+            make_windows(2),
+            Some(WindowId::new(3, 1)),
+            true,
+            true,
+        ));
+        assert_eq!(Some(WindowId::new(3, 1)), reactor.main_window());
+        assert_eq!(
+            reactor.layout_manager.layout_engine.selected_window(space),
+            Some(WindowId::new(3, 1))
+        );
+    }
+
+    #[test]
+    fn it_does_not_update_layout_for_quiet_raises() {
+        use Event::*;
+        let mut apps = Apps::new();
+        let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+            &crate::common::config::VirtualWorkspaceSettings::default(),
+            &crate::common::config::LayoutSettings::default(),
+            None,
+        ));
+        let space = SpaceId::new(1);
+        let screen_frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1920., 1080.));
+        reactor.handle_event(space_state_event(vec![screen_frame], vec![Some(space)]));
+
+        reactor.handle_event(ApplicationGloballyActivated(1));
+        reactor.handle_events(apps.make_app_with_opts(
+            1,
+            make_windows(2),
+            Some(WindowId::new(1, 1)),
+            true,
+            true,
+        ));
+        reactor.handle_events(apps.make_app_with_opts(2, make_windows(2), None, false, true));
+        assert_eq!(Some(WindowId::new(1, 1)), reactor.main_window());
+        assert_eq!(
+            reactor.layout_manager.layout_engine.selected_window(space),
+            Some(WindowId::new(1, 1))
+        );
+
+        reactor.handle_event(ApplicationGloballyDeactivated(1));
+        assert_eq!(None, reactor.main_window());
+        reactor.handle_event(ApplicationGloballyActivated(2));
+        reactor.handle_event(ApplicationActivated(2, Quiet::Yes));
+        assert_eq!(None, reactor.main_window());
+        reactor.handle_event(ApplicationMainWindowChanged(
+            2,
+            Some(WindowId::new(2, 2)),
+            Quiet::Yes,
+        ));
+        assert_eq!(Some(WindowId::new(2, 2)), reactor.main_window());
+        assert_eq!(
+            reactor.layout_manager.layout_engine.selected_window(space),
+            Some(WindowId::new(1, 1))
+        );
+
+        reactor.handle_event(ApplicationActivated(2, Quiet::No));
+        assert_eq!(
+            reactor.layout_manager.layout_engine.selected_window(space),
+            Some(WindowId::new(2, 2))
+        );
+
+        reactor.handle_event(ApplicationMainWindowChanged(
+            2,
+            Some(WindowId::new(2, 1)),
+            Quiet::Yes,
+        ));
+        assert_eq!(Some(WindowId::new(2, 1)), reactor.main_window());
+        assert_eq!(
+            reactor.layout_manager.layout_engine.selected_window(space),
+            Some(WindowId::new(2, 2))
+        );
+
+        reactor.handle_event(ApplicationActivated(1, Quiet::Yes));
+        reactor.handle_event(ApplicationGloballyActivated(1));
+        assert_eq!(Some(WindowId::new(1, 1)), reactor.main_window());
+        assert_eq!(
+            reactor.layout_manager.layout_engine.selected_window(space),
+            Some(WindowId::new(2, 2))
+        );
+
+        reactor.handle_event(ApplicationMainWindowChanged(
+            1,
+            Some(WindowId::new(1, 2)),
+            Quiet::No,
+        ));
+        assert_eq!(Some(WindowId::new(1, 2)), reactor.main_window());
+        assert_eq!(
+            reactor.layout_manager.layout_engine.selected_window(space),
+            Some(WindowId::new(1, 2))
+        );
+    }
+
+    #[test]
+    fn it_selects_main_window_when_space_is_enabled() {
+        use Event::*;
+        let mut apps = Apps::new();
+        let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+            &crate::common::config::VirtualWorkspaceSettings::default(),
+            &crate::common::config::LayoutSettings::default(),
+            None,
+        ));
+        let pid = 3;
+        let windows = make_windows(2);
+        let space = SpaceId::new(1);
+        let screen_frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1920., 1080.));
+        reactor.handle_event(space_state_event(vec![screen_frame], vec![Some(space)]));
+
+        reactor.handle_events(apps.make_app_with_opts(
+            pid,
+            windows,
+            Some(WindowId::new(3, 1)),
+            false,
+            true,
+        ));
+
+        reactor.handle_event(space_state_event(vec![screen_frame], vec![None]));
+        reactor.handle_event(ApplicationActivated(3, Quiet::No));
+        reactor.handle_event(ApplicationGloballyActivated(3));
+        reactor.discover_test_windows(pid, vec![], vec![WindowId::new(3, 1), WindowId::new(3, 2)]);
+        assert_eq!(Some(WindowId::new(3, 1)), reactor.main_window());
+
+        reactor.handle_event(space_state_event(vec![screen_frame], vec![Some(space)]));
+        assert_eq!(
+            reactor.layout_manager.layout_engine.selected_window(space),
+            Some(WindowId::new(3, 1))
+        );
+    }
+}

@@ -1,0 +1,553 @@
+use tracing::{error, info, warn};
+
+use super::super::ScreenInfo;
+use crate::actor::app::{AppThreadHandle, Quiet, WindowId};
+use crate::actor::raise_manager;
+use crate::actor::reactor::WorkspaceSwitchOrigin;
+use crate::actor::reactor::events::EventOutcome;
+use crate::actor::reactor::managers::{
+    AppManager, DragManager, LayoutManager, WorkspaceSwitchManager,
+};
+use crate::actor::spaces::ForwardedSpaceState;
+use crate::common::collections::HashMap;
+use crate::common::config::{self as config, Config};
+use crate::common::log::{MetricsCommand, handle_command as handle_metrics_command};
+use crate::layout_engine::{LayoutCommand, LayoutEvent};
+use crate::model::RiftState;
+use crate::model::space_activation::{
+    SpaceActivationConfig, SpaceActivationPolicy, ToggleSpaceContext,
+};
+use crate::sys::screen::SpaceId;
+use crate::sys::window_server::WindowServerId;
+
+#[derive(Debug, Clone)]
+pub struct LayoutCommandPayload {
+    pub command: LayoutCommand,
+    pub command_space: Option<SpaceId>,
+    pub visible_spaces: Vec<SpaceId>,
+    pub visible_space_frames: HashMap<SpaceId, objc2_core_foundation::CGRect>,
+    pub post_arrange_mouse_warp: Option<WindowId>,
+}
+
+pub fn handle_command_layout(
+    state: &mut RiftState,
+    layout: &mut LayoutManager,
+    workspace_switch: &mut WorkspaceSwitchManager,
+    payload: LayoutCommandPayload,
+) -> anyhow::Result<EventOutcome> {
+    let LayoutCommandPayload {
+        command: cmd,
+        command_space,
+        visible_spaces,
+        visible_space_frames,
+        post_arrange_mouse_warp,
+    } = payload;
+    info!(?cmd);
+    let is_move_node = matches!(cmd, LayoutCommand::MoveNode(_));
+    let is_selection_command = matches!(cmd, LayoutCommand::Ascend | LayoutCommand::Descend);
+    let is_focus_command = matches!(
+        cmd,
+        LayoutCommand::NextWindow
+            | LayoutCommand::PrevWindow
+            | LayoutCommand::MoveFocus(_)
+            | LayoutCommand::ToggleFocusFloating
+    );
+    let (is_virtual_workspace_command, is_workspace_switch, requires_workspace_space) = match cmd {
+        LayoutCommand::NextWorkspace(_)
+        | LayoutCommand::PrevWorkspace(_)
+        | LayoutCommand::SwitchToWorkspace(_)
+        | LayoutCommand::SwitchToLastWorkspace => (true, true, true),
+        LayoutCommand::MoveWindowToWorkspace { follow, .. } => (true, follow, follow),
+        LayoutCommand::SetWorkspaceLayout { .. } | LayoutCommand::CreateWorkspace => {
+            (true, false, true)
+        }
+        _ => (false, false, false),
+    };
+    if matches!(
+        cmd,
+        LayoutCommand::JoinWindow(_)
+            | LayoutCommand::ToggleStack
+            | LayoutCommand::ConsumeOrExpelWindow(_)
+    ) && let Some(space) = command_space
+        && layout.layout_engine.active_layout_mode_at(space)
+            == crate::common::config::LayoutMode::Floating
+    {
+        store_current_floating_positions(state, layout, space);
+    }
+    let workspace_space = if requires_workspace_space {
+        if let Some(space) = command_space {
+            store_current_floating_positions(state, layout, space);
+        }
+        command_space
+    } else {
+        None
+    };
+    if !is_workspace_switch {
+        workspace_switch.mark_workspace_switch_inactive();
+    }
+
+    let response = if is_virtual_workspace_command {
+        command_space
+            .map(|space| {
+                layout.layout_engine.handle_virtual_workspace_command(
+                    &mut state.windows,
+                    crate::model::virtual_workspace::WorkspaceContext {
+                        space,
+                        visible: &visible_spaces,
+                    },
+                    &cmd,
+                )
+            })
+            .unwrap_or_default()
+    } else {
+        if visible_spaces.is_empty() {
+            warn!("Layout command ignored: no active spaces");
+            return Ok(EventOutcome::no_change());
+        }
+        layout.layout_engine.handle_command(
+            &mut state.windows,
+            command_space,
+            &visible_spaces,
+            &visible_space_frames,
+            cmd,
+        )
+    };
+
+    if is_virtual_workspace_command && !response.changed && response.workspace_space.is_none() {
+        if is_workspace_switch {
+            workspace_switch.mark_workspace_switch_inactive();
+            workspace_switch.active_workspace_switch = None;
+        }
+        return Ok(EventOutcome::no_change());
+    }
+
+    // Only begin the switch lifecycle once a real transition has been produced.
+    if is_workspace_switch && response.changed {
+        workspace_switch.start_workspace_switch(WorkspaceSwitchOrigin::Manual);
+    }
+
+    let workspace_space = response.workspace_space.or(workspace_space);
+    let placement_writes: Vec<_> = response
+        .transferred_windows
+        .iter()
+        .filter_map(|&window| {
+            let assignment = state.windows.workspace_for_window(window)?;
+            let screen =
+                visible_space_frames.get(&layout.layout_engine.workspaces()[assignment].space)?;
+            let frame = state.windows.window(window)?.frame_monotonic;
+            Some((
+                window,
+                super::super::Reactor::center_frame_on_screen(frame, *screen),
+            ))
+        })
+        .collect();
+    let response_changed = response.changed;
+    let selection_changed = is_selection_command && response_changed;
+    let arrange_space_scope = is_workspace_switch.then_some(workspace_space).flatten();
+    // Geometry commands must reconcile frames even when their layout-system
+    // operation has no explicit change result. Focus, selection and workspace
+    // commands provide one, so preserve their no-op behavior.
+    let needs_arrange = response_changed
+        || (!is_focus_command && !is_selection_command && !is_virtual_workspace_command);
+    let mut outcome = if needs_arrange {
+        EventOutcome::layout_changed(false)
+    } else {
+        EventOutcome::no_change()
+    }
+    .with_layout_response(response, workspace_space)
+    .with_arrange_space_scope(arrange_space_scope);
+    for (window, frame) in placement_writes {
+        if let Some(assignment) = state.windows.workspace_for_window(window) {
+            let target = layout.layout_engine.workspaces()[assignment].space;
+            outcome.absorb(request_window_transfer(
+                state,
+                layout,
+                window,
+                target,
+                Some(frame),
+                true,
+            ));
+        }
+    }
+    // Switching within the command's display leaves the cursor alone.
+    if let Some(space) = workspace_space
+        && is_workspace_switch
+        && command_space != Some(space)
+        && visible_space_frames.contains_key(&space)
+    {
+        outcome.display_switch_warp = Some(space);
+    }
+    if !response_changed || arrange_space_scope.is_some() {
+        if !outcome.pre_layout_window_frame_writes.is_empty() && command_space != workspace_space {
+            outcome.arrange.secondary_space_scope = command_space;
+        }
+    }
+    outcome.broadcast_selection_changed = selection_changed;
+    if is_move_node && let Some(window) = post_arrange_mouse_warp {
+        outcome.post_arrange_mouse_warp = Some(window);
+    }
+    Ok(outcome)
+}
+
+/// One physical placement boundary for commands, rules, and topology recovery.
+/// Logical membership has already been committed by the workspace model.
+pub(in crate::actor::reactor) fn request_window_transfer(
+    state: &mut RiftState,
+    layout: &mut LayoutManager,
+    window: WindowId,
+    target: SpaceId,
+    frame: Option<objc2_core_foundation::CGRect>,
+    available: bool,
+) -> EventOutcome {
+    if state.windows.request_transfer(window, frame, target, available)
+        && let Some(frame) = frame
+    {
+        layout.layout_engine.prepare_window_placement(&mut state.windows, window, frame);
+        EventOutcome::no_change().with_pre_layout_window_frame_write(window, frame, true)
+    } else {
+        EventOutcome::no_change()
+    }
+}
+
+fn current_floating_positions(
+    state: &RiftState,
+    layout: &LayoutManager,
+    space: SpaceId,
+) -> Vec<(WindowId, objc2_core_foundation::CGRect)> {
+    let floats_by_layout = layout.layout_engine.active_layout_mode_at(space)
+        == crate::common::config::LayoutMode::Floating;
+    layout
+        .layout_engine
+        .workspaces()
+        .windows_in_active_workspace(&state.windows, space)
+        .into_iter()
+        .filter(|window| floats_by_layout || layout.layout_engine.is_window_floating(*window))
+        .filter_map(|window| {
+            state.windows.window(window).map(|state| (window, state.frame_monotonic))
+        })
+        .collect()
+}
+
+fn store_current_floating_positions(state: &RiftState, layout: &mut LayoutManager, space: SpaceId) {
+    let positions = current_floating_positions(state, layout, space);
+    if !positions.is_empty() {
+        layout.layout_engine.store_floating_window_positions(space, &positions);
+    }
+}
+
+pub fn handle_command_metrics(cmd: MetricsCommand) -> anyhow::Result<EventOutcome> {
+    handle_metrics_command(cmd);
+    Ok(EventOutcome::no_change())
+}
+
+pub fn handle_switch_native_space(
+    direction: crate::layout_engine::Direction,
+) -> anyhow::Result<EventOutcome> {
+    Ok(EventOutcome {
+        switch_native_space: Some(direction),
+        ..EventOutcome::default()
+    })
+}
+
+pub fn handle_mission_control_command(
+    command: crate::actor::wm_controller::WmCmd,
+) -> anyhow::Result<EventOutcome> {
+    Ok(EventOutcome {
+        wm_commands: vec![command],
+        ..EventOutcome::default()
+    })
+}
+
+pub fn handle_close_window(
+    window_server_id: Option<WindowServerId>,
+) -> anyhow::Result<EventOutcome> {
+    Ok(EventOutcome::no_change().with_close_window(window_server_id))
+}
+
+pub fn handle_config_updated(
+    config: &mut Config,
+    layout: &mut LayoutManager,
+    state: &RiftState,
+    drag: &mut DragManager,
+    new_config: Config,
+) -> anyhow::Result<EventOutcome> {
+    let issues = new_config.validate();
+    anyhow::ensure!(
+        issues.is_empty(),
+        "configuration reload rejected: {}",
+        issues.join("; ")
+    );
+    let migration = layout
+        .layout_engine
+        .workspaces()
+        .plan_settings(&new_config.virtual_workspaces)
+        .map_err(|error| {
+            anyhow::anyhow!("configuration reload retained previous workspace graph: {error}")
+        })?;
+    let mut outcome = if config.settings.drag_drop != new_config.settings.drag_drop {
+        super::drag::handle_cancel(drag)
+    } else {
+        EventOutcome::no_change()
+    };
+    *config = new_config;
+    layout.layout_engine.set_layout_settings(&config.settings.layout);
+
+    layout.layout_engine.update_virtual_workspace_settings(
+        &state.windows,
+        &config.virtual_workspaces,
+        migration,
+    );
+
+    drag.update_config(config.settings.drag_drop);
+
+    outcome.absorb(EventOutcome {
+        service_config_update: Some(config.clone()),
+        ..EventOutcome::layout_changed(false)
+    });
+    Ok(outcome)
+}
+
+pub fn handle_command_reactor_debug(
+    layout: &LayoutManager,
+    topology: &ForwardedSpaceState,
+) -> anyhow::Result<EventOutcome> {
+    for screen in &topology.screens {
+        if let Some(space) = screen.space {
+            layout.layout_engine.debug_tree_desc(space, "", true);
+        }
+    }
+    Ok(EventOutcome::no_change())
+}
+
+pub fn handle_command_reactor_serialize(
+    serialized: Result<String, serde_json::Error>,
+) -> anyhow::Result<EventOutcome> {
+    Ok(EventOutcome::no_change().with_stdout_line(serialized?))
+}
+
+pub fn handle_command_reactor_save_and_exit(
+    state: &RiftState,
+    layout: &LayoutManager,
+    active_space: Option<SpaceId>,
+) -> anyhow::Result<EventOutcome> {
+    if let Err(e) = save_layout(state, layout, config::restore_file(), active_space) {
+        error!("Could not save master file: {e}");
+        // A quit request is conditional on a durable master save. Keep Rift running when the
+        // snapshot cannot be committed so the user can fix the filesystem problem or retry
+        // without losing the only complete in-memory layout.
+        return Ok(EventOutcome::no_change()
+            .with_stdout_line(format!("Could not save master file; Rift is still running: {e}")));
+    }
+    std::process::exit(0);
+}
+
+fn save_layout(
+    state: &RiftState,
+    layout: &LayoutManager,
+    path: std::path::PathBuf,
+    active_space: Option<SpaceId>,
+) -> std::io::Result<()> {
+    layout.layout_engine.save_current_layout(path, &state.windows, active_space)
+}
+
+pub fn handle_command_reactor_save_layout(
+    state: &RiftState,
+    layout: &LayoutManager,
+    path: std::path::PathBuf,
+    active_space: Option<SpaceId>,
+) -> anyhow::Result<EventOutcome> {
+    save_layout(state, layout, path.clone(), active_space)?;
+    info!(path = %path.display(), "Saved layout");
+    Ok(EventOutcome::no_change().with_stdout_line(format!("Saved layout to {}", path.display())))
+}
+
+#[derive(Debug, Clone)]
+pub struct ToggleSpacePayload {
+    pub config: SpaceActivationConfig,
+    pub space: Option<SpaceId>,
+    pub display_uuid: Option<String>,
+}
+
+pub fn handle_command_reactor_toggle_space_activated(
+    policy: &mut SpaceActivationPolicy,
+    payload: ToggleSpacePayload,
+) -> anyhow::Result<EventOutcome> {
+    let Some(space) = payload.space else {
+        return Ok(EventOutcome::no_change());
+    };
+    policy.toggle_space_activated(payload.config, ToggleSpaceContext {
+        space,
+        display_uuid: payload.display_uuid.clone(),
+    });
+    let enabled = policy
+        .compute_active_spaces(
+            payload.config,
+            &[Some(space)],
+            std::slice::from_ref(&payload.display_uuid),
+        )
+        .first()
+        .is_some_and(Option::is_some);
+    info!(?space, display_uuid = ?payload.display_uuid, enabled, "Toggled Rift space management");
+    Ok(EventOutcome::layout_changed(false).with_active_space_recompute())
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FocusWindowPayload {
+    pub window_id: WindowId,
+    pub window_server_id: Option<WindowServerId>,
+    pub resolved_space: Option<SpaceId>,
+    pub space_is_active: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DisplayFocusPayload {
+    pub screen: Option<ScreenInfo>,
+    pub target_is_active: bool,
+    pub focus_window: Option<WindowId>,
+    /// Center of `focus_window`'s frame, used to warp the cursor onto the
+    /// window that receives focus. Falls back to the screen center.
+    pub focus_window_center: Option<objc2_core_foundation::CGPoint>,
+}
+
+fn focus_window_raise_request(apps: &AppManager, window: WindowId) -> raise_manager::Event {
+    let mut app_handles: HashMap<i32, AppThreadHandle> = HashMap::default();
+    if let Some(app) = apps.apps.get(&window.pid) {
+        app_handles.insert(window.pid, app.handle.clone());
+    }
+    raise_manager::Event::RaiseRequest(raise_manager::RaiseRequest {
+        raise_windows: Vec::new(),
+        focus_window: Some((window, None)),
+        app_handles,
+        focus_quiet: Quiet::Yes,
+    })
+}
+
+pub fn handle_move_mouse_to_display(
+    apps: &AppManager,
+    payload: DisplayFocusPayload,
+) -> anyhow::Result<EventOutcome> {
+    let Some(screen) = payload.screen else {
+        return Ok(EventOutcome::no_change());
+    };
+    if !payload.target_is_active {
+        warn!(?screen.space, "Move mouse ignored: target display space is inactive");
+        return Ok(EventOutcome::no_change());
+    }
+    let mut outcome = EventOutcome::focus_changed(None, false).with_mouse_warp(screen.frame.mid());
+    if let (Some(space), Some(window)) = (screen.space, payload.focus_window) {
+        outcome = outcome
+            .with_layout_event(LayoutEvent::WindowFocused(space, window))
+            .with_raise_request(focus_window_raise_request(apps, window));
+    }
+    Ok(outcome)
+}
+
+pub fn handle_focus_display(
+    apps: &AppManager,
+    payload: DisplayFocusPayload,
+) -> anyhow::Result<EventOutcome> {
+    let Some(screen) = payload.screen else {
+        return Ok(EventOutcome::no_change());
+    };
+    if !payload.target_is_active {
+        warn!(?screen.space, "Focus display ignored: target display space is inactive");
+        return Ok(EventOutcome::no_change());
+    }
+    if let (Some(space), Some(window)) = (screen.space, payload.focus_window) {
+        return Ok(EventOutcome::focus_changed(None, false)
+            .with_layout_event(LayoutEvent::WindowFocused(space, window))
+            .with_raise_request(focus_window_raise_request(apps, window))
+            .with_mouse_warp(payload.focus_window_center.unwrap_or_else(|| screen.frame.mid())));
+    }
+    Ok(EventOutcome::focus_changed(None, false).with_mouse_warp(screen.frame.mid()))
+}
+
+pub fn handle_command_reactor_focus_window(
+    state: &RiftState,
+    apps: &AppManager,
+    payload: FocusWindowPayload,
+) -> anyhow::Result<EventOutcome> {
+    let FocusWindowPayload {
+        window_id,
+        window_server_id,
+        resolved_space,
+        space_is_active,
+    } = payload;
+    let mut outcome = EventOutcome::focus_changed(None, false);
+    if state.windows.window(window_id).is_some() {
+        let Some(space) = resolved_space else {
+            warn!(?window_id, "Focus window ignored: space unknown");
+            return Ok(outcome);
+        };
+        if !space_is_active {
+            warn!(?window_id, ?space, "Focus window ignored: space is inactive");
+            return Ok(outcome);
+        }
+        outcome = outcome.with_layout_event(LayoutEvent::WindowFocused(space, window_id));
+
+        outcome = outcome.with_raise_request(focus_window_raise_request(apps, window_id));
+    } else if let Some(wsid) = window_server_id {
+        outcome.make_key_windows.push((window_id.pid, wsid));
+    }
+    Ok(outcome)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct WorkspaceWindowMove {
+    pub window: WindowId,
+    pub target_frame: objc2_core_foundation::CGRect,
+}
+
+#[derive(Debug, Clone)]
+pub struct MoveWorkspaceToDisplayPayload {
+    pub windows: Vec<WorkspaceWindowMove>,
+    pub source_space: SpaceId,
+    pub target_space: SpaceId,
+    pub target_screen: objc2_core_foundation::CGRect,
+}
+
+pub fn handle_command_reactor_move_workspace_to_display(
+    state: &mut RiftState,
+    layout: &mut LayoutManager,
+    workspace_switch: &mut WorkspaceSwitchManager,
+    payload: MoveWorkspaceToDisplayPayload,
+) -> anyhow::Result<EventOutcome> {
+    let MoveWorkspaceToDisplayPayload {
+        windows,
+        source_space,
+        target_space,
+        target_screen,
+    } = payload;
+
+    let response = layout.layout_engine.move_active_workspace_to_space(
+        &mut state.windows,
+        source_space,
+        target_space,
+        target_screen.size,
+    );
+    if !response.changed {
+        return Ok(EventOutcome::no_change());
+    }
+
+    workspace_switch.start_workspace_switch(WorkspaceSwitchOrigin::Manual);
+    let mut outcome =
+        EventOutcome::layout_changed(false).with_layout_response(response, Some(target_space));
+    for window_move in windows {
+        if layout
+            .layout_engine
+            .workspaces()
+            .workspace_for_window(&state.windows, target_space, window_move.window)
+            .is_some()
+        {
+            outcome.absorb(request_window_transfer(
+                state,
+                layout,
+                window_move.window,
+                target_space,
+                Some(window_move.target_frame),
+                true,
+            ));
+        }
+    }
+    Ok(outcome)
+}

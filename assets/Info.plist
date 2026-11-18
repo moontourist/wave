@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>rift</string>
+	<key>CFBundleIdentifier</key>
+	<string>git.acsandmann.rift</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>CFBundleName</key>
+	<string>rift</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2025 acsandmann. All rights reserved.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Rift optionally captures window previews while Overview is open.</string>
+</dict>
+</plist>

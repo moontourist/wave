@@ -1,0 +1,565 @@
+use objc2_core_foundation::CGPoint;
+use objc2_core_graphics::{
+    CGEventFlags, CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess,
+};
+use objc2_foundation::MainThreadMarker;
+
+use crate::actor::{self, reactor};
+use crate::common::config::MissionControlSettings;
+use crate::ui::mission_control::{
+    DesktopBackgrounds, OverviewAction, OverviewSession, PreviewCache,
+};
+
+#[derive(Debug)]
+pub enum Event {
+    Snapshot {
+        generation: u64,
+        moved: Option<super::app::WindowId>,
+        displays: Vec<crate::model::server::RuntimeDisplayData>,
+        workspaces: Vec<crate::model::server::RuntimeWorkspaceData>,
+    },
+    PumpPreviews,
+    ShowAll,
+    Dismiss,
+    RefreshCurrentWorkspace,
+    DropFinished(super::app::WindowId, bool),
+    ActivationTarget(reactor::OverviewTarget),
+    Configure(MissionControlSettings, bool),
+    Input(Input),
+}
+
+/// Semantic input; native CGEvents stay on the existing input thread.
+#[derive(Debug)]
+pub enum Input {
+    Dismiss,
+    MoveNode(crate::layout_engine::Direction),
+    ConsumeOrExpel(crate::layout_engine::Direction),
+    SwitchWorkspace(crate::common::config::WorkspaceSelector),
+    MoveToWorkspace(crate::common::config::WorkspaceSelector, bool),
+    Left,
+    Right,
+    Up,
+    Down,
+    Activate,
+    ZoomStep(i8),
+    Cycle(bool),
+    WindowSteps(i64),
+    WorkspaceSteps(i64),
+    Click(CGPoint),
+    PointerDown(CGPoint),
+    PointerDrag(CGPoint),
+    PointerUp(CGPoint),
+    Move(CGPoint),
+    BeginPan(CGPoint),
+    Pan(CGPoint),
+    EndPan(CGPoint),
+    Scroll { point: CGPoint, delta: CGPoint },
+    Zoom { point: CGPoint, delta: CGPoint },
+    Magnify { point: CGPoint, factor: f64 },
+}
+
+impl Input {
+    pub(crate) fn from_command(command: &super::wm_controller::WmCommand) -> Option<Self> {
+        use super::wm_controller::{WmCmd, WmCommand};
+        use crate::layout_engine::{Direction, LayoutCommand};
+        match command {
+            WmCommand::ReactorCommand(reactor::Command::Layout(command)) => match command {
+                LayoutCommand::MoveFocus(direction) => Some(match direction {
+                    Direction::Left => Self::Left,
+                    Direction::Right => Self::Right,
+                    Direction::Up => Self::Up,
+                    Direction::Down => Self::Down,
+                }),
+                LayoutCommand::MoveNode(direction) => Some(Self::MoveNode(*direction)),
+                LayoutCommand::ConsumeOrExpelWindow(direction) => {
+                    Some(Self::ConsumeOrExpel(*direction))
+                }
+                LayoutCommand::SwitchToWorkspace(index) => Some(Self::SwitchWorkspace(
+                    crate::common::config::WorkspaceSelector::Index(*index),
+                )),
+                LayoutCommand::MoveWindowToWorkspace {
+                    workspace,
+                    follow,
+                    window_id: None,
+                } => Some(Self::MoveToWorkspace(workspace.clone(), *follow)),
+                _ => None,
+            },
+            WmCommand::Wm(WmCmd::SwitchToWorkspace(workspace)) => {
+                Some(Self::SwitchWorkspace(workspace.clone()))
+            }
+            WmCommand::Wm(WmCmd::MoveWindowToWorkspace(workspace)) => {
+                Some(Self::MoveToWorkspace(workspace.clone(), false))
+            }
+            _ => None,
+        }
+    }
+
+    fn navigation(&self) -> Option<(bool, i64)> {
+        match *self {
+            Self::Left | Self::Cycle(false) => Some((true, -1)),
+            Self::Right | Self::Cycle(true) => Some((true, 1)),
+            Self::WindowSteps(steps) => Some((true, steps)),
+            Self::Up => Some((false, -1)),
+            Self::Down => Some((false, 1)),
+            Self::WorkspaceSteps(steps) => Some((false, steps)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn from_keycode(keycode: u16, flags: CGEventFlags) -> Option<Self> {
+        if !flags.intersects(CGEventFlags::MaskControl | CGEventFlags::MaskAlternate) {
+            match keycode {
+                24 => return Some(Self::ZoomStep(1)),
+                27 => return Some(Self::ZoomStep(-1)),
+                29 => return Some(Self::ZoomStep(0)),
+                _ => {}
+            }
+        }
+        if flags.intersects(
+            CGEventFlags::MaskCommand | CGEventFlags::MaskControl | CGEventFlags::MaskAlternate,
+        ) {
+            return None;
+        }
+        if (123..=126).contains(&keycode) && flags.contains(CGEventFlags::MaskShift) {
+            return None;
+        }
+        Some(match keycode {
+            53 => Self::Dismiss,
+            123 => Self::Left,
+            124 => Self::Right,
+            125 => Self::Down,
+            126 => Self::Up,
+            36 | 76 => Self::Activate,
+            48 => Self::Cycle(!flags.contains(CGEventFlags::MaskShift)),
+            _ => return None,
+        })
+    }
+}
+
+/// Collapse queued motion without crossing clicks, direction changes, or display targets.
+fn merge_motion(event: &mut Event, next: Event) -> Result<(), Event> {
+    match (event, next) {
+        (Event::RefreshCurrentWorkspace, Event::RefreshCurrentWorkspace) => Ok(()),
+        (Event::Input(input), Event::Input(next))
+            if input.navigation().zip(next.navigation()).is_some_and(
+                |((windows, steps), (next_windows, next_steps))| {
+                    windows == next_windows && steps.signum() == next_steps.signum()
+                },
+            ) =>
+        {
+            let (Some((windows, steps)), Some((_, next_steps))) =
+                (input.navigation(), next.navigation())
+            else {
+                return Err(Event::Input(next));
+            };
+            let steps = steps.saturating_add(next_steps);
+            *input = if windows {
+                Input::WindowSteps(steps)
+            } else {
+                Input::WorkspaceSteps(steps)
+            };
+            Ok(())
+        }
+        (Event::Input(Input::Move(point)), Event::Input(Input::Move(next)))
+        | (Event::Input(Input::PointerDrag(point)), Event::Input(Input::PointerDrag(next)))
+        | (Event::Input(Input::Pan(point)), Event::Input(Input::Pan(next))) => {
+            *point = next;
+            Ok(())
+        }
+        (
+            Event::Input(Input::Scroll { point, delta }),
+            Event::Input(Input::Scroll {
+                point: next_point,
+                delta: next_delta,
+            }),
+        ) if *point == next_point
+            && (delta.y.abs() >= delta.x.abs()) == (next_delta.y.abs() >= next_delta.x.abs())
+            && delta.x * next_delta.x >= 0.0
+            && delta.y * next_delta.y >= 0.0 =>
+        {
+            delta.x += next_delta.x;
+            delta.y += next_delta.y;
+            Ok(())
+        }
+        (
+            Event::Input(Input::Zoom { point, delta }),
+            Event::Input(Input::Zoom {
+                point: next_point,
+                delta: next_delta,
+            }),
+        ) if *point == next_point
+            && (delta.y.abs() >= delta.x.abs()) == (next_delta.y.abs() >= next_delta.x.abs())
+            && delta.x * next_delta.x >= 0.0
+            && delta.y * next_delta.y >= 0.0 =>
+        {
+            delta.x += next_delta.x;
+            delta.y += next_delta.y;
+            Ok(())
+        }
+        (
+            Event::Input(Input::Magnify { point, factor }),
+            Event::Input(Input::Magnify {
+                point: next_point,
+                factor: next_factor,
+            }),
+        ) if *point == next_point && (*factor - 1.) * (next_factor - 1.) >= 0. => {
+            *factor *= next_factor;
+            Ok(())
+        }
+        (_, next) => Err(next),
+    }
+}
+
+pub type Sender = actor::Sender<Event>;
+pub type Receiver = actor::Receiver<Event>;
+
+pub fn channel_if_enabled(settings: &MissionControlSettings) -> Option<(Sender, Receiver)> {
+    settings.enabled.then(actor::channel)
+}
+
+pub struct MissionControlActor {
+    settings: MissionControlSettings,
+    shared: bool,
+    rx: Receiver,
+    tx: Sender,
+    cache: Option<PreviewCache>,
+    backgrounds: DesktopBackgrounds,
+    reactor: reactor::ReactorHandle,
+    session: Option<OverviewSession>,
+    generation: u64,
+    refresh_pending: bool,
+    mtm: MainThreadMarker,
+    input_tx: super::input::Sender,
+    stack_line_tx: super::stack_line::Sender,
+}
+
+impl MissionControlActor {
+    pub fn new(
+        settings: MissionControlSettings,
+        shared: bool,
+        rx: Receiver,
+        tx: Sender,
+        reactor: reactor::ReactorHandle,
+        mtm: MainThreadMarker,
+        input_tx: super::input::Sender,
+        stack_line_tx: super::stack_line::Sender,
+    ) -> Self {
+        if settings.enabled && settings.window_previews && CGPreflightScreenCaptureAccess() {
+            let _ = cgs::compositor::preview::PreviewCompositor::prepare();
+        }
+        Self {
+            settings,
+            shared,
+            rx,
+            tx,
+            cache: None,
+            backgrounds: DesktopBackgrounds::new(mtm),
+            reactor,
+            session: None,
+            generation: 0,
+            refresh_pending: false,
+            mtm,
+            input_tx,
+            stack_line_tx,
+        }
+    }
+
+    pub async fn run(mut self) {
+        let mut pending_event = None;
+        loop {
+            tokio::select! {
+                event = async {
+                    if pending_event.is_some() { pending_event.take() } else { self.rx.recv().await }
+                } => {
+                    let Some((span, mut event)) = event else { break };
+                    if matches!(event, Event::RefreshCurrentWorkspace | Event::Input(Input::Scroll { .. } | Input::Zoom { .. } | Input::Magnify { .. } | Input::Move(_) | Input::PointerDrag(_) | Input::Pan(_)))
+                        || matches!(&event, Event::Input(input) if input.navigation().is_some())
+                    {
+                        for _ in 0..32 {
+                            let Ok((next_span, next)) = self.rx.try_recv() else { break };
+                            if let Err(next) = merge_motion(&mut event, next) {
+                                pending_event = Some((next_span, next));
+                                break;
+                            }
+                        }
+                    }
+                    let _guard = span.enter();
+                    self.handle(event);
+                    if !self.settings.enabled { break; }
+                }
+            }
+        }
+        self.close();
+    }
+
+    fn close(&mut self) {
+        self.generation += 1;
+        self.refresh_pending = false;
+        if let Some(mut session) = self.session.take() {
+            session.retain_previews(&mut self.cache);
+            drop(session);
+        }
+        self.input_tx
+            .send(super::input::Request::SetMissionControlActive(false, Vec::new()));
+        self.stack_line_tx.send(super::stack_line::Event::OverviewBounds(Vec::new()));
+    }
+
+    fn handle(&mut self, event: Event) {
+        if !matches!(
+            event,
+            Event::PumpPreviews | Event::Snapshot { .. } | Event::Input(Input::Move(_))
+        ) {
+            tracing::debug!(?event, "Overview event");
+        }
+        match event {
+            Event::Snapshot {
+                generation,
+                moved,
+                displays,
+                workspaces,
+            } => {
+                if generation != self.generation {
+                    return;
+                }
+                self.refresh_pending = false;
+                if let Some(session) = &mut self.session {
+                    session.refresh(&displays, &workspaces, moved, &mut self.backgrounds);
+                    self.stack_line_tx
+                        .send(super::stack_line::Event::OverviewBounds(session.input_bounds()));
+                    self.input_tx.send(super::input::Request::SetMissionControlActive(
+                        !session.is_empty(),
+                        session.input_bounds(),
+                    ));
+                }
+                if self.session.as_ref().is_some_and(OverviewSession::is_empty) {
+                    self.close();
+                }
+            }
+            Event::PumpPreviews => {
+                if let Some(session) = self.session.as_mut() {
+                    session.pump_previews();
+                    if session.handoff_ready() {
+                        // Native layout, stacking and focus have already been
+                        // prepared and verified underneath the cover.
+                        self.close();
+                    }
+                }
+            }
+            Event::ActivationTarget(target) => {
+                if let Some(session) = &mut self.session {
+                    session.activation_target(target);
+                }
+            }
+            Event::DropFinished(window, changed) => {
+                tracing::debug!(?window, changed, "Overview drop completed");
+                self.request_refresh(Some(window));
+            }
+            Event::ShowAll => {
+                tracing::debug!(
+                    open = self.session.is_some(),
+                    enabled = self.settings.enabled,
+                    previews = self.settings.window_previews,
+                    permission = CGPreflightScreenCaptureAccess(),
+                    "Overview toggle"
+                );
+                if self.session.is_some() {
+                    if let Some(session) =
+                        self.session.as_mut().filter(|session| session.needs_handoff())
+                    {
+                        session.toggle();
+                    } else {
+                        self.close();
+                    }
+                } else if self.settings.enabled {
+                    if self.settings.window_previews && !CGPreflightScreenCaptureAccess() {
+                        CGRequestScreenCaptureAccess();
+                        // Cancel a pending release-to-activate opener when no session was opened.
+                        self.input_tx.send(super::input::Request::SetMissionControlActive(
+                            false,
+                            Vec::new(),
+                        ));
+                        return;
+                    }
+                    if self.settings.window_previews {
+                        let _ = cgs::compositor::preview::PreviewCompositor::prepare();
+                    }
+                    self.session = OverviewSession::new(
+                        &self.reactor,
+                        self.mtm,
+                        &self.settings,
+                        self.shared,
+                        &mut self.backgrounds,
+                    );
+                    if let Some(session) = &mut self.session {
+                        session.start_previews(
+                            self.settings.window_previews,
+                            self.tx.clone(),
+                            self.cache.as_mut(),
+                        );
+                    }
+                    self.input_tx.send(super::input::Request::SetMissionControlActive(
+                        self.session.is_some(),
+                        self.session.as_ref().map_or_else(Vec::new, OverviewSession::input_bounds),
+                    ));
+                    self.stack_line_tx.send(super::stack_line::Event::OverviewBounds(
+                        self.session.as_ref().map_or_else(Vec::new, OverviewSession::input_bounds),
+                    ));
+                }
+            }
+            Event::Dismiss => self.handle(Event::Input(Input::Dismiss)),
+            Event::RefreshCurrentWorkspace => {
+                self.request_refresh(None);
+            }
+            Event::Configure(settings, shared) => {
+                self.close();
+                if !settings.enabled || !settings.window_previews {
+                    self.cache = None;
+                }
+                self.settings = settings;
+                self.shared = shared;
+            }
+
+            Event::Input(input) => {
+                let action = self.session.as_mut().and_then(|session| session.input(input));
+                if let Some(intent) = self.session.as_mut().and_then(OverviewSession::take_drop) {
+                    let window = intent.window;
+                    let (reply, rx) = std::sync::mpsc::sync_channel(1);
+                    self.reactor.send(reactor::Event::OverviewDrop { intent, reply });
+                    let tx = self.tx.clone();
+                    // Reactor application remains asynchronous; never wait on the input owner.
+                    std::thread::spawn(move || {
+                        let changed = rx.recv().unwrap_or(false);
+                        tx.send(Event::DropFinished(window, changed));
+                    });
+                }
+                if matches!(action, Some(OverviewAction::Dismiss)) {
+                    self.close();
+                } else if let Some(OverviewAction::Activate { display, workspace, selection }) =
+                    action
+                {
+                    let transition =
+                        self.session.as_ref().and_then(OverviewSession::activation_stamp);
+                    self.reactor.send(reactor::Event::OverviewSelectWorkspace {
+                        display,
+                        workspace,
+                        window: selection.window,
+                        transition,
+                    });
+                    if transition.is_none() {
+                        self.close();
+                    }
+                }
+            }
+        }
+    }
+
+    fn request_refresh(&mut self, moved: Option<super::app::WindowId>) {
+        if self.session.is_some() && (!self.refresh_pending || moved.is_some()) {
+            self.refresh_pending = true;
+            self.reactor
+                .overview_snapshot(self.shared, self.generation, moved, self.tx.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_settings_do_not_create_a_channel() {
+        assert!(channel_if_enabled(&MissionControlSettings::default()).is_none());
+        assert!(!MissionControlSettings::default().window_previews);
+        let settings: MissionControlSettings =
+            toml::from_str("enabled = true\nwindow_previews = false").unwrap();
+        assert!(channel_if_enabled(&settings).is_some());
+        assert!(!settings.window_previews);
+    }
+
+    #[test]
+    fn queued_scroll_preserves_distance_and_input_boundaries() {
+        let mut refresh = Event::RefreshCurrentWorkspace;
+        assert!(merge_motion(&mut refresh, Event::RefreshCurrentWorkspace).is_ok());
+        assert!(merge_motion(&mut refresh, Event::Dismiss).is_err());
+        let mut navigation = Event::Input(Input::Right);
+        assert!(merge_motion(&mut navigation, Event::Input(Input::Right)).is_ok());
+        assert!(merge_motion(&mut navigation, Event::Input(Input::Cycle(true))).is_ok());
+        assert!(matches!(navigation, Event::Input(Input::WindowSteps(3))));
+        assert!(merge_motion(&mut navigation, Event::Input(Input::Left)).is_err());
+        assert!(merge_motion(&mut navigation, Event::Input(Input::Activate)).is_err());
+        assert!(merge_motion(&mut navigation, Event::Input(Input::Down)).is_err());
+        let mut workspace = Event::Input(Input::Up);
+        assert!(merge_motion(&mut workspace, Event::Input(Input::Up)).is_ok());
+        assert!(matches!(workspace, Event::Input(Input::WorkspaceSteps(-2))));
+
+        let pivot = CGPoint::new(120., 90.);
+        let mut pinch = Event::Input(Input::Magnify { point: pivot, factor: 1.1 });
+        assert!(
+            merge_motion(
+                &mut pinch,
+                Event::Input(Input::Magnify { point: pivot, factor: 1.2 })
+            )
+            .is_ok()
+        );
+        assert!(
+            matches!(pinch, Event::Input(Input::Magnify { factor, .. }) if (factor - 1.32).abs() < 1e-12)
+        );
+        assert!(
+            merge_motion(
+                &mut pinch,
+                Event::Input(Input::Magnify { point: pivot, factor: 0.9 })
+            )
+            .is_err()
+        );
+
+        let point = CGPoint::new(40.0, 50.0);
+        let scroll = |y| {
+            Event::Input(Input::Scroll {
+                point,
+                delta: CGPoint::new(0.0, y),
+            })
+        };
+        let mut event = scroll(-2.5);
+        assert!(merge_motion(&mut event, scroll(-1.25)).is_ok());
+        assert!(matches!(&event, Event::Input(Input::Scroll { delta, .. }) if delta.y == -3.75));
+        assert!(merge_motion(&mut event, scroll(1.0)).is_err());
+        assert!(merge_motion(&mut event, Event::Input(Input::PointerUp(point))).is_err());
+        assert!(merge_motion(&mut event, Event::Dismiss).is_err());
+        assert!(
+            merge_motion(
+                &mut event,
+                Event::Input(Input::Scroll {
+                    point: CGPoint::new(500.0, 50.0),
+                    delta: CGPoint::new(0.0, -1.0)
+                })
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn existing_keycodes_route_to_semantic_input() {
+        assert!(matches!(
+            Input::from_keycode(53, CGEventFlags::empty()),
+            Some(Input::Dismiss)
+        ));
+        assert!(matches!(
+            Input::from_keycode(36, CGEventFlags::empty()),
+            Some(Input::Activate)
+        ));
+        assert!(matches!(
+            Input::from_keycode(48, CGEventFlags::empty()),
+            Some(Input::Cycle(true))
+        ));
+        assert!(matches!(
+            Input::from_keycode(48, CGEventFlags::MaskShift),
+            Some(Input::Cycle(false))
+        ));
+        for code in [123, 124, 125, 126] {
+            assert!(Input::from_keycode(code, CGEventFlags::empty()).is_some());
+            assert!(Input::from_keycode(code, CGEventFlags::MaskControl).is_none());
+            assert!(Input::from_keycode(code, CGEventFlags::MaskShift).is_none());
+        }
+        assert!(Input::from_keycode(0, CGEventFlags::empty()).is_none());
+    }
+}

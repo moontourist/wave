@@ -1,0 +1,6 @@
+dev
+target
+rift.toml
+src/bin/dev.rs
+.claude/
+.DS_Store

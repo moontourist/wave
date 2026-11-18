@@ -1,0 +1,329 @@
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
+use std::ptr;
+
+use nix::libc::{
+    O_RDONLY, O_WRONLY, POSIX_SPAWN_CLOEXEC_DEFAULT, POSIX_SPAWN_SETPGROUP, c_char, pid_t,
+    posix_spawn_file_actions_addopen, posix_spawn_file_actions_destroy,
+    posix_spawn_file_actions_init, posix_spawn_file_actions_t, posix_spawnattr_destroy,
+    posix_spawnattr_init, posix_spawnattr_setflags, posix_spawnattr_setpgroup, posix_spawnattr_t,
+    posix_spawnp,
+};
+
+use crate::common::collections::{HashMap, HashSet};
+use crate::ipc::subscriptions::CliSubscription;
+use crate::model::broadcast::BroadcastEvent;
+
+pub trait CliExecutor: Send + Sync + 'static {
+    fn execute(
+        &self,
+        event: &BroadcastEvent,
+        subscription: &CliSubscription,
+    ) -> Result<i32, std::io::Error>;
+}
+
+pub struct DefaultCliExecutor;
+
+impl DefaultCliExecutor {
+    pub fn new() -> Self { Self {} }
+}
+
+impl CliExecutor for DefaultCliExecutor {
+    fn execute(
+        &self,
+        event: &BroadcastEvent,
+        subscription: &CliSubscription,
+    ) -> Result<i32, std::io::Error> {
+        let event_json = serde_json::to_string(event).map_err(std::io::Error::other)?;
+        self.execute_serialized(event, &event_json, subscription)
+    }
+}
+
+impl DefaultCliExecutor {
+    fn execute_serialized(
+        &self,
+        event: &BroadcastEvent,
+        event_json: &str,
+        subscription: &CliSubscription,
+    ) -> Result<i32, std::io::Error> {
+        let mut env_vars: HashMap<String, String> = HashMap::default();
+        match event {
+            BroadcastEvent::BindingModeChanged { previous_mode, mode } => {
+                env_vars.insert("RIFT_EVENT_TYPE".into(), "binding_mode_changed".into());
+                env_vars.insert("RIFT_PREVIOUS_BINDING_MODE".into(), previous_mode.clone());
+                env_vars.insert("RIFT_BINDING_MODE".into(), mode.clone());
+            }
+            BroadcastEvent::ConfigChanged { revision } => {
+                env_vars.insert("RIFT_EVENT_TYPE".into(), "config_changed".into());
+                env_vars.insert("RIFT_CONFIG_REVISION".into(), revision.to_string());
+            }
+            BroadcastEvent::WorkspaceChanged {
+                workspace_id,
+                workspace_name,
+                space_id,
+                display_uuid,
+            } => {
+                env_vars.insert("RIFT_EVENT_TYPE".into(), "workspace_changed".into());
+                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                if let Some(display_uuid) = display_uuid.as_ref() {
+                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                }
+            }
+            BroadcastEvent::WindowsChanged {
+                workspace_id,
+                workspace_name,
+                windows,
+                space_id,
+                display_uuid,
+            } => {
+                env_vars.insert("RIFT_EVENT_TYPE".into(), "windows_changed".into());
+                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+                env_vars.insert("RIFT_WINDOW_COUNT".into(), windows.len().to_string());
+                env_vars.insert("RIFT_WINDOWS".into(), windows.join(","));
+                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                if let Some(display_uuid) = display_uuid.as_ref() {
+                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                }
+            }
+            BroadcastEvent::WindowTitleChanged {
+                window_id,
+                workspace_id,
+                workspace_index,
+                workspace_name,
+                previous_title,
+                new_title,
+                space_id,
+                display_uuid,
+            } => {
+                env_vars.insert("RIFT_EVENT_TYPE".into(), "window_title_changed".into());
+                env_vars.insert("RIFT_WINDOW_ID".into(), window_id.to_debug_string());
+                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+                if let Some(workspace_index) = workspace_index {
+                    env_vars.insert("RIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+                }
+                env_vars.insert("RIFT_PREVIOUS_WINDOW_TITLE".into(), previous_title.clone());
+                env_vars.insert("RIFT_WINDOW_TITLE".into(), new_title.clone());
+                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                if let Some(display_uuid) = display_uuid.as_ref() {
+                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                }
+            }
+            BroadcastEvent::FocusedWindowChanged {
+                window_id,
+                workspace_id,
+                workspace_index,
+                workspace_name,
+                space_id,
+                display_uuid,
+            } => {
+                env_vars.insert("RIFT_EVENT_TYPE".into(), "focused_window_changed".into());
+                env_vars.insert("RIFT_WINDOW_ID".into(), window_id.to_debug_string());
+                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+                if let Some(workspace_index) = workspace_index {
+                    env_vars.insert("RIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+                }
+                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                if let Some(display_uuid) = display_uuid.as_ref() {
+                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                }
+            }
+            BroadcastEvent::StacksChanged {
+                workspace_id,
+                workspace_index,
+                workspace_name,
+                stacks,
+                active_workspace_has_fullscreen,
+                space_id,
+                display_uuid,
+            } => {
+                env_vars.insert("RIFT_EVENT_TYPE".into(), "stacks_changed".into());
+                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+                if let Some(workspace_index) = workspace_index {
+                    env_vars.insert("RIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+                }
+                env_vars.insert("RIFT_STACK_COUNT".into(), stacks.len().to_string());
+                env_vars.insert(
+                    "RIFT_ACTIVE_WORKSPACE_HAS_FULLSCREEN".into(),
+                    active_workspace_has_fullscreen.to_string(),
+                );
+                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                if let Some(display_uuid) = display_uuid.as_ref() {
+                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                }
+            }
+            BroadcastEvent::LayoutChanged {
+                workspace_id,
+                workspace_index,
+                workspace_name,
+                space_id,
+                display_uuid,
+                layout: _,
+            }
+            | BroadcastEvent::SelectionChanged {
+                workspace_id,
+                workspace_index,
+                workspace_name,
+                space_id,
+                display_uuid,
+                layout: _,
+            } => {
+                env_vars.insert("RIFT_EVENT_TYPE".into(), event.kind().as_str().into());
+                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+                if let Some(workspace_index) = workspace_index {
+                    env_vars.insert("RIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+                }
+                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
+                if let Some(display_uuid) = display_uuid.as_ref() {
+                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
+                }
+            }
+        }
+
+        let mut argv_storage: Vec<CString> = Vec::with_capacity(2 + subscription.args.len());
+        argv_storage.push(CString::new(subscription.command.as_str()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "command contains NUL")
+        })?);
+        for a in subscription.args.iter().map(String::as_str).chain(std::iter::once(event_json)) {
+            argv_storage.push(CString::new(a).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "arg contains NUL")
+            })?);
+        }
+        let mut argv: Vec<*mut c_char> =
+            argv_storage.iter_mut().map(|s| s.as_ptr() as *mut c_char).collect();
+        argv.push(ptr::null_mut());
+
+        let mut override_keys =
+            HashSet::<&[u8]>::with_capacity_and_hasher(env_vars.len() + 1, Default::default());
+        for k in env_vars.keys() {
+            override_keys.insert(k.as_bytes());
+        }
+        override_keys.insert(b"RIFT_EVENT_JSON");
+        let mut env_storage: Vec<CString> = Vec::new();
+        for (k, v) in std::env::vars_os() {
+            if override_keys.contains(k.as_bytes()) {
+                continue;
+            }
+            let mut kv = k.as_bytes().to_vec();
+            kv.push(b'=');
+            kv.extend_from_slice(v.as_bytes());
+            env_storage.push(CString::new(kv)?);
+        }
+        for (k, v) in env_vars {
+            let mut kv = k.into_bytes();
+            kv.push(b'=');
+            kv.extend_from_slice(v.as_bytes());
+            env_storage.push(CString::new(kv)?);
+        }
+        env_storage.push(
+            CString::new(format!("RIFT_EVENT_JSON={event_json}")).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "event JSON contains NUL")
+            })?,
+        );
+        let mut envp: Vec<*mut c_char> =
+            env_storage.iter_mut().map(|s| s.as_ptr() as *mut c_char).collect();
+        envp.push(ptr::null_mut());
+
+        // SAFETY: posix_spawnattr_t is a plain C struct that posix_spawnattr_init initializes next.
+        let mut attr: posix_spawnattr_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `attr` is a live local.
+        let rc_init = unsafe { posix_spawnattr_init(&mut attr) };
+        if rc_init != 0 {
+            return Err(std::io::Error::from_raw_os_error(rc_init));
+        }
+
+        let mut flags: i16 = 0;
+        flags |= POSIX_SPAWN_CLOEXEC_DEFAULT as i16; // close-on-exec default
+        flags |= POSIX_SPAWN_SETPGROUP as i16; // child in its own process group
+        // SAFETY: `attr` was initialized above.
+        let rc_flags = unsafe { posix_spawnattr_setflags(&mut attr, flags) };
+        if rc_flags != 0 {
+            // SAFETY: `attr` was initialized above and is destroyed once on this path.
+            let _ = unsafe { posix_spawnattr_destroy(&mut attr) };
+            return Err(std::io::Error::from_raw_os_error(rc_flags));
+        }
+
+        // SAFETY: `attr` was initialized above.
+        let rc_pgrp = unsafe { posix_spawnattr_setpgroup(&mut attr, 0) };
+        if rc_pgrp != 0 {
+            // SAFETY: `attr` was initialized above and is destroyed once on this path.
+            let _ = unsafe { posix_spawnattr_destroy(&mut attr) };
+            return Err(std::io::Error::from_raw_os_error(rc_pgrp));
+        }
+
+        // SAFETY: posix_spawn_file_actions_t is a plain C struct that posix_spawn_file_actions_init
+        // initializes next.
+        let mut fa: posix_spawn_file_actions_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `fa` is a live local.
+        let rc_fa = unsafe { posix_spawn_file_actions_init(&mut fa) };
+        if rc_fa != 0 {
+            // SAFETY: `attr` was initialized above and is destroyed once on this path.
+            let _ = unsafe { posix_spawnattr_destroy(&mut attr) };
+            return Err(std::io::Error::from_raw_os_error(rc_fa));
+        }
+        let devnull = c"/dev/null";
+        // SAFETY: `fa` was initialized above, and `devnull` is a static NUL-terminated path.
+        let _ =
+            unsafe { posix_spawn_file_actions_addopen(&mut fa, 0, devnull.as_ptr(), O_RDONLY, 0) };
+        // SAFETY: As above.
+        let _ =
+            unsafe { posix_spawn_file_actions_addopen(&mut fa, 1, devnull.as_ptr(), O_WRONLY, 0) };
+        // SAFETY: As above.
+        let _ =
+            unsafe { posix_spawn_file_actions_addopen(&mut fa, 2, devnull.as_ptr(), O_WRONLY, 0) };
+
+        let Some(program) = argv_storage.first().map(|program| program.as_ptr()) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "empty command",
+            ));
+        };
+        let mut child_pid: pid_t = 0;
+        // SAFETY: `program`, `argv` and `envp` point into CStrings that outlive the call, and both
+        // arrays end in a null pointer. `fa` and `attr` are initialized.
+        let rc = unsafe {
+            posix_spawnp(
+                &mut child_pid as *mut pid_t,
+                program,
+                &fa as *const _,
+                &attr as *const _,
+                argv.as_mut_ptr(),
+                envp.as_mut_ptr(),
+            )
+        };
+
+        // SAFETY: `fa` was initialized above and is destroyed once here.
+        let _ = unsafe { posix_spawn_file_actions_destroy(&mut fa) };
+        // SAFETY: `attr` was initialized above and is destroyed once here.
+        let _ = unsafe { posix_spawnattr_destroy(&mut attr) };
+
+        if rc != 0 {
+            return Err(std::io::Error::from_raw_os_error(rc));
+        }
+
+        crate::sys::dispatch::reap_on_exit_proc(child_pid);
+
+        Ok(child_pid)
+    }
+}
+
+pub fn execute_cli_subscription(event: &BroadcastEvent, subscription: &CliSubscription) {
+    let exec = DefaultCliExecutor::new();
+    let _ = exec.execute(event, subscription);
+}
+
+/// Publish already serialized bytes to each command without serializing per target.
+pub(crate) fn execute_serialized_cli_subscription(
+    event: &BroadcastEvent,
+    event_json: &str,
+    subscription: &CliSubscription,
+) {
+    let exec = DefaultCliExecutor::new();
+    let _ = exec.execute_serialized(event, event_json, subscription);
+}
