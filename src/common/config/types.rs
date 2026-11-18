@@ -498,7 +498,7 @@ pub struct Settings {
     #[setting(ignore)]
     pub animation_duration: f64,
     #[serde(default = "default_animation_fps")]
-    /// Maximum number of frames per second during a window animation.
+    /// Frames per second during a window animation. 0 = the slowest connected display's refresh rate.
     // #[setting(
     //     label = "Frame rate",
     //     group = "general",
@@ -1582,9 +1582,9 @@ impl Settings {
             ));
         }
 
-        if self.animation_fps <= 0.0 {
+        if self.animation_fps < 0.0 {
             issues.push(format!(
-                "animation_fps must be positive, got {}",
+                "animation_fps must be 0 (auto) or positive, got {}",
                 self.animation_fps
             ));
         }

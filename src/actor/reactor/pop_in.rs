@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use cgs::compositor::{
     CgsWindow, CgsWindowError, G_CONNECTION, WindowSurface, with_disabled_actions,
 };
-use objc2::rc::Retained;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
 use objc2_core_foundation::{CFArray, CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGImage, CGPreflightScreenCaptureAccess};
@@ -570,8 +570,14 @@ fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
             Some(at) => rx.recv_deadline(at),
             None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
-        match msg {
-            Err(RecvTimeoutError::Disconnected) => return,
+        if let Err(RecvTimeoutError::Disconnected) = msg {
+            return;
+        }
+        // This thread lives as long as rift, so nothing drains its autoreleased Core
+        // Animation objects unless each message gets its own pool. Without it every
+        // close overlay, and the window picture it holds, stays in memory.
+        autoreleasepool(|_| match msg {
+            Err(RecvTimeoutError::Disconnected) => {}
             Err(RecvTimeoutError::Timeout) => {
                 let now = Instant::now();
                 if covering.as_ref().is_some_and(|c| c.deadline <= now) {
@@ -602,7 +608,7 @@ fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
                     cover.shrink();
                 }
             }
-        }
+        });
     }
 }
 

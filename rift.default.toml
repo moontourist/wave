@@ -5,7 +5,7 @@
 # Animations
 # - animate: master switch for all window animations
 # - animation_duration: seconds per animation (>= 0.0, typical 0.15–0.35)
-# - animation_fps: maximum frames per second (> 0.0). Capped by the display's refresh rate.
+# - animation_fps: frames per second (> 0.0), or 0.0 for auto: the slowest connected display's refresh rate.
 # - animation_easing: the motion curve. "ease_out_*" curves start fast and land softly.
 #   ease_in_out (default), linear,
 #   ease_in_sine, ease_out_sine, ease_in_out_sine, ease_in_quad, ease_out_quad, ease_in_out_quad,

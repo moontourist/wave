@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_core_graphics::{CGDisplayCopyDisplayMode, CGDisplayMode};
 use parking_lot::Mutex;
 use tracing::{debug, trace};
 
@@ -91,6 +92,9 @@ pub enum Message {
 pub struct AnimationManager {
     motions: Vec<Motion>,
     frames: FrameBatch,
+    /// Half the display's refresh period. A frame due within this of a tick is
+    /// sent on that tick, so clock jitter can't push it to the next refresh.
+    slack: Duration,
 }
 
 /// Display scheduling, cancellation and retirement are shared by both motion
@@ -495,6 +499,20 @@ impl CameraAnimation {
 }
 
 impl Reactor {
+    /// `animation_fps = 0` means auto: the slowest connected display's refresh
+    /// rate, so frames land evenly on every screen. Read per animation, so it
+    /// follows displays being plugged in or removed.
+    pub(super) fn animation_fps(&self) -> f64 {
+        let fps = self.config.settings.animation_fps;
+        if fps > 0.0 {
+            return fps;
+        }
+        slowest_refresh(self.space_state.screens.iter().map(|s| {
+            CGDisplayCopyDisplayMode(s.id.as_u32())
+                .map_or(0.0, |mode| CGDisplayMode::refresh_rate(Some(&mode)))
+        }))
+    }
+
     pub(super) fn cancel_window_presentations(&mut self, mut windows: Vec<WindowId>) {
         if windows.is_empty() {
             return;
@@ -716,7 +734,7 @@ impl Reactor {
             animate,
             scale,
             store: self.transaction_manager.store.clone(),
-            interval: Duration::from_secs_f64(1.0 / self.config.settings.animation_fps),
+            interval: Duration::from_secs_f64(1.0 / self.animation_fps()),
             bound,
         };
         let previous_was_absent = previous.is_none();
@@ -744,6 +762,15 @@ impl Reactor {
         }
         Some(windows)
     }
+}
+
+/// Displays that don't report a rate (0) count as 60 Hz, as does having none.
+fn slowest_refresh(rates: impl IntoIterator<Item = f64>) -> f64 {
+    let slowest = rates
+        .into_iter()
+        .map(|r| if r > 0.0 { r } else { 60.0 })
+        .fold(f64::INFINITY, f64::min);
+    if slowest.is_finite() { slowest } else { 60.0 }
 }
 
 fn scrolling_bounds(
@@ -861,6 +888,12 @@ impl AnimationManager {
                 let sample =
                     native.map(|(_, target)| target).or_else(|| (now >= *deadline).then_some(now));
                 if let Some(sample) = sample {
+                    if let Some((tick, _)) = native {
+                        manager.slack = Duration::try_from_secs_f64(
+                            (tick.target_timestamp - tick.timestamp) / 2.0,
+                        )
+                        .unwrap_or_default();
+                    }
                     let delay =
                         manager.tick_at(sample).unwrap_or(Duration::from_secs_f64(1.0 / 60.0));
                     // Resume fallback after three missing native refreshes.
@@ -992,7 +1025,7 @@ impl AnimationManager {
         let delay = self
             .motions
             .iter_mut()
-            .filter_map(|motion| motion.sample(now, &mut self.frames))
+            .filter_map(|motion| motion.sample(now, self.slack, &mut self.frames))
             .min();
         self.frames.flush();
         for motion in &mut self.motions {
@@ -1036,7 +1069,7 @@ impl AnimationManager {
             return false;
         };
         let mut anim = Animation::new(
-            reactor.config.settings.animation_fps,
+            reactor.animation_fps(),
             reactor.config.settings.animation_duration,
             reactor.config.settings.animation_easing,
         );
@@ -1400,7 +1433,12 @@ impl Motion {
         }
     }
 
-    fn sample(&mut self, now: Instant, frames: &mut FrameBatch) -> Option<Duration> {
+    fn sample(
+        &mut self,
+        now: Instant,
+        slack: Duration,
+        frames: &mut FrameBatch,
+    ) -> Option<Duration> {
         match self {
             Self::Viewport(c) => {
                 c.sample_into(now, frames);
@@ -1410,7 +1448,7 @@ impl Motion {
                 if a.animation.is_empty() || a.is_complete() {
                     return None;
                 }
-                if now + Duration::from_micros(1) < a.next_sample
+                if now + slack.max(Duration::from_micros(1)) < a.next_sample
                     && now.saturating_duration_since(a.started) < a.animation.duration
                 {
                     return Some(a.next_sample - now);
@@ -1965,6 +2003,47 @@ mod tests {
             results.push(frames);
         }
         assert_eq!(results[0], results[1]);
+    }
+
+    #[test]
+    fn slowest_refresh_picks_lowest_and_treats_unknown_as_60() {
+        assert_eq!(slowest_refresh([240.0, 120.0]), 120.0);
+        assert_eq!(slowest_refresh([240.0]), 240.0);
+        assert_eq!(slowest_refresh([240.0, 0.0]), 60.0);
+        assert_eq!(slowest_refresh([]), 60.0);
+    }
+
+    #[test]
+    fn half_refresh_slack_keeps_120fps_even_on_jittery_240hz_ticks() {
+        let start = Instant::now();
+        let tick = 1.0 / 240.0;
+        let (handle, mut rx) = AppThreadHandle::channel();
+        let mut a = Animation::new(120.0, 1.0, AnimationEasing::default());
+        a.add_window(
+            &handle,
+            WindowId::new(1, 1),
+            rect(0.0, 0.0, 10.0, 10.0),
+            rect(1000.0, 0.0, 10.0, 10.0),
+            TransactionId::default(),
+        );
+        let mut manager = AnimationManager::new();
+        manager.slack = Duration::from_secs_f64(tick / 2.0);
+        manager.handle_message(Message::Replace(a));
+        let active = active_mut(&mut manager).unwrap();
+        active.started = start;
+        active.next_sample = start + active.animation.interval;
+        collect_requests(&mut rx);
+        let mut sent = Vec::new();
+        for n in 1..=200 {
+            // Frames fall due right on a tick; real ticks land a hair early or late.
+            let jitter = if n % 3 == 0 { -0.0002 } else { 0.0002 };
+            manager.tick_at(start + Duration::from_secs_f64(n as f64 * tick + jitter));
+            if collect_requests(&mut rx).iter().any(|r| matches!(r, Observed::Frame { .. })) {
+                sent.push(n);
+            }
+        }
+        assert!(sent.len() > 50);
+        assert!(sent.windows(2).all(|w| w[1] - w[0] == 2), "{sent:?}");
     }
 
     #[test]
