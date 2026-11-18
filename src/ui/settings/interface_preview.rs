@@ -167,9 +167,11 @@ impl StackPreviewView {
                 .apps
                 .borrow()
                 .iter()
-                .map(|&i| TabBarItem {
-                    title: APPS[i].0.into(),
-                    icon: Some(self.ivars().icons[i].clone()),
+                .filter_map(|&i| {
+                    Some(TabBarItem {
+                        title: APPS.get(i)?.0.into(),
+                        icon: self.ivars().icons.get(i).cloned(),
+                    })
                 })
                 .collect(),
             stack.selected.get(),
@@ -178,7 +180,9 @@ impl StackPreviewView {
 
     fn act(&self, group: usize, action: TabBarAction) {
         let stacks = self.ivars().stacks.borrow();
-        let stack = &stacks[group];
+        let Some(stack) = stacks.get(group) else {
+            return;
+        };
         let count = stack.apps.borrow().len();
         match action {
             TabBarAction::Select(i) if i < count => {
@@ -265,9 +269,10 @@ impl StackPreviewView {
                         color,
                     );
                 }
-                if let Some(&app) = apps.get(stack.selected.get()) {
-                    state.labels[app]
-                        .drawAtPoint(CGPoint::new(r.origin.x + 12.0, r.origin.y + 36.0));
+                if let Some(&app) = apps.get(stack.selected.get())
+                    && let Some(label) = state.labels.get(app)
+                {
+                    label.drawAtPoint(CGPoint::new(r.origin.x + 12.0, r.origin.y + 36.0));
                 }
                 for line in 0..4 {
                     if 65.0 + line as f64 * 13.0 + 4.0 > r.size.height - 12.0 {

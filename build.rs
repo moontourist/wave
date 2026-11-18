@@ -8,7 +8,7 @@ fn git(args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     for path in ["--git-dir", "--git-common-dir"] {
         if let Some(dir) = git(&["rev-parse", path]) {
             for entry in ["HEAD", "refs", "packed-refs", "index"] {
@@ -22,16 +22,11 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets");
     println!("cargo:rerun-if-changed=crates");
-    let version = std::env::var("CARGO_PKG_VERSION").unwrap();
+    let version = std::env::var("CARGO_PKG_VERSION")?;
 
-    let plist = std::fs::read_to_string("assets/Info.plist")
-        .unwrap()
-        .replace("@VERSION@", &version);
-    std::fs::write(
-        std::path::Path::new(&std::env::var_os("OUT_DIR").unwrap()).join("Info.plist"),
-        plist,
-    )
-    .unwrap();
+    let plist = std::fs::read_to_string("assets/Info.plist")?.replace("@VERSION@", &version);
+    let out_dir = std::env::var_os("OUT_DIR").ok_or("cargo did not set OUT_DIR")?;
+    std::fs::write(std::path::Path::new(&out_dir).join("Info.plist"), plist)?;
 
     let release_tag = format!("v{version}");
     let tagged = git(&["tag", "--points-at", "HEAD"])
@@ -53,4 +48,5 @@ fn main() {
     println!("cargo:rustc-link-lib=framework=IOKit");
     println!("cargo:rustc-link-lib=framework=MultitouchSupport");
     println!("cargo:rustc-link-lib=framework=Carbon");
+    Ok(())
 }

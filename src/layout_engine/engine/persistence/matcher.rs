@@ -101,7 +101,9 @@ impl LayoutEngine {
         let Some(selected) = selected else {
             return false;
         };
-        let saved = self.persistence.pending.remove(&selected).expect("selected window is pending");
+        let Some(saved) = self.persistence.pending.remove(&selected) else {
+            return false;
+        };
         if self.saved_window_in_scope(&saved, scope) {
             self.adopt_saved_window(window_store, selected, window, saved);
             return true;

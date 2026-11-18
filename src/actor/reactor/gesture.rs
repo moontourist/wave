@@ -209,7 +209,9 @@ impl Reactor {
         {
             self.apply_gesture_sample(sample);
         }
-        let s = self.viewport_gesture.as_ref().unwrap();
+        let Some(s) = self.viewport_gesture.as_ref() else {
+            return;
+        };
         let visible = valid || s.visible(self);
         let cancelled = cancelled || !valid;
         if cancelled {
@@ -236,7 +238,9 @@ impl Reactor {
                 return;
             }
         }
-        let s = self.viewport_gesture.take().unwrap();
+        let Some(s) = self.viewport_gesture.take() else {
+            return;
+        };
         let animate = s
             .context
             .action

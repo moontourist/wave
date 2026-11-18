@@ -1771,6 +1771,10 @@ impl MenuBarPreview {
 
     /// Render one example with the same drawing path as the menu bar indicator.
     #[allow(deprecated)]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the preview's displays are a fixed sample built in new() with workspaces"
+    )]
     pub fn choice_image(
         &self,
         style: WorkspaceDisplayStyle,
@@ -1850,6 +1854,10 @@ fn build_layout(
                 let line = separator_line.get_or_insert_with(|| {
                     // AeroSpace's largeTitle.bold pipe, rendered at half scale.
                     let font = NSFont::systemFontOfSize_weight(13.0, unsafe { NSFontWeightBold });
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "a literal, nonempty separator always lays out"
+                    )]
                     build_cached_text_line("|", &build_text_attrs(&font))
                         .expect("nonempty separator")
                 });

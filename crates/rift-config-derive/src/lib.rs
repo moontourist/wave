@@ -72,11 +72,11 @@ fn label(name: &str) -> String {
             out.push(' ');
             continue;
         }
+        let next_lower = chars.get(i + 1).is_some_and(|c| c.is_lowercase());
         if c.is_uppercase()
-            && i > 0
-            && (chars[i - 1].is_lowercase()
-                || chars.get(i + 1).is_some_and(|c| c.is_lowercase())
-                    && chars[i - 1].is_uppercase())
+            && i.checked_sub(1)
+                .and_then(|prev| chars.get(prev))
+                .is_some_and(|prev| prev.is_lowercase() || next_lower && prev.is_uppercase())
         {
             out.push(' ');
         }
@@ -113,7 +113,12 @@ fn expand_schema(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         if opts.ignore || field.attrs.iter().any(|a| a.path().is_ident("deprecated")) {
             continue;
         }
-        let ident = field.ident.unwrap();
+        let Some(ident) = field.ident else {
+            return Err(syn::Error::new_spanned(
+                name,
+                "ConfigSchema requires named fields",
+            ));
+        };
         let key = ident.to_string();
         let title = opts.label.unwrap_or_else(|| label(&key));
         let help = docs(&field.attrs);
@@ -134,7 +139,11 @@ fn expand_schema(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         let order = opts.order.unwrap_or(1000 + descriptors.len());
         let ty = field.ty;
         let type_name = if let Type::Path(path) = &ty {
-            path.path.segments.last().unwrap().ident.to_string()
+            path.path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+                .unwrap_or_default()
         } else {
             String::new()
         };
@@ -367,7 +376,7 @@ pub fn command_catalog(input: TokenStream) -> TokenStream {
                 let kind = syn::Ident::new(kind, name.span());
                 let bindings: Vec<_> =
                     (0..variant.fields.len()).map(|i| quote::format_ident!("field_{i}")).collect();
-                let value = &bindings[index];
+                let value = quote::format_ident!("field_{index}");
                 let pattern = match &variant.fields {
                     Fields::Named(fields) => {
                         let names = fields.named.iter().map(|field| &field.ident);
@@ -375,13 +384,16 @@ pub fn command_catalog(input: TokenStream) -> TokenStream {
                     }
                     _ => quote!(Self::#name(#(#bindings),*)),
                 };
-                let guards = variant.fields.iter().enumerate().filter(|(i, _)| *i != index).map(
-                    |(i, field)| {
-                        let binding = &bindings[i];
+                let guards = variant
+                    .fields
+                    .iter()
+                    .zip(&bindings)
+                    .enumerate()
+                    .filter(|(i, _)| *i != index)
+                    .map(|(_, (field, binding))| {
                         let ty = &field.ty;
                         quote!(#binding == &<#ty>::default())
-                    },
-                );
+                    });
                 arguments.push(quote!(#pattern => Some((::rift_protocol::CommandArgument::#kind(#value.clone()), true #(&& #guards)*))));
                 argument_updates.push(quote!((#pattern, ::rift_protocol::CommandArgument::#kind(value)) => { *#value = value; }));
             }

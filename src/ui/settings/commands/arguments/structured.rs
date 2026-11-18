@@ -35,7 +35,8 @@ fn label(name: &str) -> String {
     }
 }
 fn json(value: impl serde::Serialize) -> Value {
-    serde_json::to_value(value).expect("serializable command argument")
+    // Booleans, numbers and protocol enums always serialize.
+    serde_json::to_value(value).unwrap_or_default()
 }
 
 pub(super) fn editor(
@@ -115,11 +116,9 @@ pub(super) fn editor(
                 rift_protocol::RestoreScope::CONFIG_CHOICES
                     .iter()
                     .enumerate()
-                    .map(|(i, (title, _))| {
-                        (
-                            title.to_string(),
-                            json(rift_protocol::RestoreScope::from_config_choice(i).unwrap()),
-                        )
+                    .filter_map(|(i, (title, _))| {
+                        let choice = rift_protocol::RestoreScope::from_config_choice(i)?;
+                        Some((title.to_string(), json(choice)))
                     })
                     .collect(),
             ),
@@ -127,11 +126,9 @@ pub(super) fn editor(
                 rift_protocol::RestoreSource::CONFIG_CHOICES
                     .iter()
                     .enumerate()
-                    .map(|(i, (title, _))| {
-                        (
-                            title.to_string(),
-                            json(rift_protocol::RestoreSource::from_config_choice(i).unwrap()),
-                        )
+                    .filter_map(|(i, (title, _))| {
+                        let choice = rift_protocol::RestoreSource::from_config_choice(i)?;
+                        Some((title.to_string(), json(choice)))
                     })
                     .collect(),
             ),
@@ -233,7 +230,9 @@ pub(super) fn editor(
         controls,
         draft,
         move |index, edit| {
-            let field = &fields[index];
+            let Some(field) = fields.get(index) else {
+                return;
+            };
             let parsed = match (&field.kind, edit) {
                 (Kind::Text, FormEdit::Text(value)) => Ok(Value::String(value)),
                 (Kind::Boolean, FormEdit::Boolean(value)) => Ok(Value::Bool(value)),
@@ -262,10 +261,12 @@ pub(super) fn editor(
             };
             let unresolved = {
                 let mut invalid = invalid.borrow_mut();
-                invalid[index] = parsed
-                    .as_ref()
-                    .err()
-                    .map(|_| format!("Enter a valid value for {}.", field.label));
+                if let Some(slot) = invalid.get_mut(index) {
+                    *slot = parsed
+                        .as_ref()
+                        .err()
+                        .map(|_| format!("Enter a valid value for {}.", field.label));
+                }
                 invalid.iter().flatten().next().cloned()
             };
             let result = parsed

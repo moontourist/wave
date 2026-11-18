@@ -190,6 +190,10 @@ impl WindowNotify {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "rift cannot run without this thread; a failed spawn at startup is fatal and launchd restarts the process"
+    )]
     fn spawn_focus_resolver(events_tx: reactor::Sender, focus_wake_rx: mpsc::Receiver<()>) {
         std::thread::Builder::new()
             .name("window-focus-resolver".to_string())
@@ -235,6 +239,10 @@ impl WindowNotify {
 }
 
 impl Dispatcher {
+    #[expect(
+        clippy::expect_used,
+        reason = "rift cannot run without this thread; a failed spawn at startup is fatal and launchd restarts the process"
+    )]
     fn spawn(self) {
         let Some(mut rx) = window_notify::take_receiver() else {
             warn!("WindowServer notification receiver already taken; not spawning dispatcher");

@@ -410,13 +410,17 @@ fn catalog() -> &'static [Entry] {
             let documented = fields
                 .iter()
                 .copied()
-                .find(|&index| out[index].location == location)
-                .or_else(|| (fields.len() == 1).then(|| fields[0]));
+                .find(|&index| out.get(index).is_some_and(|field| field.location == location))
+                .or(match fields.as_slice() {
+                    &[only] => Some(only),
+                    _ => None,
+                });
             match documented {
                 Some(index) => {
-                    let field = &mut out[index];
-                    field.aliases.push(' ');
-                    field.aliases.push_str(aliases);
+                    if let Some(field) = out.get_mut(index) {
+                        field.aliases.push(' ');
+                        field.aliases.push_str(aliases);
+                    }
                 }
                 None if fields.is_empty() => out.push(Draft {
                     title,

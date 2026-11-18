@@ -67,6 +67,10 @@ pub struct ProcessActor {
 }
 
 impl ProcessActor {
+    #[expect(
+        clippy::expect_used,
+        reason = "rift cannot track apps without the Carbon listener; failing at startup lets launchd restart it"
+    )]
     pub fn new(sender: wm_controller::Sender, spaces_sender: spaces::Sender) -> Self {
         let types = [
             event_type(K_EVENT_CLASS_APPLICATION, K_EVENT_APP_LAUNCHED),

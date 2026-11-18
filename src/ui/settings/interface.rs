@@ -17,6 +17,10 @@ use super::*;
 use crate::common::config::*;
 use crate::ui::menu_bar::MenuBarPreview;
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "setting keys are literals; the native settings tests build every page and fail on an unknown key"
+)]
 pub(super) fn menu_bar(ui: Ui, model: &Rc<Model>) -> Page {
     let mut f = FormBuilder::new(ui, model);
     f.tooltips = true;
@@ -295,6 +299,10 @@ fn screen_recording_status() -> &'static str {
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "setting keys are literals; the native settings tests build every page and fail on an unknown key; numeric_controls returns a slider whenever it gets a range"
+)]
 pub(super) fn stack_tabs(ui: Ui, model: &Rc<Model>) -> Page {
     let mut f = FormBuilder::new(ui, model);
     f.tooltips = true;

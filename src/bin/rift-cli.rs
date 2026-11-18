@@ -711,7 +711,7 @@ fn build_execute_request(execute: ExecuteCommands) -> Result<RiftRequest, String
             let path = if file.master {
                 rift_wm::common::config::restore_file()
             } else {
-                absolute_layout_path(file.path.expect("clap requires either PATH or --master"))?
+                absolute_layout_path(file.path.ok_or("clap requires either PATH or --master")?)?
             };
             CliCommand::Reactor(reactor::Command::Reactor(reactor::ReactorCommand::SaveLayout {
                 path,
@@ -726,7 +726,7 @@ fn build_execute_request(execute: ExecuteCommands) -> Result<RiftRequest, String
             } else {
                 (
                     absolute_layout_path(
-                        file.path.expect("clap requires either PATH or --master"),
+                        file.path.ok_or("clap requires either PATH or --master")?,
                     )?,
                     layout::RestoreSource::SavedActiveSpace,
                 )

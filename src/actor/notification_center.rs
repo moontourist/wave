@@ -104,7 +104,10 @@ define_class! {
         #[unsafe(method(recvKeyboardLayoutChanged:))]
         fn recv_keyboard_layout_changed(&self, notif: &NSNotification) {
             trace!("{notif:#?}");
-            let mtm = MainThreadMarker::new().expect("layout notifications run on the main thread");
+            // Workspace notifications are delivered on the main thread.
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
             crate::sys::hotkey::refresh_virtual_keymap(mtm);
             self.send_event(WmEvent::KeyboardLayoutChanged);
         }

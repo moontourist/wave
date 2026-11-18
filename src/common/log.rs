@@ -34,6 +34,10 @@ pub fn tree_layer() -> impl Layer<Registry> {
 type TimingLayer = tracing_timing::TimingLayer<group::ByName, group::ByName>;
 
 #[cfg(feature = "timing")]
+#[expect(
+    clippy::unwrap_used,
+    reason = "the histogram bound and precision are valid literals"
+)]
 fn timing_layer() -> TimingLayer {
     tracing_timing::Builder::default()
         // Formatted messages contain changing window IDs, frames, and pointer values.

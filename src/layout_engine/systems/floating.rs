@@ -542,7 +542,11 @@ impl LayoutSystem for FloatingLayoutSystem {
                 _ => LayoutKind::Vertical,
             };
             self.inner.split_selection(layout, kind);
-            selection.parent(self.inner.map()).unwrap()
+            let Some(container) = selection.parent(self.inner.map()) else {
+                tracing::error!(?layout, "split left the selection without a parent");
+                return;
+            };
+            container
         } else {
             parent
         };

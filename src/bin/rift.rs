@@ -93,11 +93,19 @@ enum Commands {
 }
 
 /// Actors cannot recover after exiting; panic so the service can restart.
+#[expect(
+    clippy::panic,
+    reason = "an exited actor is fatal; the panic hook logs it and launchd restarts rift"
+)]
 async fn supervise(name: &'static str, fut: impl Future<Output = ()>) {
     fut.await;
     panic!("{name} exited");
 }
 
+#[expect(
+    clippy::panic,
+    reason = "a failed thread spawn at startup is fatal; launchd restarts rift"
+)]
 fn spawn_supervised<F: Future<Output = ()> + 'static>(
     name: &'static str,
     task: impl FnOnce() -> F + Send + 'static,
@@ -108,6 +116,11 @@ fn spawn_supervised<F: Future<Output = ()> + 'static>(
         .unwrap_or_else(|error| panic!("failed to spawn {name} thread: {error}"));
 }
 
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "startup failures are fatal; the panic hook logs them and launchd restarts rift"
+)]
 fn main() {
     let entry = rift_wm::ui::settings::timing::start();
     let opt = Cli::parse();

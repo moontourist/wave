@@ -379,12 +379,14 @@ pub fn handle_command_reactor_toggle_space_activated(
         space,
         display_uuid: payload.display_uuid.clone(),
     });
-    let enabled = policy.compute_active_spaces(
-        payload.config,
-        &[Some(space)],
-        std::slice::from_ref(&payload.display_uuid),
-    )[0]
-    .is_some();
+    let enabled = policy
+        .compute_active_spaces(
+            payload.config,
+            &[Some(space)],
+            std::slice::from_ref(&payload.display_uuid),
+        )
+        .first()
+        .is_some_and(Option::is_some);
     info!(?space, display_uuid = ?payload.display_uuid, enabled, "Toggled Rift space management");
     Ok(EventOutcome::layout_changed(false).with_active_space_recompute())
 }

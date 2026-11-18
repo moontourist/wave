@@ -62,12 +62,10 @@ pub fn execute_startup_commands(commands: &[String]) {
         trace!("Executing startup command {}: {}", i + 1, command);
 
         let parts = parse_command(command);
-        if parts.is_empty() {
+        let Some((cmd, args)) = parts.split_first() else {
             error!("Empty startup command at index {}", i);
             continue;
-        }
-
-        let (cmd, args) = parts.split_first().unwrap();
+        };
 
         let cmd_owned = cmd.to_string();
         let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();

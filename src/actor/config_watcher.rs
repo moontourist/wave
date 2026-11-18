@@ -24,14 +24,15 @@ pub struct ConfigWatcher {
 
 impl ConfigWatcher {
     pub fn spawn(config_tx: config_actor::Sender, config_path: PathBuf) {
-        thread::Builder::new()
-            .name("config-watcher".to_string())
-            .spawn(move || {
-                if let Err(e) = Self::run(config_tx, config_path) {
-                    warn!("config-watcher: error: {e:?}");
-                }
-            })
-            .expect("failed to spawn config-watcher thread");
+        // Live reload is optional; rift keeps running without it.
+        let spawned = thread::Builder::new().name("config-watcher".to_string()).spawn(move || {
+            if let Err(e) = Self::run(config_tx, config_path) {
+                warn!("config-watcher: error: {e:?}");
+            }
+        });
+        if let Err(error) = spawned {
+            warn!("config-watcher: failed to spawn thread: {error}");
+        }
     }
 
     fn watch(

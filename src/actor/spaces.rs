@@ -209,7 +209,7 @@ impl Default for AuthorityState {
 impl AuthorityState {
     fn runtime() -> Self {
         let mut state = Self::default();
-        state.screen_cache = Some(ScreenCache::new(MainThreadMarker::new().unwrap()));
+        state.screen_cache = MainThreadMarker::new().map(ScreenCache::new);
         state
     }
 }

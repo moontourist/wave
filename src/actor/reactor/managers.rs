@@ -354,8 +354,9 @@ impl LayoutManager {
         for &(space, _) in &layout {
             let engine = &mut reactor.layout_manager.layout_engine;
             if let Some((workspace, layout)) = engine.workspaces().active_layout_for_space(space)
+                && let Some(workspace) = engine.workspaces_mut().workspaces.get_mut(workspace)
                 && let crate::layout_engine::LayoutSystemKind::Scrolling(system) =
-                    &mut engine.workspaces_mut().workspaces[workspace].layout_system
+                    &mut workspace.layout_system
                 && let Some((mut camera, _)) = system.presentation(layout)
             {
                 camera.finish();
@@ -379,7 +380,9 @@ impl LayoutManager {
         let mut layout_result = LayoutResult::new();
 
         for index in 0..reactor.space_state.screens.len() {
-            let screen = &reactor.space_state.screens[index];
+            let Some(screen) = reactor.space_state.screens.get(index) else {
+                continue;
+            };
             let (Some(space), frame) = (screen.space, screen.frame) else {
                 continue;
             };

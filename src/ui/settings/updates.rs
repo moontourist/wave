@@ -36,8 +36,9 @@ fn latest() -> Result {
     }
     let release: serde_json::Value = serde_json::from_slice(&response.stdout)
         .map_err(|_| "The release service returned an unexpected response.".to_string())?;
-    let tag = release["tag_name"]
-        .as_str()
+    let tag = release
+        .get("tag_name")
+        .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "No release version was returned.".to_string())?;
     let latest = tag.trim_start_matches('v');
     let running = env!("CARGO_PKG_VERSION");
