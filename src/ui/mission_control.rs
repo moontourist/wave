@@ -316,6 +316,21 @@ fn symbol(parent: &CALayer, name: &str, x: f64, scale: f64) {
         parent.addSublayer(&l);
     }
 }
+// The desktop image file, or a neutral color when there is no usable file.
+fn fallback_background(l: &CALayer, screen: &NSScreen) {
+    if let Some(url) = NSWorkspace::sharedWorkspace().desktopImageURLForScreen(screen)
+        && let Some(image) = NSImage::initWithContentsOfURL(NSImage::alloc(), &url)
+        // SAFETY: A null proposed rect asks for the image's own size, and no context or hints
+        // are needed.
+        && let Some(image) = unsafe {
+            image.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None)
+        }
+    {
+        image_contents(l, &image);
+    } else {
+        l.setBackgroundColor(Some(&NSColor::windowBackgroundColor().CGColor()));
+    }
+}
 fn image_contents(l: &CALayer, image: &CGImage) {
     // SAFETY: A CGImage is a CF type toll-free bridged to an Objective-C object.
     let contents = unsafe { &*(image as *const CGImage as *const AnyObject) };
@@ -568,6 +583,8 @@ struct DisplayOverview {
     home: Camera,
     motion: Option<Motion>,
     background: Retained<CALayer>,
+    // The desktop snapshot is still on its way; `install_backgrounds` puts it in.
+    wallpaper_pending: bool,
     root: Retained<CALayer>,
     pictures: Retained<CALayer>,
     focus_ring: Retained<CALayer>,
@@ -597,7 +614,7 @@ impl DisplayOverview {
         info: ScreenInfo,
         workspaces: Vec<RuntimeWorkspaceData>,
         mtm: MainThreadMarker,
-        wallpaper: Option<&CGImage>,
+        wallpaper: Wallpaper<'_>,
     ) -> Option<Self> {
         let screen =
             NSScreen::screens(mtm).iter().find(|s| s.get_number().ok() == Some(info.id))?;
@@ -614,21 +631,12 @@ impl DisplayOverview {
         root.setGeometryFlipped(true);
         root.setMasksToBounds(true);
         let background = layer(rect(0., -inset, full.size.width, full.size.height), scale);
-        // Prefer the startup snapshot; decode the native image only as a fallback.
-        if let Some(image) = wallpaper {
-            image_contents(&background, image);
-        } else if let Some(url) = NSWorkspace::sharedWorkspace().desktopImageURLForScreen(&screen)
-            && let Some(image) = NSImage::initWithContentsOfURL(NSImage::alloc(), &url)
-            // SAFETY: A null proposed rect asks for the image's own size, and no context or hints
-            // are needed.
-            && let Some(image) = unsafe {
-                image.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None)
-            }
-        {
-            image_contents(&background, &image);
-        } else {
-            // No usable image file; retain a neutral background if snapshot capture also fails.
-            background.setBackgroundColor(Some(&NSColor::windowBackgroundColor().CGColor()));
+        // Prefer the desktop snapshot; decode the native image only as a fallback.
+        let wallpaper_pending = matches!(wallpaper, Wallpaper::Pending);
+        match wallpaper {
+            Wallpaper::Ready(image) => image_contents(&background, image),
+            Wallpaper::Pending => {}
+            Wallpaper::Unavailable => fallback_background(&background, &screen),
         }
         // SAFETY: kCAGravityResizeAspectFill is an immutable framework constant.
         unsafe {
@@ -722,6 +730,7 @@ impl DisplayOverview {
             home: camera,
             motion: None,
             background,
+            wallpaper_pending,
             root,
             pictures,
             focus_ring,
@@ -1391,7 +1400,11 @@ impl DisplayOverview {
     }
 }
 
-// One capture per startup display, retained independently of window preview sessions.
+/// The overview's desktop backgrounds, one snapshot per display.
+///
+/// A snapshot is a full-resolution image of the bare desktop: 63 MB on a 7680x2160 display, plus
+/// Core Animation's copy once it's on screen. So it is taken when the overview opens and dropped
+/// when it closes, never held while the overview is hidden.
 #[derive(Default)]
 pub(crate) struct DesktopBackgrounds(
     Vec<(
@@ -1400,31 +1413,47 @@ pub(crate) struct DesktopBackgrounds(
         Option<Retained<CGImage>>,
     )>,
 );
+/// Where a display's overview background stands.
+pub(crate) enum Wallpaper<'a> {
+    Ready(&'a CGImage),
+    /// The snapshot hasn't arrived yet.
+    Pending,
+    /// No snapshot: no Screen Recording permission, or the capture failed.
+    Unavailable,
+}
 impl DesktopBackgrounds {
-    pub(crate) fn new(mtm: MainThreadMarker) -> Self {
+    /// Starts a snapshot of every display. `notify` runs, off the main thread, when one arrives.
+    pub(crate) fn capture(
+        &mut self,
+        mtm: MainThreadMarker,
+        notify: impl Fn() + Clone + Send + Sync + 'static,
+    ) {
         if !CGPreflightScreenCaptureAccess() {
-            return Self::default();
+            return;
         }
-        Self(
-            NSScreen::screens(mtm)
-                .iter()
-                .filter_map(|screen| {
-                    let id = screen.get_number().ok()?.as_u32();
-                    let snapshot = cgs::compositor::preview::DesktopSnapshot::new(
-                        id,
-                        screen.backingScaleFactor(),
-                        || {},
-                    )
-                    .map_err(|error| tracing::warn!(?error, "Desktop snapshot unavailable"))
-                    .ok()?;
-                    Some((id, Some(snapshot), None))
-                })
-                .collect(),
-        )
+        self.0 = NSScreen::screens(mtm)
+            .iter()
+            .filter_map(|screen| {
+                let id = screen.get_number().ok()?.as_u32();
+                let snapshot = cgs::compositor::preview::DesktopSnapshot::new(
+                    id,
+                    screen.backingScaleFactor(),
+                    notify.clone(),
+                )
+                .map_err(|error| tracing::warn!(?error, "Desktop snapshot unavailable"))
+                .ok()?;
+                Some((id, Some(snapshot), None))
+            })
+            .collect();
     }
 
-    fn image(&mut self, display: u32) -> Option<&CGImage> {
-        let (_, snapshot, image) = self.0.iter_mut().find(|(id, _, _)| *id == display)?;
+    /// Drops every snapshot and image.
+    pub(crate) fn clear(&mut self) { self.0.clear(); }
+
+    fn image(&mut self, display: u32) -> Wallpaper<'_> {
+        let Some((_, snapshot, image)) = self.0.iter_mut().find(|(id, _, _)| *id == display) else {
+            return Wallpaper::Unavailable;
+        };
         if let Some(pending) = snapshot {
             match pending.take_image() {
                 Ok(Some(captured)) => {
@@ -1435,10 +1464,10 @@ impl DesktopBackgrounds {
                     tracing::warn!(?error, "Desktop background unavailable");
                     *snapshot = None;
                 }
-                Ok(None) => {}
+                Ok(None) => return Wallpaper::Pending,
             }
         }
-        image.as_deref()
+        image.as_deref().map_or(Wallpaper::Unavailable, Wallpaper::Ready)
     }
 }
 
@@ -1751,6 +1780,34 @@ impl OverviewSession {
     }
 
     pub(crate) fn is_empty(&self) -> bool { self.displays.is_empty() }
+
+    /// Puts in each desktop snapshot that arrived after its display's overview was built.
+    pub(crate) fn install_backgrounds(&mut self, backgrounds: &mut DesktopBackgrounds) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let mut _tx = None;
+        for d in self.displays.iter_mut().filter(|d| d.wallpaper_pending) {
+            let wallpaper = backgrounds.image(d.info.id.as_u32());
+            if matches!(wallpaper, Wallpaper::Pending) {
+                continue;
+            }
+            _tx.get_or_insert_with(LayerTransaction::disabled);
+            d.wallpaper_pending = false;
+            match wallpaper {
+                Wallpaper::Ready(image) => image_contents(&d.background, image),
+                Wallpaper::Pending => {}
+                Wallpaper::Unavailable => {
+                    if let Some(screen) = NSScreen::screens(mtm)
+                        .iter()
+                        .find(|s| s.get_number().ok() == Some(d.info.id))
+                    {
+                        fallback_background(&d.background, &screen);
+                    }
+                }
+            }
+        }
+    }
 
     pub(crate) fn take_drop(&mut self) -> Option<OverviewDrop> { self.drop.take() }
 
