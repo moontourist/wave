@@ -5,6 +5,20 @@ type AxisSummary = (f64, Option<f64>, Option<f64>, bool);
 pub(super) type ConstraintCache =
     crate::common::collections::HashMap<crate::model::tree::NodeId, [AxisSummary; 2]>;
 
+/// Axis constraints of a node with no size limits: no minimum, no fixed or maximum
+/// size, free to grow. The same tuple a window without reported constraints gets.
+pub(super) const UNCONSTRAINED: AxisSummary = (0.0, None, None, true);
+
+/// Picks the horizontal or vertical half of a per-axis pair (index 1 is horizontal).
+pub(super) fn on_axis<T>(axes: [T; 2], horizontal: bool) -> T {
+    let [vertical, horizontal_axis] = axes;
+    if horizontal {
+        horizontal_axis
+    } else {
+        vertical
+    }
+}
+
 // Shared by Traditional containers and BSP splits. A sole child contributes
 // exactly its own constraints; gaps and stack decorations belong to projections.
 pub(super) fn container_axis_constraints(

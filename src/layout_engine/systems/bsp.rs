@@ -6,7 +6,8 @@ use crate::actor::app::{WindowId, pid_t};
 use crate::common::collections::{HashMap, HashSet};
 use crate::common::config::WindowInsertionPoint;
 use crate::layout_engine::systems::constraints::{
-    AxisConstraints, ConstraintCache, container_axis_constraints, solve_axis_lengths,
+    AxisConstraints, ConstraintCache, UNCONSTRAINED, container_axis_constraints, on_axis,
+    solve_axis_lengths,
 };
 use crate::layout_engine::systems::{
     LayoutSystem, WindowLayoutConstraints, reconcile_app_membership,
@@ -85,19 +86,19 @@ impl BspLayoutSystem {
             if let Some(NodeKind::Split { orientation, ratio }) = self.kind.get(parent) {
                 if *orientation == direction.orientation() {
                     let children: Vec<_> = parent.children(&self.tree.map).collect();
-                    if children.len() == 2 {
-                        let is_first = children[0] == current;
+                    if let &[first, second] = children.as_slice() {
+                        let is_first = first == current;
                         let target_child = match direction {
                             Direction::Left | Direction::Up => {
                                 if !is_first {
-                                    Some(children[0])
+                                    Some(first)
                                 } else {
                                     None
                                 }
                             }
                             Direction::Right | Direction::Down => {
                                 if is_first {
-                                    Some(children[1])
+                                    Some(second)
                                 } else {
                                     None
                                 }
@@ -551,7 +552,10 @@ impl BspLayoutSystem {
             *window = None;
         }
         let fallback = self.cleanup_after_removal(node);
-        let selection = self.tree.data.selection.current_selection(self.layouts[layout].root);
+        let Some(root) = self.layouts.get(layout).map(|state| state.root) else {
+            return true;
+        };
+        let selection = self.tree.data.selection.current_selection(root);
         let new_selection = if self.kind.contains_key(selection) {
             self.descend_to_leaf(selection)
         } else {
@@ -637,41 +641,43 @@ impl BspLayoutSystem {
                 let mut it = node.children(&self.tree.map);
                 let first = it.next();
                 let second = it.next();
-                let (first_len, second_len) =
-                    if let (Some(first_node), Some(second_node)) = (first, second) {
-                        let (first_min, first_fixed, first_max, first_can_grow) =
-                            prepared[&first_node][horizontal as usize];
-                        let (second_min, second_fixed, second_max, second_can_grow) =
-                            prepared[&second_node][horizontal as usize];
-                        let solved = solve_axis_lengths(
-                            &[
-                                AxisConstraints {
-                                    min: first_min,
-                                    fixed: first_fixed,
-                                    max: first_max,
-                                    weight: (*ratio as f64).max(0.0),
-                                    can_grow: first_can_grow,
-                                },
-                                AxisConstraints {
-                                    min: second_min,
-                                    fixed: second_fixed,
-                                    max: second_max,
-                                    weight: (1.0 - *ratio as f64).max(0.0),
-                                    can_grow: second_can_grow,
-                                },
-                            ],
-                            available,
-                        );
-                        (
-                            solved.first().copied().unwrap_or(available * (*ratio as f64)),
-                            solved.get(1).copied().unwrap_or(0.0),
-                        )
-                    } else {
-                        let first_len_f = available * (*ratio as f64);
-                        let first_len = first_len_f.max(0.0);
-                        let second_len = (available - first_len).max(0.0);
-                        (first_len, second_len)
+                let (first_len, second_len) = if let (Some(first_node), Some(second_node)) =
+                    (first, second)
+                {
+                    let axis = |node| {
+                        prepared.get(&node).map_or(UNCONSTRAINED, |&axes| on_axis(axes, horizontal))
                     };
+                    let (first_min, first_fixed, first_max, first_can_grow) = axis(first_node);
+                    let (second_min, second_fixed, second_max, second_can_grow) = axis(second_node);
+                    let solved = solve_axis_lengths(
+                        &[
+                            AxisConstraints {
+                                min: first_min,
+                                fixed: first_fixed,
+                                max: first_max,
+                                weight: (*ratio as f64).max(0.0),
+                                can_grow: first_can_grow,
+                            },
+                            AxisConstraints {
+                                min: second_min,
+                                fixed: second_fixed,
+                                max: second_max,
+                                weight: (1.0 - *ratio as f64).max(0.0),
+                                can_grow: second_can_grow,
+                            },
+                        ],
+                        available,
+                    );
+                    (
+                        solved.first().copied().unwrap_or(available * (*ratio as f64)),
+                        solved.get(1).copied().unwrap_or(0.0),
+                    )
+                } else {
+                    let first_len_f = available * (*ratio as f64);
+                    let first_len = first_len_f.max(0.0);
+                    let second_len = (available - first_len).max(0.0);
+                    (first_len, second_len)
+                };
                 let mut r1 = rect;
                 let mut r2 = rect;
                 if horizontal {
@@ -730,7 +736,7 @@ impl BspLayoutSystem {
                 let mut summary = container_axis_constraints(
                     node.children(&self.tree.map)
                         .filter_map(|child| prepared.get(&child))
-                        .map(|axes| axes[horizontal as usize]),
+                        .map(|&axes| on_axis(axes, horizontal)),
                     kind,
                     horizontal,
                     if horizontal {
@@ -1649,11 +1655,20 @@ impl LayoutSystem for BspLayoutSystem {
                         }),
                     }
                 }
-                None => unreachable!("BSP layout contains a node without metadata"),
+                None => {
+                    tracing::error!(?node, "BSP node has no metadata");
+                    rift_protocol::ContainerTreeNode {
+                        node_id: node.data().as_ffi(),
+                        weight,
+                        ..Default::default()
+                    }
+                }
             }
         }
 
-        let state = self.layouts.get(layout).expect("unknown BSP layout");
+        let Some(state) = self.layouts.get(layout) else {
+            return rift_protocol::ContainerTreeNode::default();
+        };
         let selected = self.tree.data.selection.current_selection(state.root);
         snapshot(self, state.root, selected)
     }
@@ -1837,9 +1852,8 @@ impl LayoutSystem for BspLayoutSystem {
         if self.contains_window(layout, wid) {
             return;
         }
-        if self.layouts.get(layout).is_some() {
+        if let Some(root) = self.layouts.get(layout).map(|state| state.root) {
             if self.window_insertion_point == WindowInsertionPoint::EndOfTree {
-                let root = self.layouts[layout].root;
                 if let Some(leaf) = root
                     .traverse_preorder(&self.tree.map)
                     .filter(|node| matches!(self.kind.get(*node), Some(NodeKind::Leaf { .. })))
@@ -1872,7 +1886,9 @@ impl LayoutSystem for BspLayoutSystem {
             }
             // A replacement may already be present after restore matching.
             while self.remove_window_internal(layout, to) {}
-            let root = self.layouts[layout].root;
+            let Some(root) = self.layouts.get(layout).map(|state| state.root) else {
+                continue;
+            };
             for node in root.traverse_preorder(&self.tree.map) {
                 if let Some(stack) = self.stacks.get_mut(&node) {
                     for member in stack.iter_mut().filter(|member| **member == from) {
@@ -2148,8 +2164,8 @@ impl LayoutSystem for BspLayoutSystem {
         if self.stacks.contains_key(&node_a) || self.stacks.contains_key(&node_b) {
             let group_a = self.stacks.remove(&node_a).unwrap_or_else(|| vec![a]);
             let group_b = self.stacks.remove(&node_b).unwrap_or_else(|| vec![b]);
-            let visible_a = *group_a.last().unwrap();
-            let visible_b = *group_b.last().unwrap();
+            let visible_a = group_a.last().copied().unwrap_or(a);
+            let visible_b = group_b.last().copied().unwrap_or(b);
             if let Some(NodeKind::Leaf { window, .. }) = self.kind.get_mut(node_a) {
                 *window = Some(visible_b);
             }
@@ -2230,9 +2246,7 @@ impl LayoutSystem for BspLayoutSystem {
             }
             crate::layout_engine::WindowDropAction::Swap
             | crate::layout_engine::WindowDropAction::Move(_)
-            | crate::layout_engine::WindowDropAction::ConsumeOrExpel(_) => {
-                unreachable!()
-            }
+            | crate::layout_engine::WindowDropAction::ConsumeOrExpel(_) => false,
         }
     }
 
@@ -2355,8 +2369,9 @@ impl LayoutSystem for BspLayoutSystem {
                     let selected = self.selected_window(layout);
 
                     if let Some(index) = windows.iter().position(|window| Some(*window) == selected)
+                        && let Some(tail) = windows.get_mut(index..)
                     {
-                        windows[index..].rotate_left(1);
+                        tail.rotate_left(1);
                     }
 
                     if let Some(visible) = windows.last().copied() {

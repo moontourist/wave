@@ -1060,14 +1060,11 @@ impl LayoutEngine {
                                         current_idx - 1
                                     }
                                 }
-                                Direction::Right => (current_idx + 1) % floating_windows.len(),
-                                _ => unreachable!(),
+                                // The enclosing arm admits only Left and Right.
+                                _ => (current_idx + 1) % floating_windows.len(),
                             };
-                            debug!(
-                                "Moving to index {}, window: {:?}",
-                                next_idx, floating_windows[next_idx]
-                            );
-                            let focus_window = Some(floating_windows[next_idx]);
+                            let focus_window = floating_windows.get(next_idx).copied();
+                            debug!("Moving to index {}, window: {:?}", next_idx, focus_window);
                             let response = EventResponse {
                                 changed: true,
                                 focus_window,
@@ -2584,12 +2581,11 @@ impl LayoutEngine {
         }
 
         match command {
+            // Handled and returned before this match.
             LayoutCommand::ToggleWindowFloating
-            | LayoutCommand::ToggleWindowFloatingWithOptions(_) => {
-                unreachable!()
-            }
-            LayoutCommand::ToggleFocusFloating => unreachable!(),
-            LayoutCommand::MoveStackTab { .. } => unreachable!(),
+            | LayoutCommand::ToggleWindowFloatingWithOptions(_)
+            | LayoutCommand::ToggleFocusFloating
+            | LayoutCommand::MoveStackTab { .. } => EventResponse::default(),
 
             LayoutCommand::SwapWindows(a, b) => {
                 let a = crate::actor::app::WindowId::new(a.pid, a.idx);
@@ -2617,16 +2613,17 @@ impl LayoutEngine {
                             .visible_windows_in_layout(layout),
                     )
                 };
-                if let Some(idx) = windows.iter().position(|&w| Some(w) == self.focused_window) {
-                    let next = if forward {
+                if let Some(idx) = windows.iter().position(|&w| Some(w) == self.focused_window)
+                    && let Some(&next) = windows.get(if forward {
                         (idx + 1) % windows.len()
                     } else {
                         (idx + windows.len() - 1) % windows.len()
-                    };
+                    })
+                {
                     let response = EventResponse {
                         changed: true,
-                        focus_window: Some(windows[next]),
-                        raise_windows: vec![windows[next]],
+                        focus_window: Some(next),
+                        raise_windows: vec![next],
                         boundary_hit: None,
                         ..EventResponse::default()
                     };
@@ -2822,7 +2819,8 @@ impl LayoutEngine {
                     LayoutCommand::ResizeWindowBy { amount } => {
                         (amount, ResizeOrientation::Horizontal)
                     }
-                    _ => unreachable!(),
+                    // The enclosing arm admits only the three resize commands.
+                    _ => return EventResponse::default(),
                 };
                 self.workspaces[workspace_id].layout_system.resize_selection_by(
                     layout,
@@ -2901,7 +2899,8 @@ impl LayoutEngine {
                         response.changed = system.switch_preset_column_width(layout, backwards);
                     }
                     LayoutCommand::CenterSelection => system.center_selected_column(layout),
-                    _ => unreachable!(),
+                    // The enclosing arm admits only the scrolling commands above.
+                    _ => {}
                 }
                 response
             }

@@ -46,10 +46,18 @@ impl NodeMap {
 impl Index<NodeId> for NodeMap {
     type Output = Node;
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Index panics on a stale key by contract, like SlotMap's own; use get() to probe"
+    )]
     fn index(&self, index: NodeId) -> &Self::Output { &self.map[index] }
 }
 
 impl IndexMut<NodeId> for NodeMap {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Index panics on a stale key by contract, like SlotMap's own; use get() to probe"
+    )]
     fn index_mut(&mut self, index: NodeId) -> &mut Self::Output { &mut self.map[index] }
 }
 
@@ -74,6 +82,10 @@ impl OwnedNode {
     /// Marks a non-root node as owned.
     pub fn own(node: NodeId, name: &'static str) -> Self { OwnedNode(Some(node), name.to_owned()) }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "an OwnedNode is empty only after remove(); using it afterwards is a use-after-remove bug"
+    )]
     pub fn id(&self) -> NodeId { self.0.expect("OwnedNode::id called on removed OwnedNode") }
 
     #[track_caller]
@@ -84,6 +96,10 @@ impl OwnedNode {
     }
 
     #[track_caller]
+    #[expect(
+        clippy::expect_used,
+        reason = "an OwnedNode is empty only after remove(); using it afterwards is a use-after-remove bug"
+    )]
     pub fn replace<'a, O>(&mut self, new: UnattachedNode<'a, O>) -> UnattachedNode<'a, O> {
         let id = self.0.replace(new.id).expect("Can't replace removed node");
         UnattachedNode { id, ..new }
@@ -93,12 +109,20 @@ impl OwnedNode {
 impl Deref for OwnedNode {
     type Target = NodeId;
 
+    #[expect(
+        clippy::expect_used,
+        reason = "an OwnedNode is empty only after remove(); using it afterwards is a use-after-remove bug"
+    )]
     fn deref(&self) -> &Self::Target {
         self.0.as_ref().expect("OwnedNode deref on removed OwnedNode")
     }
 }
 
 impl DerefMut for OwnedNode {
+    #[expect(
+        clippy::expect_used,
+        reason = "an OwnedNode is empty only after remove(); using it afterwards is a use-after-remove bug"
+    )]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.0.as_mut().expect("OwnedNode deref_mut on removed OwnedNode")
     }
@@ -106,8 +130,18 @@ impl DerefMut for OwnedNode {
 
 impl Drop for OwnedNode {
     fn drop(&mut self) {
-        if cfg!(debug_assertions) {
-            if let Some(node) = self.0 {
+        if cfg!(debug_assertions)
+            && let Some(node) = self.0
+        {
+            tracing::error!(
+                name = self.1,
+                ?node,
+                "OwnedNode dropped without OwnedNode::remove"
+            );
+            // Unit tests turn the leak into a failure. A panic while already
+            // unwinding would abort, so only the first panic reports.
+            #[cfg(test)]
+            if !std::thread::panicking() {
                 panic!(
                     "OwnedNode {name:?} dropped without OwnedNode::remove being called: {node:?}",
                     name = self.1,
@@ -196,10 +230,10 @@ impl NodeId {
             while old.parent(&tree.map) != stack.last().map(|(oldp, _newp)| *oldp) {
                 stack.pop();
             }
-            let parent = stack
-                .last()
-                .map(|(_, newp)| *newp)
-                .expect("deep_copy: structural invariant violated");
+            // The copy's root is an ancestor of every node visited, so the stack never empties.
+            let Some(&(_, parent)) = stack.last() else {
+                break;
+            };
             let new = tree.mk_node().push_back(parent);
             stack.push((old, new));
         }
@@ -325,6 +359,10 @@ impl<'a, O: Observer> DetachedNode<'a, O> {
         })
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "callers pass a sibling that has a parent; a root or stale sibling is a caller bug"
+    )]
     #[track_caller]
     pub(crate) fn insert_before(self, sibling: NodeId) -> ReattachedNode<'a, O> {
         let new_parent = sibling
@@ -335,6 +373,10 @@ impl<'a, O: Observer> DetachedNode<'a, O> {
         })
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "callers pass a sibling that has a parent; a root or stale sibling is a caller bug"
+    )]
     #[track_caller]
     pub(crate) fn insert_after(self, sibling: NodeId) -> ReattachedNode<'a, O> {
         let new_parent = sibling
@@ -426,7 +468,9 @@ impl NodeId {
         }
 
         let prev_child = {
-            let parent_node = map.map.get_mut(parent).expect("parent missing after contains check");
+            let Some(parent_node) = map.map.get_mut(parent) else {
+                return;
+            };
             parent_node.first_child.get_or_insert(self);
             parent_node.last_child.replace(self)
         };
@@ -445,7 +489,10 @@ impl NodeId {
     #[track_caller]
     pub(crate) fn link_before(self, next: NodeId, map: &mut NodeMap) {
         let parent = map.map.get(next).and_then(|n| n.parent);
-        let parent = parent.expect("cannot make a sibling of a root node or invalid sibling");
+        let Some(parent) = parent else {
+            tracing::error!(node = ?self, "cannot make a sibling of a root node or invalid sibling");
+            return;
+        };
         if let Some(self_node) = map.map.get_mut(self) {
             self_node.parent = Some(parent);
         } else {
@@ -463,7 +510,10 @@ impl NodeId {
     #[track_caller]
     pub(crate) fn link_after(self, prev: NodeId, map: &mut NodeMap) {
         let parent = map.map.get(prev).and_then(|n| n.parent);
-        let parent = parent.expect("cannot make a sibling of a root node or invalid sibling");
+        let Some(parent) = parent else {
+            tracing::error!(node = ?self, "cannot make a sibling of a root node or invalid sibling");
+            return;
+        };
         if let Some(self_node) = map.map.get_mut(self) {
             self_node.parent = Some(parent);
         } else {

@@ -7,7 +7,8 @@ use crate::actor::app::{WindowId, pid_t};
 use crate::common::collections::{HashMap, HashSet};
 use crate::common::config::WindowInsertionPoint;
 use crate::layout_engine::systems::constraints::{
-    AxisConstraints, ConstraintCache, container_axis_constraints, solve_axis_lengths,
+    AxisConstraints, ConstraintCache, UNCONSTRAINED, container_axis_constraints, on_axis,
+    solve_axis_lengths,
 };
 use crate::layout_engine::systems::{
     LayoutSystem, WindowLayoutConstraints, reconcile_app_membership,
@@ -2640,20 +2641,6 @@ impl StackLayoutResult {
             size: CGSize { width, height },
         }
         .round()
-    }
-}
-
-/// Axis constraints of a node with no size limits: no minimum, no fixed or maximum
-/// size, free to grow. The same tuple a window without reported constraints gets.
-const UNCONSTRAINED: (f64, Option<f64>, Option<f64>, bool) = (0.0, None, None, true);
-
-/// Picks the horizontal or vertical half of a per-axis pair (index 1 is horizontal).
-fn on_axis<T>(axes: [T; 2], horizontal: bool) -> T {
-    let [vertical, horizontal_axis] = axes;
-    if horizontal {
-        horizontal_axis
-    } else {
-        vertical
     }
 }
 
