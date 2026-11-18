@@ -24,6 +24,18 @@ pub struct MasterStackLayoutSystem {
 
 fn default_master_stack_settings() -> MasterStackSettings { MasterStackSettings::default() }
 
+/// Orders a root's children as (master, stack). `None` unless there are exactly two.
+fn master_and_stack(children: &[NodeId], master_first: bool) -> Option<(NodeId, NodeId)> {
+    let &[first, second] = children else {
+        return None;
+    };
+    Some(if master_first {
+        (first, second)
+    } else {
+        (second, first)
+    })
+}
+
 impl Default for MasterStackLayoutSystem {
     fn default() -> Self { Self::new(MasterStackSettings::default()) }
 }
@@ -101,16 +113,10 @@ impl MasterStackLayoutSystem {
     ) -> Option<Vec<WindowId>> {
         let root = self.inner.root(layout);
         let children: Vec<_> = root.children(self.inner.map()).collect();
-        if children.len() != 2
-            || children.iter().any(|&child| self.inner.window_at(child).is_some())
-        {
+        if children.iter().any(|&child| self.inner.window_at(child).is_some()) {
             return None;
         }
-        let (master, stack) = if master_first {
-            (children[0], children[1])
-        } else {
-            (children[1], children[0])
-        };
+        let (master, stack) = master_and_stack(&children, master_first)?;
         let mut ordered = self.windows_in_container(master);
         ordered.extend(self.windows_in_container(stack));
         Some(ordered)
@@ -201,9 +207,10 @@ impl MasterStackLayoutSystem {
         let total = 2.0_f32;
         let master_size = (ratio * total).max(0.05);
         let stack_size = (total - master_size).max(0.05);
-        self.inner.tree.data.layout.info[master].size = master_size;
-        self.inner.tree.data.layout.info[stack].size = stack_size;
-        self.inner.tree.data.layout.info[root].total = master_size + stack_size;
+        let layout = &mut self.inner.tree.data.layout;
+        layout.with_info(master, |i| i.size = master_size);
+        layout.with_info(stack, |i| i.size = stack_size);
+        layout.with_info(root, |i| i.total = master_size + stack_size);
     }
 
     fn ensure_structure(&mut self, layout: LayoutId) -> (NodeId, NodeId, NodeId) {
@@ -212,19 +219,12 @@ impl MasterStackLayoutSystem {
             self.rebuild_layout(layout);
         }
         let children: Vec<_> = root.children(self.inner.map()).collect();
-        if children.len() != 2 {
+        let Some((master, stack)) = master_and_stack(&children, self.master_first()) else {
             let (master, stack) = self.create_containers(root);
             self.apply_master_ratio(root, master, stack);
             return (root, master, stack);
-        }
-        let first = children[0];
-        let second = children[1];
-        self.inner.set_layout(root, LayoutKind::from(self.root_orientation()));
-        let (master, stack) = if self.master_first() {
-            (first, second)
-        } else {
-            (second, first)
         };
+        self.inner.set_layout(root, LayoutKind::from(self.root_orientation()));
         self.inner.set_layout(master, LayoutKind::from(self.master_orientation()));
         self.inner.set_layout(stack, LayoutKind::from(self.stack_orientation()));
         (root, master, stack)
@@ -306,10 +306,12 @@ impl MasterStackLayoutSystem {
 
         let keep_in_master = keep_in_master.filter(|_| desired > 0);
         while master_windows.len() > desired {
-            let overflow_idx = master_windows
-                .iter()
-                .rposition(|wid| Some(*wid) != keep_in_master)
-                .expect("master overflow must contain a movable window");
+            let Some(overflow_idx) =
+                master_windows.iter().rposition(|wid| Some(*wid) != keep_in_master)
+            else {
+                // Two or more windows hold at most one kept window, so this never stops early.
+                break;
+            };
             let wid = master_windows.remove(overflow_idx);
             let node = if is_master_first {
                 self.move_window_to_container_front(layout, wid, stack)
@@ -570,16 +572,11 @@ impl LayoutSystem for MasterStackLayoutSystem {
     fn draw_tree(&self, layout: LayoutId) -> String {
         let root = self.inner.root(layout);
         let children: Vec<_> = root.children(self.inner.map()).collect();
-        if children.len() != 2 {
-            return self.inner.draw_tree(layout);
-        }
         if children.iter().any(|&child| self.inner.tree.data.window.at(child).is_some()) {
             return self.inner.draw_tree(layout);
         }
-        let (master, stack) = if self.master_first() {
-            (children[0], children[1])
-        } else {
-            (children[1], children[0])
+        let Some((master, stack)) = master_and_stack(&children, self.master_first()) else {
+            return self.inner.draw_tree(layout);
         };
         let mut labels = HashMap::default();
         labels.insert(master, "master");
@@ -591,12 +588,7 @@ impl LayoutSystem for MasterStackLayoutSystem {
         let root = self.inner.root(layout);
         let children: Vec<_> = root.children(self.inner.map()).collect();
         let mut roles = HashMap::default();
-        if children.len() == 2 {
-            let (master, stack) = if self.master_first() {
-                (children[0], children[1])
-            } else {
-                (children[1], children[0])
-            };
+        if let Some((master, stack)) = master_and_stack(&children, self.master_first()) {
             roles.insert(master, "master");
             roles.insert(stack, "stack");
         }
@@ -614,12 +606,9 @@ impl LayoutSystem for MasterStackLayoutSystem {
     ) -> Vec<(WindowId, CGRect)> {
         let root = self.inner.root(layout);
         let children: Vec<_> = root.children(self.inner.map()).collect();
-        if children.len() == 2 && children.iter().all(|&c| self.inner.window_at(c).is_none()) {
-            let (master, stack) = if self.master_first() {
-                (children[0], children[1])
-            } else {
-                (children[1], children[0])
-            };
+        if children.iter().all(|&c| self.inner.window_at(c).is_none())
+            && let Some((master, stack)) = master_and_stack(&children, self.master_first())
+        {
             if self.inner.visible_windows_in_subtree(stack).is_empty() {
                 let rect = compute_tiling_area(screen, gaps);
                 return self.inner.calculate_layout_for_node(
@@ -692,7 +681,7 @@ impl LayoutSystem for MasterStackLayoutSystem {
             reconcile_app_membership(pid, current, desired, |w| self.window_participates(w));
         for wid in delta.removals {
             if let Some(node) = self.inner.tree.data.window.node_for(layout, wid)
-                && !self.inner.tree.data.layout.info[node].is_fullscreen
+                && !self.inner.tree.data.layout.info(node).is_fullscreen
             {
                 node.detach(&mut self.inner.tree).remove();
             }
@@ -778,17 +767,19 @@ impl LayoutSystem for MasterStackLayoutSystem {
         let target_in_master = target_idx < master_count;
         let participates = |index: &usize| {
             (*index < master_count) == target_in_master
-                && self.inner.window_participates(windows[*index])
+                && windows.get(*index).is_some_and(|&w| self.inner.window_participates(w))
         };
         let target_idx = if target_idx < focused_idx {
             (0..=target_idx).rev().find(participates)
         } else {
             (target_idx..windows.len()).find(participates)
         };
-        let Some(target_idx) = target_idx else { return false };
-        if target_idx != focused_idx
-            && !self.inner.swap_windows(layout, focused_wid, windows[target_idx])
-        {
+        let Some((target_idx, &target_wid)) =
+            target_idx.and_then(|idx| Some((idx, windows.get(idx)?)))
+        else {
+            return false;
+        };
+        if target_idx != focused_idx && !self.inner.swap_windows(layout, focused_wid, target_wid) {
             return false;
         }
         let _ = self.inner.select_window(layout, focused_wid);

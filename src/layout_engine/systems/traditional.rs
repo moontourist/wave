@@ -2679,7 +2679,7 @@ pub(crate) struct LayoutInfo {
 impl Layout {
     /// A node's layout info. Every node gets an entry when it joins the forest, so a
     /// miss means this map and the tree disagree: it is logged and reads as zero size.
-    fn info(&self, node: NodeId) -> LayoutInfo {
+    pub(super) fn info(&self, node: NodeId) -> LayoutInfo {
         self.info.get(node).copied().unwrap_or_else(|| {
             error!(?node, "layout info missing for tree node");
             LayoutInfo::default()
@@ -2687,7 +2687,7 @@ impl Layout {
     }
 
     /// Updates a node's layout info; a missing entry is logged and left alone.
-    fn with_info(&mut self, node: NodeId, f: impl FnOnce(&mut LayoutInfo)) {
+    pub(super) fn with_info(&mut self, node: NodeId, f: impl FnOnce(&mut LayoutInfo)) {
         match self.info.get_mut(node) {
             Some(info) => f(info),
             None => error!(?node, "layout info missing for tree node"),
