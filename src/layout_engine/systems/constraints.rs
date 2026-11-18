@@ -85,6 +85,10 @@ fn sanitize(v: f64) -> f64 { if v.is_finite() { v.max(0.0) } else { 0.0 } }
 /// - growable nodes preserve their final weighted proportions whenever their bounds allow it
 /// - zero-weight growable nodes share equally when no positive weights are present
 /// - if nothing can grow, remainder becomes blank space
+#[expect(
+    clippy::indexing_slicing,
+    reason = "every per-item vector is collected from `items` (length n) and every index is drawn from 0..n"
+)]
 pub(crate) fn solve_axis_lengths(items: &[AxisConstraints], usable: f64) -> Vec<f64> {
     if items.is_empty() {
         return Vec::new();
