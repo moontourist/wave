@@ -3,9 +3,10 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
+use anyhow::Context;
 #[cfg(test)]
 use tempfile::NamedTempFile;
-use tracing::Span;
+use tracing::{Span, warn};
 
 use super::{Event, Reactor};
 use crate::actor::app::{AppThreadHandle, Request};
@@ -17,6 +18,10 @@ thread_local! {
     static DESERIALIZE_THREAD_HANDLE: RefCell<Option<AppThreadHandle>> = RefCell::new(None);
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "serde's default hook can't fail; only replay() deserializes events, and it sets the handle first"
+)]
 pub(super) fn deserialize_app_thread_handle() -> AppThreadHandle {
     DESERIALIZE_THREAD_HANDLE
         .with(|handle| handle.borrow().clone().expect("No deserialize thread handle set!"))
@@ -31,7 +36,11 @@ pub struct Record {
 impl Record {
     pub fn new(path: Option<&Path>) -> Self {
         Self {
-            file: path.map(|path| File::create(path).unwrap()),
+            file: path.and_then(|path| {
+                File::create(path)
+                    .inspect_err(|error| warn!(?path, %error, "cannot create the event record"))
+                    .ok()
+            }),
             #[cfg(test)]
             temp: None,
         }
@@ -53,9 +62,14 @@ impl Record {
 
     pub(super) fn start(&mut self, config: &Config, layout: &LayoutEngine) {
         let Some(file) = self.file() else { return };
-        let config = ron::ser::to_string(&config).unwrap();
+        let config = match ron::ser::to_string(&config) {
+            Ok(config) => config,
+            Err(error) => return warn!(%error, "cannot record the config"),
+        };
         let layout = layout.serialize_to_string(&Default::default());
-        write!(file, "{config}\n{layout}\n").unwrap();
+        if let Err(error) = write!(file, "{config}\n{layout}\n") {
+            warn!(%error, "cannot write the event record");
+        }
     }
 
     pub(super) fn on_event(&mut self, event: &Event) {
@@ -63,7 +77,9 @@ impl Record {
         let Ok(line) = ron::ser::to_string(&event) else {
             return;
         };
-        write!(file, "{line}\n").unwrap();
+        if let Err(error) = write!(file, "{line}\n") {
+            warn!(%error, "cannot write the event record");
+        }
     }
 }
 
@@ -76,8 +92,9 @@ pub fn replay(
     let handle = AppThreadHandle::new_for_test(tx);
     DESERIALIZE_THREAD_HANDLE.with(|h| h.borrow_mut().replace(handle));
     let mut lines = file.lines();
-    let config = ron::de::from_str(&lines.next().expect("Empty restore file")?)?;
-    let layout = LayoutEngine::deserialize_from_str(&lines.next().expect("Expected layout line")?)?;
+    let config = ron::de::from_str(&lines.next().context("empty restore file")??)?;
+    let layout =
+        LayoutEngine::deserialize_from_str(&lines.next().context("expected layout line")??)?;
     let (broadcast_tx, _) = actor::channel();
     let mut reactor = Reactor::new(config, layout, Record::new(None), broadcast_tx, None, false);
     std::thread::spawn(move || {

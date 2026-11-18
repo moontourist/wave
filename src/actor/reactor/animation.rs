@@ -321,10 +321,13 @@ fn stage_windows(windows: &mut [PresentedWindow], sample: Sample<'_>, frames: &m
     for group in windows.chunk_by_mut(|a, b| {
         a.wid.pid == b.wid.pid && a.handle.constrains_scrolling() == b.handle.constrains_scrolling()
     }) {
-        let handle = group[0].handle.clone();
+        // chunk_by_mut never yields an empty group.
+        let Some((handle, pid)) = group.first().map(|w| (w.handle.clone(), w.wid.pid)) else {
+            continue;
+        };
         frames.extend(
             &handle,
-            group[0].wid.pid,
+            pid,
             group.iter_mut().filter_map(|window| window.sample(sample)),
         );
     }
@@ -757,7 +760,9 @@ impl Reactor {
             }
             next.begin();
             next.sample(now);
-            self.presentations.get_mut(&space).unwrap().headless = Some(next);
+            if let Some(presentation) = self.presentations.get_mut(&space) {
+                presentation.headless = Some(next);
+            }
             self.commit_presentations();
         }
         Some(windows)
@@ -833,7 +838,8 @@ impl AnimationManager {
                             let display = match &message {
                                 Message::Replace(a) | Message::SkipToEnd(a) => a.display,
                                 Message::Camera(c) => c.display,
-                                Message::Stop(..) | Message::StopCamera(..) | Message::Displays(..) => unreachable!(),
+                                // Handled by the arms above.
+                                Message::Stop(..) | Message::StopCamera(..) | Message::Displays(..) => continue,
                             };
                             let entry = displays.entry(display).or_insert_with(|| DisplayPresenter {
                                 manager: Self::new(), link: DisplayLink::for_display(display, wake.clone()),
@@ -852,7 +858,7 @@ impl AnimationManager {
                                     c.windows.retain(|w| !shared.cancelled.contains(&w.wid));
                                     c.active = !c.windows.is_empty();
                                 }
-                                _ => unreachable!(),
+                                Message::Stop(..) | Message::StopCamera(..) | Message::Displays(..) => {}
                             }
                             entry.manager.handle_message(message);
                             entry.manager.publish_frames(&mut shared, true);
@@ -977,9 +983,9 @@ impl AnimationManager {
                         |m| matches!(m, Motion::Viewport(c) if c.identity.space == camera.identity.space),
                     )
                     .map(|idx| self.motions.swap_remove(idx));
-                camera.replace(old.map(|m| {
-                    let Motion::Viewport(c) = m else { unreachable!() };
-                    c
+                camera.replace(old.and_then(|m| match m {
+                    Motion::Viewport(c) => Some(c),
+                    _ => None,
                 }));
                 let mut windows: Vec<_> = camera.windows.iter().map(|w| w.wid).collect();
                 windows.sort_unstable();
@@ -999,8 +1005,8 @@ impl AnimationManager {
                     .map(|idx| self.motions.swap_remove(idx));
                 let next = match old {
                     Some(Motion::Transition(active)) => Some(active.replace_with(animation)),
-                    None => ActiveAnimation::start(animation),
-                    _ => unreachable!(),
+                    // position() above matched only a Transition.
+                    Some(_) | None => ActiveAnimation::start(animation),
                 };
                 if let Some(next) = next {
                     self.motions.push(Motion::Transition(next));
@@ -1017,7 +1023,8 @@ impl AnimationManager {
                 });
                 animation.skip_to_end();
             }
-            _ => unreachable!("runner handles display control"),
+            // The runner handles display control before dispatching here.
+            Message::StopCamera(_) | Message::Displays(_) => {}
         }
     }
 
@@ -1133,7 +1140,9 @@ impl AnimationManager {
                 && animate_camera
                 && bounds.is_none()
                 && super::pop_in::try_start(reactor, space, wid, txid, target_frame);
-            let app_state = &reactor.app_manager.apps[&wid.pid];
+            let Some(app_state) = reactor.app_manager.apps.get(&wid.pid) else {
+                continue;
+            };
             if popping_in {
                 anim.mark_handled(wid);
                 popping.get_or_insert(wid);

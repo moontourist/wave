@@ -230,9 +230,12 @@ impl StackLine {
             }
             let id = (space_id, info.node_id);
             self.update_native_group(info);
-            let group = self.native_groups.get_mut(&id).unwrap();
-            group.fullscreen = space_has_fullscreen;
-            self.place(&self.native_groups[&id], reorder);
+            if let Some(group) = self.native_groups.get_mut(&id) {
+                group.fullscreen = space_has_fullscreen;
+            }
+            if let Some(group) = self.native_groups.get(&id) {
+                self.place(group, reorder);
+            }
         }
         self.prune_icons();
     }
@@ -316,21 +319,23 @@ impl StackLine {
                         && r.size.height > 0.0
                 })
             });
-        let anchor = group.info.anchor();
-        if !self.is_enabled() || group.fullscreen || frame.is_none() || anchor.is_none() {
+        let (true, Some(frame), Some(anchor)) = (
+            self.is_enabled() && !group.fullscreen,
+            frame,
+            group.info.anchor(),
+        ) else {
             if group.bar.is_visible() {
                 group.bar.hide();
             }
             group.ordered_anchor.set(None);
             return;
-        }
-        let frame = frame.unwrap();
+        };
         if group.placed_frame.replace(Some(frame)) != Some(frame) {
             group.bar.set_frame(frame);
         }
-        if reorder || group.ordered_anchor.get() != anchor || !group.bar.is_visible() {
-            group.bar.show_above(anchor.unwrap().as_u32() as isize);
-            group.ordered_anchor.set(anchor);
+        if reorder || group.ordered_anchor.get() != Some(anchor) || !group.bar.is_visible() {
+            group.bar.show_above(anchor.as_u32() as isize);
+            group.ordered_anchor.set(Some(anchor));
         }
     }
 
@@ -427,8 +432,8 @@ impl StackLine {
             group.info = info;
         } else {
             let generation = self.next_generation;
-            self.next_generation =
-                self.next_generation.checked_add(1).expect("panel generation exhausted");
+            // A u64 counter of panels created in one session never wraps in practice.
+            self.next_generation = self.next_generation.wrapping_add(1);
             let ui = cgs::Ui::new(self.mtm);
             let tx = self.tx.clone();
             let shown = Rc::new(RefCell::new(Vec::new()));
@@ -463,8 +468,9 @@ impl StackLine {
         if tabs_changed {
             self.refresh_native_tabs(node);
         } else if selection_changed {
-            let group = &self.native_groups[&node];
-            group.bar.set_selected_index(group.info.selected_index);
+            if let Some(group) = self.native_groups.get(&node) {
+                group.bar.set_selected_index(group.info.selected_index);
+            }
         }
     }
 }

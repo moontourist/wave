@@ -383,7 +383,10 @@ impl Input {
     }
 
     pub async fn run(mut self) {
-        let mut requests_rx = self.requests_rx.take().unwrap();
+        let Some(mut requests_rx) = self.requests_rx.take() else {
+            tracing::error!("input actor started twice");
+            return;
+        };
         let (recovery_tx, mut recovery_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let this = Box::new(self);
@@ -514,7 +517,8 @@ impl Input {
                         relative_point(event::current_cursor_location().ok(), from, to)
                     }
                     Request::Warp(point) => point,
-                    _ => unreachable!(),
+                    // The enclosing arm admits only the two warp requests.
+                    _ => return,
                 };
                 if let Err(e) = event::warp_mouse(point) {
                     warn!("Failed to warp mouse: {e:?}");
@@ -1543,7 +1547,7 @@ fn horizontal_warp_target(screens: &[CGRect], point: CGPoint, delta_x: i64) -> O
             && point.y >= screen.origin.y
             && point.y < screen.origin.y + screen.size.height
     })?;
-    let source = screens[index];
+    let source = *screens.get(index)?;
     let right = delta_x > 0;
     if right && point.x < source.origin.x + source.size.width - WARP_EDGE_THRESHOLD
         || !right && point.x > source.origin.x + WARP_EDGE_THRESHOLD

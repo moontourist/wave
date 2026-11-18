@@ -148,8 +148,8 @@ impl RaiseManager {
             }
             _ => false,
         };
-        if new_focus && self.active_sequence.as_ref().is_some_and(|s| s.focusing) {
-            self.active_sequence.take().unwrap().raise_token.cancel();
+        if new_focus && let Some(sequence) = self.active_sequence.take_if(|s| s.focusing) {
+            sequence.raise_token.cancel();
         }
         match msg {
             Event::MouseRaisesCancelled => {}
@@ -263,14 +263,14 @@ impl RaiseManager {
             let Some(&WindowId { pid, .. }) = wids.first() else {
                 continue;
             };
-            if let Some(focus_idx) =
-                wids.iter().position(|wid| matches!(focus_window, Some((w, _)) if w == *wid))
+            if let Some((focus_wid, focus_point)) = focus_window
+                && let Some(focus_idx) = wids.iter().position(|wid| *wid == focus_wid)
             {
                 // Make sure focus window is always last.
                 let last = wids.len() - 1;
                 wids.swap(focus_idx, last);
                 if focus_batch.is_none() {
-                    focus_batch = Some((pid, wids, focus_window.unwrap().1, focus_quiet));
+                    focus_batch = Some((pid, wids, focus_point, focus_quiet));
                     continue;
                 }
             }

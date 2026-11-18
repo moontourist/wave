@@ -2588,8 +2588,13 @@ impl LayoutEngine {
             | LayoutCommand::MoveStackTab { .. } => EventResponse::default(),
 
             LayoutCommand::SwapWindows(a, b) => {
-                let a = crate::actor::app::WindowId::new(a.pid, a.idx);
-                let b = crate::actor::app::WindowId::new(b.pid, b.idx);
+                use crate::actor::app::WindowId;
+                // These ids come from IPC; a zero index names no window.
+                let (Some(a), Some(b)) =
+                    (WindowId::try_new(a.pid, a.idx), WindowId::try_new(b.pid, b.idx))
+                else {
+                    return EventResponse::default();
+                };
                 self.forget_native_layout_for_window_id(a);
                 self.forget_native_layout_for_window_id(b);
                 let _ = self.workspaces[workspace_id].layout_system.swap_windows(layout, a, b);

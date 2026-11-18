@@ -36,7 +36,7 @@ fn attach_target_frames(
     window_frames: &HashMap<WindowId, Rect>,
 ) -> Option<Rect> {
     if let Some(window) = node.window_id {
-        node.frame = *window_frames.get(&WindowId::new(window.pid, window.idx))?;
+        node.frame = *window_frames.get(&WindowId::try_new(window.pid, window.idx)?)?;
         return Some(node.frame);
     }
 
@@ -65,10 +65,10 @@ fn logical_window_positions(tree: &ContainerTreeNode) -> HashMap<WindowId, Windo
         .flat_map(|(column, node)| {
             node.children.iter().enumerate().filter_map(move |(row, node)| {
                 let window = node.window_id?;
-                Some((WindowId::new(window.pid, window.idx), WindowLayoutPosition {
-                    column,
-                    row,
-                }))
+                Some((
+                    WindowId::try_new(window.pid, window.idx)?,
+                    WindowLayoutPosition { column, row },
+                ))
             })
         })
         .collect()

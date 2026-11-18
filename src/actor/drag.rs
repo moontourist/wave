@@ -3,8 +3,8 @@
 //! The event tap only publishes the latest pointer value. Geometry and drag
 //! semantics are consumed by the drag actor/reactor bridge, never in the tap.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use objc2_core_foundation::{CGPoint, CGRect};
 
@@ -34,7 +34,7 @@ pub struct DragMotion {
 /// Latest-value transport with at most one outstanding actor wake.
 #[derive(Debug, Default)]
 struct DragMotionState {
-    latest: Mutex<Option<DragMotion>>,
+    latest: parking_lot::Mutex<Option<DragMotion>>,
     wake_queued: AtomicBool,
 }
 
@@ -44,14 +44,14 @@ pub struct DragMotionPublisher(Arc<DragMotionState>);
 impl DragMotionPublisher {
     /// Publish a sample. Returns true exactly when the caller must enqueue a wake.
     pub fn publish(&self, motion: DragMotion) -> bool {
-        *self.0.latest.lock().expect("drag motion mutex poisoned") = Some(motion);
+        *self.0.latest.lock() = Some(motion);
         !self.0.wake_queued.swap(true, Ordering::AcqRel)
     }
 
     /// Consume the newest sample and re-arm publication atomically with respect
     /// to the value mutex, so a concurrent publication cannot be stranded.
     pub fn take_latest(&self) -> Option<DragMotion> {
-        let mut latest = self.0.latest.lock().expect("drag motion mutex poisoned");
+        let mut latest = self.0.latest.lock();
         let motion = latest.take();
         self.0.wake_queued.store(false, Ordering::Release);
         motion
@@ -432,16 +432,13 @@ impl DragActor {
         if session.kind == DragKind::ModifierMove {
             let dx = motion.point.x - session.anchor_point.x;
             let dy = motion.point.y - session.anchor_point.y;
-            session.source.last_frame = match session.kind {
-                DragKind::ModifierMove => CGRect::new(
-                    CGPoint::new(
-                        session.source.origin_frame.origin.x + dx,
-                        session.source.origin_frame.origin.y + dy,
-                    ),
-                    session.source.origin_frame.size,
+            session.source.last_frame = CGRect::new(
+                CGPoint::new(
+                    session.source.origin_frame.origin.x + dx,
+                    session.source.origin_frame.origin.y + dy,
                 ),
-                DragKind::NativeMove | DragKind::NativeResize => unreachable!(),
-            };
+                session.source.origin_frame.size,
+            );
         }
         let next = if session.kind == DragKind::NativeResize
             || !session.source.tiled
@@ -691,12 +688,15 @@ fn hit_test_available(
     {
         if let (None, WindowDropAction::Insert(direction)) =
             (scene.action_override, resolve_action(zone, center))
-            && !scene.source_neighbors[match direction {
-                Direction::Left => 0,
-                Direction::Right => 1,
-                Direction::Up => 2,
-                Direction::Down => 3,
-            }]
+            && !{
+                let [left, right, up, down] = scene.source_neighbors;
+                match direction {
+                    Direction::Left => left,
+                    Direction::Right => right,
+                    Direction::Up => up,
+                    Direction::Down => down,
+                }
+            }
             && !unavailable.contains(&(source.window, zone, WindowDropAction::Move(direction)))
         {
             return Some(DropIntent {

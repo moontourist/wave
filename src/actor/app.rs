@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::num::NonZeroU32;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -210,11 +210,28 @@ impl<'de> serde::de::Deserialize<'de> for WindowId {
 }
 
 impl WindowId {
+    /// Builds an id from a literal index. Ids from outside input go through [`Self::try_new`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is zero.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "callers pass literal nonzero indexes; outside input uses try_new"
+    )]
     pub fn new(pid: pid_t, idx: u32) -> WindowId {
         WindowId {
             pid,
             idx: NonZeroU32::new(idx).unwrap(),
         }
+    }
+
+    /// Builds an id, or `None` when `idx` is zero.
+    pub fn try_new(pid: pid_t, idx: u32) -> Option<WindowId> {
+        Some(WindowId {
+            pid,
+            idx: NonZeroU32::new(idx)?,
+        })
     }
 
     /// Parse a WindowId from its string representation (format: "WindowId { pid: 123, idx: 456 }")
@@ -347,7 +364,7 @@ struct InteractiveFrames {
 ///
 /// This is public only because it is carried by the public [`Request`] enum;
 /// it is not domain state or a general-purpose queue.
-pub struct InteractiveFrameQueue(Arc<Mutex<InteractiveFrames>>);
+pub struct InteractiveFrameQueue(Arc<parking_lot::Mutex<InteractiveFrames>>);
 
 impl Debug for InteractiveFrameQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -360,7 +377,7 @@ impl InteractiveFrameQueue {
         &self,
         mut consume: impl FnMut(WindowId, CGRect, bool, TransactionId, FrameSource, u64, FrameAuthority),
     ) {
-        let mut frames = self.0.lock().unwrap();
+        let mut frames = self.0.lock();
         frames.wake_pending = false;
         for (wid, (frame, set_size, txid, source, sequence, authority)) in frames.latest.drain() {
             if authority.is_current() {
@@ -380,8 +397,8 @@ mod interactive_frame_tests {
         let window = WindowId::new(1, 1);
         let first = CGRect::new(CGPoint::new(1.0, 0.0), Default::default());
         let latest = CGRect::new(CGPoint::new(2.0, 0.0), Default::default());
-        handle.interactive_frames.0.lock().unwrap().latest.reserve(8);
-        let capacity = handle.interactive_frames.0.lock().unwrap().latest.capacity();
+        handle.interactive_frames.0.lock().latest.reserve(8);
+        let capacity = handle.interactive_frames.0.lock().latest.capacity();
 
         handle.send_interactive_frame(
             window,
@@ -404,7 +421,7 @@ mod interactive_frame_tests {
         let mut received = Vec::new();
         queue.drain_with(|wid, frame, set_size, _, _, _, _| received.push((wid, frame, set_size)));
         assert_eq!(received, vec![(window, latest, true)]);
-        assert_eq!(queue.0.lock().unwrap().latest.capacity(), capacity);
+        assert_eq!(queue.0.lock().latest.capacity(), capacity);
 
         handle.send_interactive_frame(
             window,
@@ -442,7 +459,7 @@ mod interactive_frame_tests {
             TransactionId::default(),
             FrameSource::Viewport,
         );
-        let pending = handle.interactive_frames.0.lock().unwrap();
+        let pending = handle.interactive_frames.0.lock();
         assert!(!pending.wake_pending);
         assert!(pending.latest.is_empty(), "shutdown must discard pending frames");
     }
@@ -517,7 +534,7 @@ impl AppThreadHandle {
     }
 
     pub(crate) fn cancel_interactive_frame(&self, wid: WindowId) -> u64 {
-        let mut frames = self.interactive_frames.0.lock().unwrap();
+        let mut frames = self.interactive_frames.0.lock();
         if self.frame_authority.is_current() {
             frames.latest.remove(&wid);
         }
@@ -551,7 +568,7 @@ impl AppThreadHandle {
         &self,
         frames: impl IntoIterator<Item = (WindowId, CGRect, bool, TransactionId, FrameSource)>,
     ) {
-        let mut pending = self.interactive_frames.0.lock().unwrap();
+        let mut pending = self.interactive_frames.0.lock();
         if !self.frame_authority.is_current() {
             return;
         }
@@ -1598,7 +1615,8 @@ impl State {
                 let (wid, through) = match request {
                     Request::EndWindowAnimation(wid, _) => (wid, None),
                     Request::CancelWindowAnimation(wid, through, _) => (wid, Some(through)),
-                    _ => unreachable!(),
+                    // The arm pattern admits only the two requests above.
+                    _ => return Ok(false),
                 };
                 // An old presenter may retire after a replacement has begun.
                 // It can clean up its own lease, never the replacement's lease.
@@ -2425,7 +2443,9 @@ impl State {
             return;
         };
         if old_elem == elem {
-            self.windows.get_mut(&wid).unwrap().last_known_frame = info.frame;
+            if let Some(window) = self.windows.get_mut(&wid) {
+                window.last_known_frame = info.frame;
+            }
             return;
         }
 
@@ -2650,12 +2670,16 @@ impl State {
     fn send_event(&self, event: Event) { self.events_tx.send(event); }
 
     fn window(&self, wid: WindowId) -> Result<&AppWindowState, AxError> {
-        assert_eq!(wid.pid, self.pid);
+        if wid.pid != self.pid {
+            return Err(AxError::NotFound);
+        }
         self.windows.get(&wid).ok_or(AxError::NotFound)
     }
 
     fn window_mut(&mut self, wid: WindowId) -> Result<&mut AppWindowState, AxError> {
-        assert_eq!(wid.pid, self.pid);
+        if wid.pid != self.pid {
+            return Err(AxError::NotFound);
+        }
         self.windows.get_mut(&wid).ok_or(AxError::NotFound)
     }
 
