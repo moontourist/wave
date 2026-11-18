@@ -10,7 +10,7 @@ Five goals from Matt (2026-11-18), done in batches from easiest to hardest:
 
 Order: Phase 0 (setup) → 1 rename → 2 README → 3 borders → 4 accordion. Memory (goal 4) is a check inside every phase, not a phase of its own.
 
-Status: Phases 0–1 done and 2.1 done. 1.7, 2.2 and 2.3 wait for one screen session with Matt; that session also runs the 20-window-move memory test from 0.2.
+Status: Phases 0–2 done. Next: Phase 2.5 (give memory back), then Phase 3.
 
 ---
 
@@ -75,7 +75,7 @@ Scope today: 1,147 mentions in 117 files, 22 file names, 4 crates, 2 programs.
   - `NOTICE`.
   - The README's credits line.
   - Those stay, because removing them would break the license.
-- [ ] **1.7 Switch Matt's machine over (needs Matt):**
+- [x] **1.7 Switch Matt's machine over (needs Matt):**
   - Stop and uninstall the rift service.
   - Copy the config to `~/.config/wave/`.
   - Install the wave service.
@@ -104,12 +104,37 @@ Memory: no change expected; confirm after 1.7.
 ## Phase 2: README and roadmap (small, needs Matt's screen once)
 
 - [x] **2.1 Roadmap:** a "Roadmap" section in the README with done / in progress / next, starting with this plan's phases. It's kept current at the end of every phase.
-- [ ] **2.2 Screenshots:**
+- [x] **2.2 Screenshots:**
   - A tiled workspace, the workspace overview, the menu bar menu, and a window opening mid-animation.
   - Taken with `screencapture` when Matt says it's a good time. They're saved as PNGs in `assets/screenshots/`, cropped and kept small.
-- [ ] **2.3 README pass:** add the screenshots and the roadmap, and recheck every command against the renamed programs.
+- [x] **2.3 README pass:** add the screenshots and the roadmap, and recheck every command against the renamed programs.
 
 Phases 3 and 4 each end by adding their own screenshot and updating the roadmap.
+
+### Phase 2 results, with the 1.7 switch-over
+
+- **Switch-over:**
+  - wave runs as `com.moontourist.wave` with Accessibility and Screen Recording access.
+  - Config and `toggle-gaps.sh` are copied to `~/.config/wave/`, with the fork and Homebrew comments removed.
+  - The rift service is uninstalled.
+  - Matt's weekly updater, which ran `brew upgrade rift` and `rift service restart`, is disabled by renaming its plist to `~/Library/LaunchAgents/com.matt.rift-update.plist.disabled`.
+- **Memory** (completes 0.2), measured on wave before Screen Recording was granted:
+
+  | Run | Footprint |
+  |---|---|
+  | After startup | 18 MB |
+  | 20 animated moves | 18 MB |
+  | 20 instant moves | 18 MB (19 MB peak) |
+
+- **Memory problem found:** with Screen Recording on, after one overview and one open animation, wave sits at **152 MB** (211 MB peak). That is two buffers of about 63 MB each, one CoreAnimation and one Malloc Large, which is exactly one 7680×2160 display image each. They stay after both are closed. See Phase 2.5.
+- **Screenshots** are in `assets/screenshots/`: tiled, opening, overview (cropped to the test workspace) and menu. They were taken on workspace 6 with Finder test windows, which were closed afterward.
+- **README:** the screenshots and the roadmap are added. The service commands are corrected to `wave service ...`, since they live on the `wave` binary, not `wave-cli`.
+
+## Phase 2.5: Give memory back (small, found in Phase 2)
+
+- [ ] **2.5.1 Find the owner** of each ~63 MB buffer: the overview's display-sized overlay or capture, or the open animation's capture. Measure each one alone, the overview first.
+- [ ] **2.5.2 Free it after use:** release the capture and drop the overlay's layer contents when the overview closes and when the open animation finishes. Keep only what the next use really needs.
+- [ ] **2.5.3 Measure:** after one overview and one open animation, wave returns to about its idle footprint (target under 30 MB).
 
 ## Phase 3: Window borders (large)
 
