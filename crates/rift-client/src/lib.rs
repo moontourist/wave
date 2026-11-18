@@ -82,6 +82,8 @@ pub enum ClientError {
     Server(Value),
     #[error("Rift returned an unknown response shape")]
     UnknownResponse,
+    #[error("subscription event queue is poisoned by a panicked thread")]
+    Poisoned,
 }
 
 /// A handle for issuing synchronous requests to the running Rift process.
@@ -382,8 +384,13 @@ impl RiftMachSubscription {
 
     /// Blocks until the next event arrives and decodes it into the requested
     /// type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::Poisoned`] if another thread panicked while holding
+    /// the queued events, and transport or decode errors from the Mach receive.
     pub fn recv_event_as<T: DeserializeOwned>(&self) -> Result<T, ClientError> {
-        let pending = self.pending.lock().expect("subscription pending events").pop_front();
+        let pending = self.pending.lock().map_err(|_| ClientError::Poisoned)?.pop_front();
         let payload = match pending {
             Some(payload) => payload,
             None => unsafe { receive_message(self.reply_port.name, None)?.1 },

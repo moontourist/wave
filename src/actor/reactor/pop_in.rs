@@ -90,18 +90,18 @@ struct Popping {
 }
 
 impl PopIns {
-    pub fn note_created(&mut self, wid: WindowId) {
+    pub(super) fn note_created(&mut self, wid: WindowId) {
         self.candidates.insert(wid.idx, Instant::now());
     }
 
-    pub fn note_appeared(&mut self, wsid: WindowServerId) {
+    pub(super) fn note_appeared(&mut self, wsid: WindowServerId) {
         if let Some(idx) = wsid.as_nonzero() {
             self.candidates.insert(idx, Instant::now());
         }
     }
 
     /// True once for a window whose first layout follows its creation.
-    pub fn take_candidate(&mut self, wid: WindowId) -> bool {
+    pub(super) fn take_candidate(&mut self, wid: WindowId) -> bool {
         let now = Instant::now();
         self.candidates
             .retain(|_, created| now.duration_since(*created) < CANDIDATE_TTL);
@@ -109,16 +109,16 @@ impl PopIns {
     }
 
     /// True while a pop-in owns `wid`'s frame; layout passes leave it alone.
-    pub fn is_active(&self, wid: WindowId) -> bool {
+    pub(super) fn is_active(&self, wid: WindowId) -> bool {
         self.active.get(&wid).is_some_and(|p| !*p.cancelled.lock())
     }
 
     /// True if `wid` is popping into exactly `target`.
-    pub fn is_heading_to(&self, wid: WindowId, target: CGRect) -> bool {
+    pub(super) fn is_heading_to(&self, wid: WindowId, target: CGRect) -> bool {
         self.active.get(&wid).is_some_and(|p| p.target.same_as(target))
     }
 
-    pub fn begin(&mut self, wid: WindowId, target: CGRect) -> Arc<Mutex<bool>> {
+    pub(super) fn begin(&mut self, wid: WindowId, target: CGRect) -> Arc<Mutex<bool>> {
         let cancelled = Arc::new(Mutex::new(false));
         self.active.insert(wid, Popping {
             target,
@@ -129,17 +129,19 @@ impl PopIns {
 
     /// Hands `wid` back to the caller, which must place it: the picture goes
     /// away within one poll and the pop-in no longer moves the window.
-    pub fn cancel(&mut self, wid: WindowId) {
+    pub(super) fn cancel(&mut self, wid: WindowId) {
         if let Some(popping) = self.active.get(&wid) {
             *popping.cancelled.lock() = true;
         }
     }
 
-    pub fn hold(&mut self, wid: WindowId, anim: Animation) { self.held = Some((wid, anim)); }
+    pub(super) fn hold(&mut self, wid: WindowId, anim: Animation) { self.held = Some((wid, anim)); }
 
-    pub fn take_held(&mut self) -> Option<Animation> { self.held.take().map(|(_, anim)| anim) }
+    pub(super) fn take_held(&mut self) -> Option<Animation> {
+        self.held.take().map(|(_, anim)| anim)
+    }
 
-    pub fn take_held_for(&mut self, wid: WindowId) -> Option<Animation> {
+    pub(super) fn take_held_for(&mut self, wid: WindowId) -> Option<Animation> {
         if self.held.as_ref().is_some_and(|(w, _)| *w == wid) {
             self.take_held()
         } else {
@@ -148,7 +150,7 @@ impl PopIns {
     }
 
     /// True if `wid` was popping in, so the layout should be applied again.
-    pub fn finish(&mut self, wid: WindowId) -> bool { self.active.remove(&wid).is_some() }
+    pub(super) fn finish(&mut self, wid: WindowId) -> bool { self.active.remove(&wid).is_some() }
 }
 
 /// Starts a pop-in for `wid` if it just opened and can pop in; otherwise the
@@ -222,7 +224,7 @@ pub(super) struct Job {
 
 impl Job {
     // ponytail: one thread per opening window; fine at human window-opening rates.
-    pub fn spawn(self) {
+    pub(super) fn spawn(self) {
         let fallback = self.clone();
         let spawned = thread::Builder::new().name("rift-pop-in".into()).spawn(move || self.run());
         if let Err(error) = spawned {
@@ -414,7 +416,9 @@ fn bezier(easing: AnimationEasing) -> [f32; 4] {
 
 fn capture(wsid: WindowServerId, options: u32) -> Option<CFRetained<CGImage>> {
     let id = wsid.as_u32();
+    // SAFETY: `id` is one valid u32 for the duration of the call, matching the count of 1.
     let images = unsafe { SLSHWCaptureWindowList(*G_CONNECTION, &id, 1, options) };
+    // SAFETY: the call returns a +1 CFArray of CGImages (a Copy-rule function), or null.
     let images: CFRetained<CFArray<CGImage>> =
         unsafe { CFRetained::from_raw(NonNull::new(images)?) };
     images.iter().next()
@@ -458,6 +462,8 @@ impl Overlay {
             picture.setAnchorPoint(CGPoint::ZERO);
             picture.setFrame(local(spot, frame));
             picture.setContentsScale(CGImage::width(Some(image)) as f64 / spot.size.width);
+            // SAFETY: a CGImage is a CF type toll-free bridged to an Objective-C object, which
+            // is what CALayer.contents takes; the layer retains it.
             unsafe { picture.setContents(Some(&*(image as *const CGImage as *const AnyObject))) };
             root.addSublayer(&picture);
         });
@@ -515,7 +521,7 @@ pub(super) struct Closer {
 }
 
 impl Closer {
-    pub fn spawn() -> Self {
+    pub(super) fn spawn() -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
         let spawned =
             thread::Builder::new().name("rift-close".into()).spawn(move || run_closer(rx));
@@ -526,7 +532,7 @@ impl Closer {
     }
 
     /// Refreshes the picture when the focused window or its frame changes.
-    pub fn watch(&mut self, wid: WindowId, frame: CGRect) {
+    pub(super) fn watch(&mut self, wid: WindowId, frame: CGRect) {
         if self.watched.is_some_and(|(w, f)| w == wid && f.same_as(frame)) {
             return;
         }
@@ -535,7 +541,7 @@ impl Closer {
     }
 
     /// Shrinks `wid`'s picture away from `frame`, if the picture is of `wid`.
-    pub fn closed(
+    pub(super) fn closed(
         &mut self,
         wid: WindowId,
         frame: CGRect,
@@ -549,7 +555,7 @@ impl Closer {
     }
 
     /// The neighbors started sliding: a closed window's picture now shrinks with them.
-    pub fn slide_started(&self) { _ = self.tx.send(CloseMsg::SlideStarted); }
+    pub(super) fn slide_started(&self) { _ = self.tx.send(CloseMsg::SlideStarted); }
 }
 
 fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
@@ -582,7 +588,9 @@ fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
                 let now = Instant::now();
                 if covering.as_ref().is_some_and(|c| c.deadline <= now) {
                     debug!("close slide never came; shrinking anyway");
-                    covering.take().map(Cover::shrink);
+                    if let Some(cover) = covering.take() {
+                        cover.shrink();
+                    }
                 }
                 if let Some((wid, _)) = pending.take_if(|(_, at)| *at <= now) {
                     let wsid = WindowServerId::new(wid.idx.get());
@@ -596,7 +604,9 @@ fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
             Ok(CloseMsg::Watch(wid)) => pending = Some((wid, Instant::now() + WATCH_DEBOUNCE)),
             Ok(CloseMsg::Closed { wid, frame, duration, easing }) => {
                 pending.take_if(|(w, _)| *w == wid);
-                covering.take().map(Cover::shrink);
+                if let Some(cover) = covering.take() {
+                    cover.shrink();
+                }
                 match picture.take_if(|(w, _)| *w == wid) {
                     Some((_, image)) => covering = Cover::new(frame, &image, duration, easing),
                     None => debug!(?wid, "close not animated: no picture of this window"),

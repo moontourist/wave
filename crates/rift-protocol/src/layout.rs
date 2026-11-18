@@ -1,4 +1,5 @@
 use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -65,17 +66,40 @@ impl Direction {
     }
 }
 
-impl From<String> for Direction {
-    fn from(value: String) -> Self {
-        match value.as_str() {
-            "left" => Self::Left,
-            "right" => Self::Right,
-            "up" => Self::Up,
-            "down" => Self::Down,
-            _ => panic!("Invalid direction string: {value}"),
+impl FromStr for Direction {
+    type Err = ParseDirectionError;
+
+    /// Parses the lowercase names used on the wire: `left`, `right`, `up`, `down`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseDirectionError`] holding the input when it is not one of those names.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            "up" => Ok(Self::Up),
+            "down" => Ok(Self::Down),
+            _ => Err(ParseDirectionError(value.to_owned())),
         }
     }
 }
+
+/// A string that names no [`Direction`]; holds the rejected input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseDirectionError(pub String);
+
+impl fmt::Display for ParseDirectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "invalid direction `{}`, expected left, right, up or down",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ParseDirectionError {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -164,5 +188,28 @@ impl fmt::Display for LayoutMode {
             Self::Scrolling => "scrolling",
             Self::Floating => "floating",
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direction_parses_wire_names_and_rejects_others() {
+        for direction in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
+            let name = serde_json::to_value(direction).unwrap();
+            let name = name.as_str().unwrap();
+            assert_eq!(name.parse::<Direction>(), Ok(direction), "input {name:?}");
+        }
+        assert_eq!(
+            "north".parse::<Direction>(),
+            Err(ParseDirectionError("north".to_owned()))
+        );
     }
 }

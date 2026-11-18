@@ -19,7 +19,8 @@ pub use commands::{
 };
 pub use events::{EventKind, RiftEvent, StackInfo, WorkspaceId};
 pub use layout::{
-    Direction, DirectionalDistance, LayoutKind, LayoutMode, Orientation, ResizeOrientation,
+    Direction, DirectionalDistance, LayoutKind, LayoutMode, Orientation, ParseDirectionError,
+    ResizeOrientation,
 };
 pub use queries::{
     ApplicationData, ContainerNodeType, ContainerTreeNode, DisplayData, LayoutStateData, Point,

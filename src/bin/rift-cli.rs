@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::{self};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use rift_protocol::{EventKind, RiftRequest, RiftResponse};
+use rift_protocol::{EventKind, ParseDirectionError, RiftRequest, RiftResponse};
 use rift_wm::actor::app::WindowId as InternalWindowId;
 use rift_wm::actor::reactor::{self, DisplaySelector};
 use rift_wm::common::config::{LayoutMode, WorkspaceSelector};
@@ -973,14 +973,20 @@ fn map_layout_command(cmd: LayoutCommands) -> Result<CliCommand, String> {
     match cmd {
         LayoutCommands::Ascend => Ok(CliCommand::Reactor(reactor::Command::Layout(LC::Ascend))),
         LayoutCommands::Descend => Ok(CliCommand::Reactor(reactor::Command::Layout(LC::Descend))),
-        LayoutCommands::MoveNode { direction } => Ok(CliCommand::Reactor(
-            reactor::Command::Layout(LC::MoveNode(direction.into())),
-        )),
-        LayoutCommands::JoinWindow { direction } => Ok(CliCommand::Reactor(
-            reactor::Command::Layout(LC::JoinWindow(direction.into())),
-        )),
+        LayoutCommands::MoveNode { direction } => {
+            Ok(CliCommand::Reactor(reactor::Command::Layout(LC::MoveNode(
+                direction.parse().map_err(|e: ParseDirectionError| e.to_string())?,
+            ))))
+        }
+        LayoutCommands::JoinWindow { direction } => {
+            Ok(CliCommand::Reactor(reactor::Command::Layout(LC::JoinWindow(
+                direction.parse().map_err(|e: ParseDirectionError| e.to_string())?,
+            ))))
+        }
         LayoutCommands::ConsumeOrExpelWindow { direction } => Ok(CliCommand::Reactor(
-            reactor::Command::Layout(LC::ConsumeOrExpelWindow(direction.into())),
+            reactor::Command::Layout(LC::ConsumeOrExpelWindow(
+                direction.parse().map_err(|e: ParseDirectionError| e.to_string())?,
+            )),
         )),
         LayoutCommands::ToggleStack => {
             Ok(CliCommand::Reactor(reactor::Command::Layout(LC::ToggleStack)))

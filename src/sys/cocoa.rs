@@ -38,7 +38,11 @@ pub(super) struct EventLoopWaker {
     stats: EventLoopStats,
 }
 
+// SAFETY: `app` points at the shared NSApplication, a process singleton that is never
+// deallocated, so the pointer outlives any waker clone. Other threads only call `post_wake`, whose
+// `postEvent:atStart:` AppKit documents as safe from any thread; `pending` is atomic.
 unsafe impl Send for EventLoopWaker {}
+// SAFETY: as for `Send`; `&self` methods touch only the atomic latch and `postEvent`.
 unsafe impl Sync for EventLoopWaker {}
 
 impl EventLoopWaker {

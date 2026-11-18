@@ -164,9 +164,6 @@ pub struct CarbonListener {
     ctx: *mut c_void,
 }
 
-unsafe impl Send for CarbonListener {}
-unsafe impl Sync for CarbonListener {}
-
 impl std::fmt::Debug for CarbonListener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CarbonListener")

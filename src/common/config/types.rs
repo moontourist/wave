@@ -472,9 +472,6 @@ pub struct Config {
 
 pub type BindingModeSpecs = Vec<(String, Vec<(String, WmCommand)>)>;
 
-unsafe impl Send for Config {}
-unsafe impl Sync for Config {}
-
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, ConfigSchema)]
 #[serde(deny_unknown_fields)]
 #[setting(group = "general")]
