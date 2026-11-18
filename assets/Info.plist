@@ -6,6 +6,8 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>wave</string>
+	<key>CFBundleIconFile</key>
+	<string>wave</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.moontourist.wave</string>
 	<key>CFBundleInfoDictionaryVersion</key>
