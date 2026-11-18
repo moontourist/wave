@@ -39,6 +39,9 @@ const SECTIONS: [&str; 7] = [
 ];
 const OTHER: usize = 6;
 
+/// The title of a command section; empty for an index outside [`SECTIONS`].
+fn section_title(index: usize) -> &'static str { SECTIONS.get(index).copied().unwrap_or_default() }
+
 fn inline_message(ui: &Ui) -> Rc<ValidationMessage> { Style::validation(ui) }
 
 fn key_glyph(key: &str) -> &str {
@@ -184,7 +187,7 @@ impl RowControls {
     fn present(&self, row: &Row) {
         self.divider.set_hidden(row.divider_hidden.get());
         self.name.set_text(if row.starts_action.get() {
-            template(&row.command).map_or("Custom command", |i| actions()[i].1)
+            action_for(&row.command).map_or("Custom command", |action| action.1)
         } else {
             ""
         });
@@ -325,7 +328,7 @@ impl Shortcuts {
         };
         let content = Style::popover(
             &self.ui,
-            template(&command).map_or("Command options", |i| actions()[i].1),
+            action_for(&command).map_or("Command options", |action| action.1),
             control,
             raw_parameters(&command) || matches!(command, WmCommand::Wm(WmCmd::Exec(_))),
         );
@@ -576,7 +579,7 @@ impl Shortcuts {
             let draft = draft.clone();
             Rc::new(move |cmd| *draft.borrow_mut() = cmd)
         };
-        let action_name = template(&command).map_or("Custom command", |i| actions()[i].1);
+        let action_name = action_for(&command).map_or("Custom command", |action| action.1);
         let name = Rc::new(Style::name(&ui, action_name));
         compressible(&*name);
         let parameter: Option<Box<dyn NativeView>> = if simple_parameter(&command) {
@@ -759,7 +762,7 @@ impl Shortcuts {
         shortcut: String,
         source: &ConfigSource,
     ) -> Row {
-        let section = template(&command).map_or(OTHER, |i| actions()[i].0);
+        let section = action_for(&command).map_or(OTHER, |action| action.0);
         let key = match &id {
             Id::Bound(key) => Some(key.as_str()),
             _ => None,
@@ -772,7 +775,7 @@ impl Shortcuts {
             "{title} {shortcut} {options} {} {} {} {}",
             key.unwrap_or_default(),
             hotkey.as_ref().map(ToString::to_string).unwrap_or_default(),
-            SECTIONS[section],
+            section_title(section),
             toml_text(&command)
         ));
         Row {
@@ -946,7 +949,7 @@ impl Shortcuts {
         let actions = actions()
             .iter()
             .map(|(group, title, command)| cgs::settings::PickerAction {
-                group: SECTIONS[*group].into(),
+                group: section_title(*group).into(),
                 title: (*title).into(),
                 keywords: search_query(&summary(command, defaults(), &[])),
             })
@@ -956,8 +959,10 @@ impl Shortcuts {
             &ui,
             actions,
             move |index| {
-                if let Some(page) = page.upgrade() {
-                    page.open_editor(self::actions()[index].2.clone());
+                if let Some(page) = page.upgrade()
+                    && let Some((_, _, command)) = self::actions().get(index)
+                {
+                    page.open_editor(command.clone());
                 }
             },
             move || {
@@ -1028,7 +1033,10 @@ impl Shortcuts {
             if picked.replace(i) == i {
                 return;
             }
-            *selected.borrow_mut() = actions()[i].2.clone();
+            let Some((_, _, command)) = actions().get(i) else {
+                return;
+            };
+            *selected.borrow_mut() = command.clone();
             conflict_panel.clear();
             conflict_panel.set_hidden(true);
             report(&conflict_message, &Ok(()));
@@ -1161,7 +1169,7 @@ pub(super) fn keyboard(ui: Ui, model: &Rc<Model>) -> Page {
                 };
                 match item {
                     ShortcutItem::Section(index) => {
-                        Box::new(Style::section(&ui, SECTIONS[*index])) as Box<dyn NativeView>
+                        Box::new(Style::section(&ui, section_title(*index))) as Box<dyn NativeView>
                     }
                     ShortcutItem::Binding(row) => page.realize(row).map_or_else(
                         || Box::new(Label::new(&ui, "")) as Box<dyn NativeView>,

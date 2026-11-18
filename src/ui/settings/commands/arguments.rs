@@ -69,6 +69,11 @@ pub(super) fn template(cmd: &WmCommand) -> Option<usize> {
     actions().iter().position(|(_, _, template)| same_action(template, cmd))
 }
 
+/// The catalog entry `(section, title, template)` that `cmd` instantiates.
+pub(super) fn action_for(cmd: &WmCommand) -> Option<&'static (usize, &'static str, WmCommand)> {
+    actions().iter().find(|(_, _, template)| same_action(template, cmd))
+}
+
 /// The script of a shell invocation, which Settings edits as one line.
 pub(super) fn shell_script(args: &[String]) -> Option<&str> {
     match args {
@@ -196,12 +201,12 @@ pub(super) fn title(cmd: &WmCommand, s: &ConfigSource, displays: &[ScreenInfo]) 
             .collect::<Vec<_>>()
             .join(" → ");
     }
-    let Some(index) = template(cmd) else {
+    let Some((_, name, _)) = action_for(cmd) else {
         return toml_text(cmd);
     };
     match argument(cmd, s, displays) {
-        Some(argument) if !argument.is_empty() => format!("{} {argument}", actions()[index].1),
-        _ => actions()[index].1.into(),
+        Some(argument) if !argument.is_empty() => format!("{name} {argument}"),
+        _ => (*name).into(),
     }
 }
 
@@ -221,7 +226,11 @@ pub(super) fn choice<T: Clone + PartialEq + 'static>(
     let popup = Style::choices(&ui, items.iter().map(|(name, _)| name));
     popup.set_selected(selected);
     let set = set.clone();
-    Box::new(popup.on_change(move |i| set(make(items[i].1.clone()))))
+    Box::new(popup.on_change(move |i| {
+        if let Some((_, value)) = items.get(i) {
+            set(make(value.clone()));
+        }
+    }))
 }
 
 pub(super) fn directions(display: bool) -> Vec<(String, DisplaySelector)> {
@@ -314,7 +323,8 @@ pub(super) fn with_argument(command: &WmCommand, value: Arg) -> WmCommand {
         }
         _ => None,
     }
-    .expect("a generated argument must match its command field")
+    // Controls offer only values of the command's own argument; anything else keeps it.
+    .unwrap_or_else(|| command.clone())
 }
 pub(super) fn simple_parameter(cmd: &WmCommand) -> bool {
     command_argument(cmd).is_some_and(|(_, simple)| simple)
@@ -407,12 +417,12 @@ pub(super) fn parameters(
     error: Weak<ValidationMessage>,
 ) -> Option<Box<dyn NativeView>> {
     let s = model.source.borrow();
-    if let Some((argument @ (Arg::Number(_) | Arg::Integer(_)), _)) = command_argument(cmd) {
-        let (value, integer) = match argument {
-            Arg::Number(v) => (v, false),
-            Arg::Integer(v) => (v as f64, true),
-            _ => unreachable!(),
-        };
+    let numeric = match command_argument(cmd) {
+        Some((Arg::Number(v), _)) => Some((v, false)),
+        Some((Arg::Integer(v), _)) => Some((v as f64, true)),
+        _ => None,
+    };
+    if let Some((value, integer)) = numeric {
         let field = Style::number_field(&ui, value, integer);
         let (command, set) = (cmd.clone(), set.clone());
         let apply = move |v| {
@@ -485,11 +495,18 @@ pub(super) fn parameters(
             )) as Box<dyn NativeView>
         }
         cmd if floating_options(&cmd).is_some() => {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "the match guard just checked that this is Some"
+            )]
             let options = floating_options(&cmd).unwrap();
             let state = Rc::new(RefCell::new(options));
             let (changed, apply) = (state.clone(), set.clone());
             let center_set: Setter = Rc::new(move |command| {
-                changed.borrow_mut().center = floating_options(&command).unwrap().center;
+                let Some(options) = floating_options(&command) else {
+                    return;
+                };
+                changed.borrow_mut().center = options.center;
                 apply(WmCommand::ConfiguredLayout(
                     ConfiguredLayoutCommand::ToggleWindowFloating(*changed.borrow()),
                 ));
@@ -507,13 +524,11 @@ pub(super) fn parameters(
             );
             center.accessibility_label("Floating placement");
             use rift_protocol::{FloatingWindowSize as Size, FloatingWindowSizePreset as Preset};
-            let dimensions = match options.size {
-                Some(size @ Size::Dimensions { .. }) => size,
-                _ => Size::Dimensions { w: 640.0, h: 480.0 },
+            let (w, h) = match options.size {
+                Some(Size::Dimensions { w, h }) => (w, h),
+                _ => (640.0, 480.0),
             };
-            let Size::Dimensions { w, h } = dimensions else {
-                unreachable!()
-            };
+            let dimensions = Size::Dimensions { w, h };
             let edited = state.clone();
             let field = text(
                 &format!("{w} × {h}"),
@@ -521,13 +536,10 @@ pub(super) fn parameters(
                 Box::new(move |value| {
                     let dimensions: Vec<_> = value.split(['x', '×']).map(str::trim).collect();
                     let size = (|| {
-                        if dimensions.len() != 2 {
+                        let [w, h] = dimensions.as_slice() else {
                             return None;
-                        }
-                        let (w, h) = (
-                            dimensions[0].parse::<f64>().ok()?,
-                            dimensions[1].parse::<f64>().ok()?,
-                        );
+                        };
+                        let (w, h) = (w.parse::<f64>().ok()?, h.parse::<f64>().ok()?);
                         (w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0)
                             .then_some(Size::Dimensions { w, h })
                     })()
@@ -543,7 +555,10 @@ pub(super) fn parameters(
             dimensions_row.set_hidden(!matches!(options.size, Some(Size::Dimensions { .. })));
             let (custom, changed, apply) = (dimensions_row.clone(), state, set.clone());
             let size_set: Setter = Rc::new(move |command| {
-                let size = floating_options(&command).unwrap().size;
+                let Some(options) = floating_options(&command) else {
+                    return;
+                };
+                let size = options.size;
                 changed.borrow_mut().size = size;
                 custom.set_hidden(!matches!(size, Some(Size::Dimensions { .. })));
                 apply(WmCommand::ConfiguredLayout(
@@ -575,15 +590,17 @@ pub(super) fn parameters(
         }
 
         command if command_argument(&command).is_some() => {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "the match guard just checked that this is Some"
+            )]
             let (current, _) = command_argument(&command).unwrap();
             let mut items: Vec<(String, Arg)> = match &current {
                 Arg::Direction(_) => directions(false)
                     .into_iter()
-                    .map(|(label, target)| {
-                        let DisplaySelector::Direction(d) = target else {
-                            unreachable!()
-                        };
-                        (label, Arg::Direction(d))
+                    .filter_map(|(label, target)| match target {
+                        DisplaySelector::Direction(d) => Some((label, Arg::Direction(d))),
+                        _ => None,
                     })
                     .collect(),
                 Arg::Orientation(_) => [
@@ -632,7 +649,8 @@ pub(super) fn parameters(
                         )
                     }))
                     .collect(),
-                _ => unreachable!(),
+                // Numeric arguments take the number field above; others offer only `current`.
+                _ => Vec::new(),
             };
             if !items.iter().any(|(_, value)| *value == current) {
                 let label = match &current {
@@ -659,14 +677,17 @@ pub(super) fn parameters(
             Box::new(|command| Ok(wm(WmCmd::Exec(ExecCmd::String(command))))),
         ),
         WmCommand::Wm(WmCmd::Exec(ExecCmd::Array(args))) if shell_script(&args).is_some() => {
-            let script = shell_script(&args).unwrap_or_default().to_string();
+            let [shell, flag, script] = args.as_slice() else {
+                return None;
+            };
+            let (shell, flag) = (shell.clone(), flag.clone());
             text(
-                &script,
+                script,
                 "Shell script",
                 Box::new(move |script| {
                     Ok(wm(WmCmd::Exec(ExecCmd::Array(vec![
-                        args[0].clone(),
-                        args[1].clone(),
+                        shell.clone(),
+                        flag.clone(),
                         script,
                     ]))))
                 }),

@@ -126,6 +126,10 @@ pub fn run(config_path: PathBuf) -> ! {
     }
     let (jobs, queue) = mpsc::channel();
     let worker = messages.clone();
+    #[expect(
+        clippy::expect_used,
+        reason = "Settings can't reach Rift without its IPC thread; the child process exits and the user reopens it"
+    )]
     std::thread::Builder::new()
         .name("settings-ipc".into())
         .spawn(move || serve(queue, worker))
@@ -148,6 +152,10 @@ pub fn run(config_path: PathBuf) -> ! {
     if result != 0 {
         tracing::warn!(error = %std::io::Error::last_os_error(), "Could not name the Settings process");
     }
+    #[expect(
+        clippy::expect_used,
+        reason = "`rift --settings` calls run() from main()"
+    )]
     let mtm = MainThreadMarker::new().expect("Settings runs on the main thread");
     let appkit = super::timing::start();
     let app = NSApplication::sharedApplication(mtm);
@@ -173,10 +181,10 @@ async fn open(
     mut inbox: tokio::sync::mpsc::UnboundedReceiver<Message>,
 ) {
     let snapshot_wait = super::timing::start();
-    let (mut snapshot, mut announced) = (None, 0);
-    while snapshot.is_none() {
+    let mut announced = 0;
+    let snapshot = loop {
         match inbox.recv().await {
-            Some(Message::Source(Ok(source))) => snapshot = Some(source),
+            Some(Message::Source(Ok(source))) => break source,
             Some(Message::Source(Err(error)) | Message::Lost(error)) => {
                 fail(&error);
                 return std::future::pending().await;
@@ -184,9 +192,9 @@ async fn open(
             Some(Message::ConfigChanged(revision)) => announced = announced.max(revision),
             _ => {}
         }
-    }
+    };
     super::timing::finish(snapshot_wait, "snapshot wait after AppKit");
-    let Snapshot { revision, source } = snapshot.unwrap();
+    let Snapshot { revision, source } = snapshot;
     let (requests, mut pending) = unbounded_channel();
     let closed = messages.clone();
     let construction = super::timing::start();
@@ -321,6 +329,10 @@ async fn open(
 fn fail(error: &str) {
     tracing::error!(%error, "Settings cannot reach Rift");
     dispatchr::queue::main().after_f_s(Time::NOW, error.to_owned(), |error| {
+        #[expect(
+            clippy::expect_used,
+            reason = "this block runs on the main dispatch queue"
+        )]
         let ui = Ui::new(MainThreadMarker::new().expect("main queue"));
         Alert::new(&ui, "Rift Settings can’t reach Rift", &error)
             .button("OK")
@@ -438,7 +450,8 @@ impl Session {
             }
             // Runs after windowWillClose returns, rather than dropping AppKit's active delegate.
             Message::Closed => autoreleasepool(|_| drop(self.settings.take())),
-            Message::Lost(_) => unreachable!("handled by the session loop"),
+            // The session loop handles a lost connection before dispatching here.
+            Message::Lost(_) => {}
         }
     }
 
@@ -539,6 +552,10 @@ fn serve(jobs: mpsc::Receiver<Job>, messages: UnboundedSender<Message>) {
         return;
     }
     let events = messages.clone();
+    #[expect(
+        clippy::expect_used,
+        reason = "Settings can't follow Rift's changes without its event thread; the child process exits and the user reopens it"
+    )]
     std::thread::Builder::new()
         .name("settings-events".into())
         .spawn(move || {
