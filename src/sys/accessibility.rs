@@ -25,6 +25,9 @@ const AX_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[inline]
 fn ax_is_trusted() -> bool {
+    // SAFETY: Both arrays hold one valid CF object (an immutable framework constant) for
+    // dictionaryWithObjects:forKeys:count:, and AXIsProcessTrustedWithOptions takes that
+    // autoreleased dictionary.
     unsafe {
         autoreleasepool(|_| {
             let keys: [*mut AnyObject; 1] = [kAXTrustedCheckOptionPrompt as *mut AnyObject];
@@ -41,9 +44,11 @@ fn ax_is_trusted() -> bool {
     }
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn prompt_ax_trust_dialog() {
-    autoreleasepool(|_| {
+fn prompt_ax_trust_dialog() {
+    // SAFETY: Both arrays hold one valid CF object (an immutable framework constant) for
+    // dictionaryWithObjects:forKeys:count:, and AXIsProcessTrustedWithOptions takes that
+    // autoreleased dictionary.
+    autoreleasepool(|_| unsafe {
         let keys: [*mut AnyObject; 1] = [kAXTrustedCheckOptionPrompt as *mut AnyObject];
         let vals: [*mut AnyObject; 1] = [kCFBooleanTrue as *mut AnyObject];
 
@@ -65,7 +70,7 @@ pub fn ensure_accessibility_permission() {
 
     info!("Accessibility permission is not granted; prompting user for permission now.");
 
-    unsafe { prompt_ax_trust_dialog() };
+    prompt_ax_trust_dialog();
 
     let start = Instant::now();
     loop {

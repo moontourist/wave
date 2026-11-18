@@ -13,6 +13,8 @@ impl ProcessInfo {
 
         let mut info = ProcessInfoRec::default();
         info.processInfoLength = size_of::<ProcessInfoRec>() as _;
+        // SAFETY: `psn` is a live process serial number, and `info` is a live record whose length
+        // field is set.
         cg_ok(unsafe { GetProcessInformation(&psn, &mut info) })?;
 
         Ok(Self {
@@ -57,6 +59,7 @@ pub struct ProcessSerialNumber {
 impl ProcessSerialNumber {
     pub(super) fn for_pid(pid: pid_t) -> Result<Self, CGError> {
         let mut psn = ProcessSerialNumber::default();
+        // SAFETY: `psn` is a live local the call writes.
         cg_ok(unsafe { GetProcessForPID(pid, &mut psn) })?;
         Ok(psn)
     }

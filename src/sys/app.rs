@@ -87,6 +87,8 @@ impl ApplicationObserver {
             activation_policy_notified: Cell::new(false),
             finished_launching_notified: Cell::new(false),
         });
+        // SAFETY: `observer` is a freshly allocated ApplicationObserver with its ivars set, and
+        // NSObject's init takes no arguments.
         unsafe { msg_send![super(observer), init] }
     }
 
@@ -101,6 +103,8 @@ impl ApplicationObserver {
             policy = ?ivars.app.activationPolicy(),
             "Installing application activation-policy KVO observer"
         );
+        // SAFETY: addObserver:forKeyPath:options:context: takes these argument types, and the
+        // observing flag pairs it with the removal below.
         unsafe {
             let _: () = msg_send![
                 &*ivars.app,
@@ -126,6 +130,8 @@ impl ApplicationObserver {
             finished = ivars.app.isFinishedLaunching(),
             "Installing application finished-launching KVO observer"
         );
+        // SAFETY: addObserver:forKeyPath:options:context: takes these argument types, and the
+        // observing flag pairs it with the removal below.
         unsafe {
             let _: () = msg_send![
                 &*ivars.app,
@@ -194,6 +200,8 @@ impl ApplicationObserver {
             pid = ivars.pid,
             "Removing application activation-policy KVO observer"
         );
+        // SAFETY: removeObserver:forKeyPath:context: takes these argument types; the flag ensures a
+        // matching add, and catch() absorbs any KVO exception.
         let _ = exception::catch(AssertUnwindSafe(|| unsafe {
             let _: () = msg_send![
                 &*ivars.app,
@@ -213,6 +221,8 @@ impl ApplicationObserver {
             pid = ivars.pid,
             "Removing application finished-launching KVO observer"
         );
+        // SAFETY: removeObserver:forKeyPath:context: takes these argument types; the flag ensures a
+        // matching add, and catch() absorbs any KVO exception.
         let _ = exception::catch(AssertUnwindSafe(|| unsafe {
             let _: () = msg_send![
                 &*ivars.app,
@@ -286,6 +296,8 @@ pub fn remove_finished_launching_observer(pid: pid_t) {
 pub fn remove_application_observer(pid: pid_t) {
     let observer = APPLICATION_OBSERVERS.lock().remove(&pid);
     if let Some(observer) = observer {
+        // SAFETY: `observer` came from Retained::into_raw in observe_application and was just
+        // removed from the map, so this reclaims it once.
         unsafe {
             let _ = Retained::from_raw(observer as *mut ApplicationObserver);
         }
@@ -295,6 +307,8 @@ pub fn remove_application_observer(pid: pid_t) {
 fn with_application_observer(pid: pid_t, f: impl FnOnce(&ApplicationObserver)) {
     let observers = APPLICATION_OBSERVERS.lock();
     if let Some(&observer) = observers.get(&pid) {
+        // SAFETY: The map holds the observer's +1 reference, and the lock held here stops
+        // remove_application_observer freeing it during `f`.
         f(unsafe { &*(observer as *const ApplicationObserver) });
     }
 }
@@ -314,6 +328,8 @@ fn observe_application(
             *entry.insert(Retained::into_raw(observer) as usize)
         }
     };
+    // SAFETY: The map holds the observer's +1 reference, and the lock held here stops
+    // remove_application_observer freeing it during `observe`.
     observe(unsafe { &*(raw as *const ApplicationObserver) });
 }
 

@@ -44,6 +44,8 @@ fn scan(directory: &Path, depth: usize, apps: &mut Vec<(String, String)>) {
 #[allow(deprecated)]
 fn bundle(path: &Path) -> Option<(String, String)> {
     let file = NSString::from_str(&path.join("Contents/Info.plist").to_string_lossy());
+    // SAFETY: `file` is a valid NSString path, and the dictionary's values are only read through
+    // checked downcasts.
     let info = unsafe { NSDictionary::<NSString, AnyObject>::dictionaryWithContentsOfFile(&file) }?;
     let text = |key: &str| {
         info.objectForKey(&NSString::from_str(key))

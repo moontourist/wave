@@ -73,6 +73,8 @@ pub fn init(event: CGSEventType) -> i32 {
 
     let raw: u32 = event.into();
     let callback_ctx_ptr = (&mut **callback_ctx as *mut CallbackContext).cast::<c_void>();
+    // SAFETY: The context box lives in CALLBACK_CTXS for the process lifetime, so its address stays
+    // valid for every callback.
     let res = unsafe {
         SLSRegisterConnectionNotifyProc(*G_CONNECTION, connection_callback, raw, callback_ctx_ptr)
     };
@@ -92,6 +94,8 @@ pub fn init(event: CGSEventType) -> i32 {
 pub fn take_receiver() -> Option<actor::Receiver<EventData>> { EVENT_CHANNEL.1.lock().take() }
 
 pub fn update_window_notifications(window_ids: &[u32]) {
+    // SAFETY: G_CONNECTION is the process's SkyLight connection, and `window_ids` lives through the
+    // call.
     unsafe {
         let _ = SLSRequestNotificationsForWindows(
             *G_CONNECTION,
@@ -134,6 +138,8 @@ extern "C" fn connection_callback(
         return;
     }
 
+    // SAFETY: A non-null `context` is a CallbackContext box held in CALLBACK_CTXS for the process
+    // lifetime.
     let ctx = unsafe { &*(context as *const CallbackContext) };
     let kind = ctx.event_type;
     debug_assert_eq!(event_raw, u32::from(kind));
@@ -142,6 +148,7 @@ extern "C" fn connection_callback(
     let bytes = if data.is_null() || len == 0 {
         &[]
     } else {
+        // SAFETY: SkyLight passes `len` readable bytes at the non-null `data` for this callback.
         unsafe { std::slice::from_raw_parts(data as *const u8, len) }
     };
 

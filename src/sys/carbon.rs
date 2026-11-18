@@ -1,5 +1,3 @@
-#![allow(clippy::missing_safety_doc)]
-
 use std::ffi::c_void;
 use std::ptr;
 
@@ -65,8 +63,18 @@ pub struct Event {
 }
 
 impl Event {
+    /// Reads one parameter of this event.
+    ///
+    /// # Safety
+    ///
+    /// Call this only inside the handler that received the event, while `raw` is live.
+    /// `T` must be the Rust layout of `desired_type`, valid when zeroed and for any value
+    /// Carbon writes.
     pub unsafe fn parameter<T: Copy>(&self, name: u32, desired_type: u32) -> Option<T> {
+        // SAFETY: The caller guarantees `T` is valid when zeroed.
         let mut out: T = unsafe { std::mem::zeroed() };
+        // SAFETY: `raw` is live per the caller, and `out` is a live local of exactly size_of::<T>()
+        // bytes.
         let status = unsafe {
             GetEventParameter(
                 self.raw,
@@ -92,6 +100,8 @@ impl Target {
     fn resolve(self) -> Result<EventTargetRef, String> {
         match self {
             Target::Application => {
+                // SAFETY: GetApplicationEventTarget takes no arguments and returns the process's
+                // own target.
                 let t = unsafe { GetApplicationEventTarget() };
                 if t.is_null() {
                     Err("GetApplicationEventTarget returned null".to_string())
@@ -150,10 +160,14 @@ unsafe extern "C" fn trampoline(
     event: EventRef,
     user_data: *mut c_void,
 ) -> OSStatus {
+    // SAFETY: `user_data` is the CallbackCtx box install_impl registered, freed only after
+    // RemoveEventHandler; Carbon calls handlers one at a time.
     let ctx = unsafe { &mut *(user_data as *mut CallbackCtx) };
     let ev = Event {
         raw: event,
+        // SAFETY: Carbon passes a live event for the duration of the handler.
         class: unsafe { GetEventClass(event) },
+        // SAFETY: Carbon passes a live event for the duration of the handler.
         kind: unsafe { GetEventKind(event) },
     };
     ctx.inner.call(ev)
@@ -218,6 +232,8 @@ impl CarbonListener {
         let ctx = Box::into_raw(Box::new(CallbackCtx { inner })) as *mut c_void;
 
         let mut handler_ref: EventHandlerRef = ptr::null_mut();
+        // SAFETY: `trampoline` matches the handler ABI, `types` outlives the call, and `ctx` stays
+        // alive until remove().
         let status = unsafe {
             InstallEventHandler(
                 target,
@@ -230,6 +246,8 @@ impl CarbonListener {
         };
 
         if status != NO_ERR || handler_ref.is_null() {
+            // SAFETY: Installation failed, so Carbon holds no copy of `ctx` and this frees the box
+            // once.
             unsafe { drop(Box::from_raw(ctx as *mut CallbackCtx)) };
             return Err(format!("InstallEventHandler failed: status={status}"));
         }
@@ -239,6 +257,8 @@ impl CarbonListener {
 
     pub fn remove(&mut self) -> Result<(), String> {
         if !self.handler_ref.is_null() {
+            // SAFETY: `handler_ref` is the non-null handler InstallEventHandler returned and not
+            // yet removed.
             let status = unsafe { RemoveEventHandler(self.handler_ref) };
             if status != NO_ERR {
                 return Err(format!("RemoveEventHandler failed: status={status}"));
@@ -246,6 +266,8 @@ impl CarbonListener {
             self.handler_ref = ptr::null_mut();
         }
         if !self.ctx.is_null() {
+            // SAFETY: The handler is removed, so Carbon no longer reads `ctx`; it's nulled after
+            // this single free.
             unsafe { drop(Box::from_raw(self.ctx as *mut CallbackCtx)) };
             self.ctx = ptr::null_mut();
         }

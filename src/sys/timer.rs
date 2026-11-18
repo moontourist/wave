@@ -272,6 +272,7 @@ impl Timer {
 
         // Add timer to current run loop
         let current_loop = CFRunLoop::current().expect("Failed to get current run loop");
+        // SAFETY: kCFRunLoopCommonModes is an immutable CoreFoundation constant.
         current_loop.add_timer(Some(&cf_timer), unsafe { kCFRunLoopCommonModes });
 
         {
@@ -286,6 +287,7 @@ impl Timer {
     /// wakeups. Defaults to zero; kept across repeats and `set_next_fire`.
     pub fn with_tolerance(self, tolerance: Duration) -> Self {
         if let Some(cf_timer) = self.inner.lock().cf_timer.as_ref() {
+            // SAFETY: `cf_timer` is a live, retained timer.
             unsafe { cf_timer.set_tolerance(tolerance.as_secs_f64()) };
         }
         self

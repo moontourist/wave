@@ -125,8 +125,12 @@ impl DisplayLink {
                 }
                 let paused = state.paused.load(Ordering::Acquire);
                 let target = DisplayLinkTarget::alloc().set_ivars(state);
+                // SAFETY: `target` is a freshly allocated DisplayLinkTarget with its ivars set, and
+                // NSObject's init takes no arguments.
                 let target: Retained<DisplayLinkTarget> = unsafe { msg_send![super(target), init] };
                 // The target is retained by the link. It does not retain the link in return.
+                // SAFETY: The screen responds to this selector, checked above, and `tick:` is a
+                // method DisplayLinkTarget defines.
                 let link = unsafe { screen.displayLinkWithTarget_selector(&target, sel!(tick:)) };
                 if high_refresh {
                     let fps = screen.maximumFramesPerSecond() as f32;
@@ -137,6 +141,8 @@ impl DisplayLink {
                     ));
                 }
                 link.setPaused(paused);
+                // SAFETY: The main run loop and NSRunLoopCommonModes are valid for the main thread
+                // this runs on.
                 unsafe {
                     link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes)
                 };

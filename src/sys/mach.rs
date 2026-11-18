@@ -33,6 +33,8 @@ fn bs_name() -> CString {
 
 pub fn is_mach_server_registered() -> bool {
     let bs_name = bs_name();
+    // SAFETY: `bs_name` is a NUL-terminated C string, and the send right bootstrap returns is
+    // deallocated once.
     unsafe {
         let service_port = mach_get_bs_port(&bs_name);
         if service_port == 0 {
@@ -404,6 +406,8 @@ static mut window_sub_level_error_logged: bool = false;
 static mut window_sub_level_invalid_msg_logged: bool = false;
 
 pub fn init_window_sub_level_server_port() {
+    // SAFETY: rift's main calls this once at startup, before any thread that reads g_server_port
+    // exists.
     unsafe {
         g_server_port = create_connection_server_port();
     }
@@ -479,6 +483,7 @@ fn cstr_bytes_eq(left: *const c_char, right_with_nul: &[u8]) -> bool {
         return false;
     }
 
+    // SAFETY: `left` is non-null, checked above, and dyld image names are NUL-terminated strings.
     unsafe { CStr::from_ptr(left).to_bytes() == right }
 }
 
@@ -878,6 +883,8 @@ impl OwnedMachReply {
 
 impl Drop for OwnedMachReply {
     fn drop(&mut self) {
+        // SAFETY: `msgh_remote_port` is the send right retain() took for this reply, released once
+        // here.
         if !unsafe { mach_release_send_right(self.header.msgh_remote_port) } {
             error!(
                 "OwnedMachReply: failed to release reply send right for port {}",
@@ -1283,6 +1290,8 @@ extern "C" fn mach_message_callback(
     _size: CFIndex,
     context: *mut c_void,
 ) {
+    // SAFETY: CFMachPort passes the `mach_server` registered as its context, which outlives the
+    // port, and a received message valid for this callback.
     unsafe {
         if context.is_null() || message.is_null() {
             return;

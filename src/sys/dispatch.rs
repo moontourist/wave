@@ -18,12 +18,15 @@ const DISPATCH_PROC_EXIT: usize = 0x8000_0000;
 
 struct SerialQueue(*mut Unmanaged);
 
-// Dispatch queues are thread-safe; each static owns its queue for the process lifetime.
+// SAFETY: Dispatch queues are thread-safe; each static owns its queue for the process lifetime.
 unsafe impl Send for SerialQueue {}
+// SAFETY: Dispatch queues are thread-safe, and SerialQueue only hands out shared references.
 unsafe impl Sync for SerialQueue {}
 
 impl SerialQueue {
     fn new(label: &CStr, qos: u32) -> Self {
+        // SAFETY: A null attr selects the default serial attributes, and `label` is a NUL-
+        // terminated C string.
         let queue = unsafe {
             let attr = dispatch_queue_attr_make_with_qos_class(std::ptr::null_mut(), qos, 0);
             dispatch_queue_create(label.as_ptr(), attr)
@@ -36,11 +39,18 @@ impl SerialQueue {
 impl Deref for SerialQueue {
     type Target = Unmanaged;
 
-    fn deref(&self) -> &Unmanaged { unsafe { &*self.0 } }
+    fn deref(&self) -> &Unmanaged {
+        // SAFETY: `self.0` is the non-null queue created in new(), retained until drop.
+        unsafe { &*self.0 }
+    }
 }
 
 impl Drop for SerialQueue {
-    fn drop(&mut self) { unsafe { dispatch_release(self.0.cast()) }; }
+    fn drop(&mut self) {
+        // SAFETY: `self.0` holds the +1 reference from dispatch_queue_create, released exactly once
+        // here.
+        unsafe { dispatch_release(self.0.cast()) };
+    }
 }
 
 /// Rare partial-lift deadlines, never per-frame recognition. Isolated from child reaping.
@@ -99,17 +109,23 @@ pub trait DispatchExt {
 
 impl DispatchExt for Unmanaged {
     unsafe fn after_f(&self, when: Time, context: *mut c_void, work: extern "C" fn(*mut c_void)) {
+        // SAFETY: The caller upholds after_f's contract for `context` and `work`, and `self` is a
+        // live queue.
         unsafe { dispatch_after_f(when, self, context, work) }
     }
 
     fn after_f_s<T: Send + 'static>(&self, when: Time, context: T, work: fn(T)) {
         extern "C" fn trampoline<T>(ctx: *mut c_void) {
+            // SAFETY: `ctx` is the box after_f_s leaked for this call, and GCD runs the trampoline
+            // exactly once.
             let ctx = unsafe { Box::from_raw(ctx as *mut (T, fn(T))) };
             let (context, work) = *ctx;
             work(context);
         }
         let ctx = Box::into_raw(Box::new((context, work))) as *mut c_void;
         // The owned Send + 'static context is reclaimed exactly once by GCD.
+        // SAFETY: `ctx` is an owned Send + 'static box that `trampoline::<T>` reclaims exactly
+        // once.
         unsafe { self.after_f(when, ctx, trampoline::<T>) };
     }
 }
@@ -118,6 +134,8 @@ impl DispatchExt for Unmanaged {
 pub fn on_proc_exit(pid: pid_t, exited: impl FnOnce() + Send + 'static) {
     type Exited = Option<Box<dyn FnOnce() + Send>>;
     extern "C" fn handler(ctx: *mut c_void) {
+        // SAFETY: `ctx` is the leaked Exited box on_proc_exit set; the serial reaper queue never
+        // runs this handler concurrently.
         if let Some(exited) = unsafe { &mut *(ctx as *mut Exited) }.take() {
             exited();
         }
@@ -129,6 +147,8 @@ pub fn on_proc_exit(pid: pid_t, exited: impl FnOnce() + Send + 'static) {
         reaper_queue(),
     );
     let ctx = Box::into_raw(Box::new(Some(Box::new(exited) as Box<dyn FnOnce() + Send>)));
+    // SAFETY: `src` is a live dispatch source, and `ctx` is a leaked box it may hold for the
+    // process lifetime.
     unsafe { dispatch_set_context(src.deref() as *const _ as *mut c_void, ctx.cast()) };
     src.set_event_handler_f(handler);
     src.resume();
@@ -145,6 +165,8 @@ pub fn reap_on_exit_proc(pid: pid_t) {
     let src = DSource::create(tipe, pid as _, DISPATCH_PROC_EXIT as _, q);
     let ctx = Box::into_raw(Box::new(pid)) as *mut c_void;
     extern "C" fn proc_event_handler(ctx: *mut c_void) {
+        // SAFETY: `ctx` is the leaked pid box set on this source; it stays alive until the exit
+        // branch below frees it.
         let pid = unsafe { *(ctx as *mut pid_t) };
         let status = match waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG)) {
             Ok(WaitStatus::StillAlive) => waitpid(Pid::from_raw(pid), None),
@@ -156,12 +178,16 @@ pub fn reap_on_exit_proc(pid: pid_t) {
                 if let Some(_src) = sources_map().lock().remove(&raw) {
                     // drop -> dispatch_release; source is gone
                 }
+                // SAFETY: The source fires once per exit and is removed above, so this frees the
+                // pid box exactly once.
                 let _ = unsafe { Box::from_raw(ctx as *mut pid_t) };
             }
             Ok(_) | Err(Errno::ECHILD) | Err(_) => {}
         }
     }
 
+    // SAFETY: `src` is a live dispatch source, and `ctx` is a leaked pid box the handler frees
+    // once.
     unsafe { dispatch_set_context(src.deref() as *const _ as *mut c_void, ctx) };
     src.set_event_handler_f(proc_event_handler);
     let mut sources = sources_map().lock();

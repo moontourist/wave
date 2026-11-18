@@ -67,15 +67,23 @@ pub fn get_mouse_state() -> Option<MouseState> {
 }
 
 pub fn warp_mouse(point: CGPoint) -> Result<(), CGError> {
+    // SAFETY: CGEventSourceCreate takes a state id and returns a +1 source or null.
     let src = unsafe { CGEventSourceCreate(CGEventSourceStateID::CombinedSessionState) };
-    unsafe { CGEventSourceSetLocalEventsSuppressionInterval(src, 0.0) };
+    if !src.is_null() {
+        // SAFETY: `src` is a live, non-null event source owned by this function.
+        unsafe { CGEventSourceSetLocalEventsSuppressionInterval(src, 0.0) };
+    }
 
+    // SAFETY: CGWarpMouseCursorPosition takes a point by value.
     let res = cg_ok(unsafe { CGWarpMouseCursorPosition(point) });
     if res.is_ok() {
         // Reassociation is best-effort: the cursor has already moved.
         let _ = CGAssociateMouseAndMouseCursorPosition(true);
     }
-    unsafe { CFRelease(src) };
+    if !src.is_null() {
+        // SAFETY: `src` holds the +1 reference from CGEventSourceCreate, released once here.
+        unsafe { CFRelease(src) };
+    }
     res
 }
 

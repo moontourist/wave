@@ -282,6 +282,7 @@ fn dock_control_gesture_event(
 
     set_double_fields(&event, &[
         (K_GESTURE_FLAVOR_FIELD, K_GESTURE_FLAVOR_DOCK_PRIMARY),
+        // SAFETY: mach_absolute_time takes no arguments.
         (K_GESTURE_TIMESTAMP_FIELD, unsafe { mach_absolute_time() as f64 }),
         (K_GESTURE_SWIPE_POSITION_X_FIELD, K_GESTURE_SWIPE_POSITION_X),
     ]);
@@ -297,6 +298,7 @@ fn post_augmented_session_event(event: &CGEvent) {
 
 fn augment_event_with_hid_payload(event: &CGEvent) -> Option<CFRetained<CGEvent>> {
     let serialized = CGEvent::new_data(None, Some(event))?;
+    // SAFETY: `serialized` isn't mutated while this borrow lives.
     let event_data = deserialize_cgevent_data(unsafe { serialized.as_bytes_unchecked() })?;
     let mut fields = event_data.fields;
     fields.insert(
@@ -454,6 +456,7 @@ fn post_events<'a>(
     events: impl IntoIterator<Item = &'a CFRetained<CGEvent>>,
 ) {
     for event in events {
+        // SAFETY: `event` is a live, retained CGEvent for the call.
         unsafe { CGEventPost(location, CFRetained::as_ptr(event).as_ptr().cast()) };
     }
 }
@@ -478,6 +481,7 @@ fn swipe_mask_for_direction(direction: Direction) -> u32 {
 fn cg_event_timestamp_or_now(event: &CGEvent) -> u64 {
     let timestamp = CGEvent::timestamp(Some(event));
     if timestamp == 0 {
+        // SAFETY: mach_absolute_time takes no arguments.
         unsafe { mach_absolute_time() }
     } else {
         timestamp
@@ -495,6 +499,8 @@ fn double_to_fixed_16_16(value: f64) -> i32 {
 
 fn extend_packed<T>(bytes: &mut Vec<u8>, value: &T) {
     let ptr = std::ptr::from_ref(value).cast::<u8>();
+    // SAFETY: Callers pass repr(C, packed) structs, which have no padding, so all size_of::<T>()
+    // bytes are initialized.
     let slice = unsafe { std::slice::from_raw_parts(ptr, size_of::<T>()) };
     bytes.extend_from_slice(slice);
 }

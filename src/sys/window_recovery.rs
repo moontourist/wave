@@ -64,6 +64,7 @@ fn recover(mtm: MainThreadMarker) {
     let screens: Vec<_> = screens.iter().map(|screen| screen.frame).collect();
     // Bound the cost of an unresponsive application without changing its timeout
     // in the daemon or any other process.
+    // SAFETY: The system-wide element is a live AXUIElement for the call.
     unsafe { AXUIElement::system_wide().set_messaging_timeout(1.0) };
     let mut index = 0;
     for (pid, _) in running_apps(None) {

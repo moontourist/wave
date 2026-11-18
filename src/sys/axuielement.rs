@@ -106,6 +106,8 @@ impl AXUIElement {
     )]
     pub unsafe fn from_get_rule(ptr: *const RawAXUIElement) -> Self {
         let ptr = NonNull::new(ptr.cast_mut()).expect("attempted to create a NULL object");
+        // SAFETY: The caller guarantees `ptr` is a valid AXUIElement; retain adds the +1 this value
+        // owns.
         let retained = unsafe { CFRetained::retain(ptr) };
         Self::new(retained)
     }
@@ -124,6 +126,8 @@ impl AXUIElement {
     )]
     pub unsafe fn from_create_rule(ptr: *const RawAXUIElement) -> Self {
         let ptr = NonNull::new(ptr.cast_mut()).expect("attempted to create a NULL object");
+        // SAFETY: The caller guarantees `ptr` is a valid AXUIElement whose +1 reference passes to
+        // this value.
         let retained = unsafe { CFRetained::from_raw(ptr) };
         Self::new(retained)
     }
@@ -131,6 +135,7 @@ impl AXUIElement {
     fn copy_attribute(&self, name: &'static str) -> Result<Option<CFRetained<CFType>>> {
         let attr = CFString::from_static_str(name);
         let mut value: *const CFType = ptr::null();
+        // SAFETY: `attr` and the out-pointer `value` are live locals for the call.
         let status =
             unsafe { self.inner.copy_attribute_value(attr.as_ref(), NonNull::from(&mut value)) };
         match status {
@@ -160,10 +165,12 @@ impl AXUIElement {
 
     pub fn is_settable(&self, name: &'static str) -> Result<bool> {
         let mut is_settable = false;
+        // SAFETY: The attribute name lives through the call, and `is_settable` is a live local the
+        // call writes.
         let status = unsafe {
             self.inner.is_attribute_settable(
                 CFString::from_static_str(name).as_ref(),
-                NonNull::new_unchecked((&mut is_settable as *mut bool).cast::<u8>()),
+                NonNull::from(&mut is_settable).cast::<u8>(),
             )
         };
         match status {
@@ -208,6 +215,8 @@ impl AXUIElement {
             )
         });
         // Adopt any returned array immediately, including on an error response.
+        // SAFETY: copy_multiple_attribute_values follows the Copy rule, so this call owns the
+        // returned array.
         let values =
             NonNull::new(values.cast_mut()).map(|values| unsafe { CFRetained::from_raw(values) });
         finish_bulk_window_attributes(status, values)
@@ -215,6 +224,7 @@ impl AXUIElement {
 
     pub fn fframe(&self, wid: WindowId) -> Result<CGRect> {
         let mut frame = CGRect::default();
+        // SAFETY: G_CONNECTION is the process's SkyLight connection, and `frame` is a live local.
         let result = unsafe { CGSGetWindowBounds(*G_CONNECTION, wid.idx.get(), &mut frame) };
         if result == 0 {
             Ok(frame)
@@ -263,6 +273,8 @@ impl AXUIElement {
             return Ok(Vec::new());
         };
         let array = self.downcast::<CFArray>(value)?;
+        // SAFETY: `array` is a checked CFArray, and CFArray<CFType> only reads its elements as
+        // CFType.
         let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
         let mut out = Vec::with_capacity(array.len());
         for entry in array.iter() {
@@ -311,6 +323,7 @@ impl AXUIElement {
 
     pub fn raise(&self) -> Result<()> {
         let action = CFString::from_static_str("AXRaise");
+        // SAFETY: `action` is a live CFString for the call.
         let status = unsafe { self.inner.perform_action(action.as_ref()) };
         if status == AXError::Success {
             Ok(())
@@ -320,6 +333,7 @@ impl AXUIElement {
     }
 
     fn set_attribute_value(&self, name: &CFString, value: &CFType) -> Result<()> {
+        // SAFETY: `name` and `value` are live CF objects for the call.
         let status = unsafe { self.inner.set_attribute_value(name, value) };
         if status == AXError::Success {
             Ok(())
@@ -341,12 +355,14 @@ impl AXUIElement {
     #[allow(unused)]
     pub fn element_at_position(point: CGPoint) -> Option<Self> {
         let mut out_ptr: *const RawAXUIElement = std::ptr::null();
+        // SAFETY: The system-wide element lives to the end of the statement, and `out_ptr` is a
+        // live local.
         let status = unsafe {
             RawAXUIElement::copy_element_at_position(
                 &*RawAXUIElement::new_system_wide(),
                 point.x as f32,
                 point.y as f32,
-                std::ptr::NonNull::new_unchecked(&mut out_ptr),
+                std::ptr::NonNull::from(&mut out_ptr),
             )
         };
         if status == AXError::Success
@@ -361,11 +377,11 @@ impl AXUIElement {
     }
 
     pub fn process_id(&self) -> Result<pid_t> {
-        let pid = unsafe { NonNull::new_unchecked(&mut 0i32) };
-        if unsafe { self.inner.pid(pid) } == AXError::Success {
-            Ok(unsafe { *pid.as_ref() })
-        } else {
-            Err(Error::Ax(unsafe { self.inner.pid(pid) }))
+        let mut pid: pid_t = 0;
+        // SAFETY: `pid` is a live local the call writes.
+        match unsafe { self.inner.pid(NonNull::from(&mut pid)) } {
+            AXError::Success => Ok(pid),
+            err => Err(Error::Ax(err)),
         }
     }
 }
@@ -443,6 +459,7 @@ fn bulk_attribute(value: CFRetained<CFType>) -> Result<CFRetained<CFType>> {
         // exact layout required for kAXValueAXErrorType.
         if unsafe { ax_value.r#type() } == AXValueType::AXError {
             let mut error = AXError::Failure;
+            // SAFETY: `error` has the AXError layout that kAXValueAXErrorType decodes into.
             let decoded =
                 unsafe { ax_value.value(AXValueType::AXError, NonNull::from(&mut error).cast()) };
             return Err(if !decoded {
@@ -490,6 +507,7 @@ fn decode_string(value: CFRetained<CFType>) -> Result<String> {
 
 fn rect_from_axvalue(value: &AXValue) -> Result<CGRect> {
     let mut rect = CGRect::default();
+    // SAFETY: `rect` has the CGRect layout that the CGRect value type decodes into.
     let success =
         unsafe { value.value(AXValueType::CGRect, NonNull::from(&mut rect).cast::<c_void>()) };
     if success {
@@ -501,6 +519,7 @@ fn rect_from_axvalue(value: &AXValue) -> Result<CGRect> {
 
 fn make_axvalue<T>(ty: AXValueType, value: &mut T) -> Result<CFRetained<AXValue>> {
     let ptr = NonNull::from(value).cast::<c_void>();
+    // SAFETY: Callers pass `ty` matching `T`: CGPoint for AXValueType::CGPoint, CGSize for CGSize.
     unsafe { AXValue::new(ty, ptr) }.ok_or(Error::Ax(AXError::Failure))
 }
 

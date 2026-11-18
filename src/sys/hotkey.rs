@@ -1229,29 +1229,38 @@ const VIRTUAL_KEYCODE_NUMS: &[u16] = &[
 fn generate_virtual_keymap(_mtm: MainThreadMarker) -> StdHashMap<String, KeyCode> {
     let mut keymap = StdHashMap::new();
 
+    // SAFETY: TISCopyCurrentASCIICapableKeyboardLayoutInputSource follows the Copy rule and returns
+    // a +1 source or null.
     let keyboard = unsafe { TISCopyCurrentASCIICapableKeyboardLayoutInputSource() };
     if keyboard.is_null() {
         tracing::warn!("Could not get ASCII-capable keyboard layout input source");
         return keymap;
     }
 
+    // SAFETY: `keyboard` is non-null, and kTISPropertyUnicodeKeyLayoutData is a CFData property the
+    // source owns.
     let layout_data = NonNull::new(unsafe {
         TISGetInputSourceProperty(keyboard, kTISPropertyUnicodeKeyLayoutData).cast::<CFData>()
     });
 
     let Some(layout_data) = layout_data else {
         tracing::warn!("Could not get keyboard layout data");
+        // SAFETY: `keyboard` holds the +1 reference from the Copy call, released once on this early
+        // return.
         unsafe {
             super::skylight::CFRelease(keyboard.cast());
         }
         return keymap;
     };
 
+    // SAFETY: `layout_data` is a live CFData owned by `keyboard`, which stays retained until the
+    // release below.
     let layout_ptr = unsafe { CFData::byte_ptr(layout_data.as_ref()) };
 
     const K_UC_KEY_ACTION_DOWN: u16 = 0;
     const K_UC_NO_DEAD_KEYS: u32 = 1;
 
+    // SAFETY: LMGetKbdType takes no arguments.
     let kbd_type: u32 = unsafe { LMGetKbdType() }.into();
     #[allow(unused_assignments)]
     let mut dead_key_state: u32 = 0;
@@ -1264,6 +1273,8 @@ fn generate_virtual_keymap(_mtm: MainThreadMarker) -> StdHashMap<String, KeyCode
         };
 
         dead_key_state = 0;
+        // SAFETY: `layout_ptr` stays valid while `keyboard` is retained, and every out-pointer is a
+        // live local sized as passed.
         let status = unsafe {
             UCKeyTranslate(
                 layout_ptr,
@@ -1294,6 +1305,7 @@ fn generate_virtual_keymap(_mtm: MainThreadMarker) -> StdHashMap<String, KeyCode
         }
     }
 
+    // SAFETY: `keyboard` holds the +1 reference from the Copy call, released once here.
     unsafe {
         super::skylight::CFRelease(keyboard.cast());
     }

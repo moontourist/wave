@@ -3,7 +3,6 @@ use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
 use cgs::compositor::{G_CONNECTION, main_connection};
-use objc2::{ClassType, msg_send};
 use objc2_app_kit::NSScreen;
 use objc2_core_foundation::{
     CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize,
@@ -16,8 +15,7 @@ use tracing::{debug, warn};
 use super::skylight::{
     CFRelease, CFUUIDCreateFromString, CFUUIDCreateString, CGDisplayCreateUUIDFromDisplayID,
     CGDisplayGetDisplayIDFromUUID, CGSCopyBestManagedDisplayForRect, CGSCopyManagedDisplaySpaces,
-    CGSCopyManagedDisplays, CGSCopySpaces, CGSGetActiveSpace, CGSManagedDisplayGetCurrentSpace,
-    CGSSpaceMask, CoreDockGetAutoHideEnabled, CoreDockGetOrientationAndPinning,
+    CGSManagedDisplayGetCurrentSpace, CoreDockGetAutoHideEnabled, CoreDockGetOrientationAndPinning,
     SLSCopyActiveMenuBarDisplayIdentifier, SLSGetDisplayMenubarHeight, SLSGetDockRectWithReason,
     SLSGetMenuBarAutohideEnabled, SLSGetSpaceManagementMode,
 };
@@ -180,6 +178,8 @@ impl<S: System> ScreenCache<S> {
             let spaces: Vec<Option<SpaceId>> = self
                 .uuids
                 .iter()
+                // SAFETY: The SkyLight connection is process-wide, and `screen` is a live CFString
+                // for the call.
                 .map(|screen| unsafe {
                     CGSManagedDisplayGetCurrentSpace(
                         main_connection(),
@@ -273,6 +273,8 @@ impl<S: System> ScreenCache<S> {
 
         let spaces: Vec<Option<SpaceId>> = uuids
             .iter()
+            // SAFETY: The SkyLight connection is process-wide, and `screen` is a live CFString for
+            // the call.
             .map(|screen| unsafe {
                 CGSManagedDisplayGetCurrentSpace(
                     main_connection(),
@@ -304,12 +306,14 @@ const DOCK_ORIENTATION_RIGHT: i32 = 4;
 
 fn menu_bar_hidden() -> bool {
     let mut status = 0;
+    // SAFETY: G_CONNECTION is the process's SkyLight connection, and `status` is a live local.
     unsafe { SLSGetMenuBarAutohideEnabled(*G_CONNECTION, &mut status) };
     status != 0
 }
 
 pub fn menu_bar_height(did: u32) -> f64 {
     let mut height: u32 = 0;
+    // SAFETY: `height` is a live local the call writes.
     unsafe { SLSGetDisplayMenubarHeight(did, &mut height) };
     height as f64
 }
@@ -326,11 +330,15 @@ fn menu_bar_inset(hidden: bool, height: f64, notch_height: f64) -> f64 {
     }
 }
 
-fn dock_hidden() -> bool { unsafe { CoreDockGetAutoHideEnabled() } }
+fn dock_hidden() -> bool {
+    // SAFETY: CoreDockGetAutoHideEnabled takes no arguments and only reads Dock preferences.
+    unsafe { CoreDockGetAutoHideEnabled() }
+}
 
 fn dock_orientation() -> i32 {
     let mut orientation = 0;
     let mut pinning = 0;
+    // SAFETY: Both out-pointers are live locals.
     unsafe { CoreDockGetOrientationAndPinning(&mut orientation, &mut pinning) };
     orientation
 }
@@ -338,6 +346,8 @@ fn dock_orientation() -> i32 {
 fn dock_rect() -> CGRect {
     let mut rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
     let mut reason = 0;
+    // SAFETY: G_CONNECTION is the process's SkyLight connection; `rect` and `reason` are live
+    // locals.
     unsafe { SLSGetDockRectWithReason(*G_CONNECTION, &mut rect, &mut reason) };
     rect
 }
@@ -345,11 +355,15 @@ fn dock_rect() -> CGRect {
 fn dock_rect_with_reason() -> (CGRect, i32) {
     let mut rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
     let mut reason = 0;
+    // SAFETY: G_CONNECTION is the process's SkyLight connection; `rect` and `reason` are live
+    // locals.
     unsafe { SLSGetDockRectWithReason(*G_CONNECTION, &mut rect, &mut reason) };
     (rect, reason)
 }
 
 fn dock_display_id() -> Option<u32> {
+    // SAFETY: Each Copy/Create result is null-checked before use and released exactly once on every
+    // path.
     unsafe {
         let dock = dock_rect();
         let uuid_ref = CGSCopyBestManagedDisplayForRect(*G_CONNECTION, dock);
@@ -510,6 +524,8 @@ impl System for Actual {
         const MAX_SCREENS: usize = 64;
         let mut ids: MaybeUninit<[CGDirectDisplayID; MAX_SCREENS]> = MaybeUninit::uninit();
         let mut count: u32 = 0;
+        // SAFETY: `ids` has room for MAX_SCREENS ids. CGGetActiveDisplayList writes `count` of
+        // them, at most MAX_SCREENS, so the slice covers only initialized ids.
         let ids = unsafe {
             let err = CGGetActiveDisplayList(
                 MAX_SCREENS as u32,
@@ -531,6 +547,8 @@ impl System for Actual {
     }
 
     fn display_uuid(&self, screen: &CGScreenInfo) -> CFRetained<CFString> {
+        // SAFETY: Each Create/Copy result is null-checked; the UUID is released after its string
+        // copy, and the strings pass their +1 reference to CFRetained.
         unsafe {
             if let Some(uuid) = NonNull::new(CGDisplayCreateUUIDFromDisplayID(screen.cg_id.0)) {
                 let uuid_str = CFUUIDCreateString(std::ptr::null_mut(), uuid.as_ptr());
@@ -578,10 +596,14 @@ impl System for Actual {
             .collect()
     }
 
-    fn is_builtin(&self, did: u32) -> bool { unsafe { super::skylight::CGDisplayIsBuiltin(did) } }
+    fn is_builtin(&self, did: u32) -> bool {
+        // SAFETY: CGDisplayIsBuiltin only reads the display id it's given.
+        unsafe { super::skylight::CGDisplayIsBuiltin(did) }
+    }
 
     fn notch_height(&self, did: u32) -> f64 {
         let screens = NSScreen::screens(self.mtm);
+        // SAFETY: CGDisplayIsBuiltin only reads the display id it's given.
         let builtin = unsafe { super::skylight::CGDisplayIsBuiltin(did) };
         if !builtin {
             return 0.0;
@@ -617,11 +639,11 @@ pub trait NSScreenExt {
 impl NSScreenExt for NSScreen {
     fn get_number(&self) -> Result<ScreenId, ()> {
         let desc = self.deviceDescription();
-        match desc.objectForKey(ns_string!("NSScreenNumber")) {
-            Some(val) if unsafe { msg_send![&*val, isKindOfClass:NSNumber::class() ] } => {
-                let number: &NSNumber = unsafe { std::mem::transmute(val) };
-                Ok(ScreenId(number.as_u32()))
-            }
+        match desc
+            .objectForKey(ns_string!("NSScreenNumber"))
+            .map(|val| val.downcast::<NSNumber>())
+        {
+            Some(Ok(number)) => Ok(ScreenId(number.as_u32())),
             val => {
                 warn!(
                     "Could not get NSScreenNumber for screen with name {:?}: {:?}",
@@ -640,6 +662,8 @@ pub fn get_active_space_number() -> Option<SpaceId> {
 
 pub fn active_menu_bar_display_uuid() -> Option<String> {
     Some(
+        // SAFETY: SLSCopyActiveMenuBarDisplayIdentifier follows the Copy rule, and `?` rejects a
+        // null result before from_raw.
         unsafe {
             CFRetained::<CFString>::from_raw(NonNull::new(SLSCopyActiveMenuBarDisplayIdentifier(
                 main_connection(),
@@ -662,6 +686,7 @@ pub fn set_active_menu_bar_display_uuid(display_uuid: &str) -> bool {
     {
         let uuid = CFString::from_str(display_uuid);
         let ptr = CFRetained::as_ptr(&uuid).as_ptr();
+        // SAFETY: `ptr` points into `uuid`, which outlives the call.
         let result = crate::sys::cg_ok(unsafe {
             super::skylight::SLSSetActiveMenuBarDisplayIdentifier(main_connection(), ptr, ptr)
         });
@@ -669,6 +694,8 @@ pub fn set_active_menu_bar_display_uuid(display_uuid: &str) -> bool {
             warn!(?error, display_uuid, "Failed to activate menu-bar display");
             return false;
         }
+        // SAFETY: SLSCopyActiveMenuBarDisplayIdentifier follows the Copy rule; a non-null result
+        // passes its +1 reference to CFRetained.
         let active = unsafe {
             NonNull::new(SLSCopyActiveMenuBarDisplayIdentifier(main_connection()))
                 .map(|ptr| CFRetained::<CFString>::from_raw(ptr))
@@ -693,6 +720,7 @@ pub fn current_space_for_display_uuid(display_uuid: &str) -> Option<SpaceId> {
     }
 
     let uuid = CFString::from_str(display_uuid);
+    // SAFETY: The SkyLight connection is process-wide, and `uuid` outlives the call.
     let id = unsafe {
         CGSManagedDisplayGetCurrentSpace(
             main_connection(),
@@ -713,37 +741,8 @@ pub fn displays_have_separate_spaces() -> bool {
         return separate;
     }
 
+    // SAFETY: SLSGetSpaceManagementMode only reads the process's SkyLight connection.
     unsafe { SLSGetSpaceManagementMode(main_connection()) == 1 }
-}
-
-/// Utilities for querying the current system configuration. For diagnostic purposes only.
-#[allow(dead_code)]
-pub mod diagnostic {
-    use objc2_core_foundation::CFArray;
-
-    use super::*;
-
-    pub fn cur_space() -> SpaceId { SpaceId(unsafe { CGSGetActiveSpace(main_connection()) }) }
-
-    pub fn visible_spaces() -> CFRetained<CFArray<SpaceId>> {
-        unsafe {
-            let arr = CGSCopySpaces(main_connection(), CGSSpaceMask::ALL_VISIBLE_SPACES);
-            CFRetained::from_raw(NonNull::new_unchecked(arr))
-        }
-    }
-
-    pub fn all_spaces() -> CFRetained<CFArray<SpaceId>> {
-        unsafe {
-            let arr = CGSCopySpaces(main_connection(), CGSSpaceMask::ALL_SPACES);
-            CFRetained::from_raw(NonNull::new_unchecked(arr))
-        }
-    }
-
-    pub fn managed_displays() -> CFRetained<CFArray> {
-        unsafe {
-            CFRetained::from_raw(NonNull::new_unchecked(CGSCopyManagedDisplays(main_connection())))
-        }
-    }
 }
 
 pub fn order_visible_spaces_by_position(
@@ -766,6 +765,8 @@ pub fn order_visible_spaces_by_position(
 
 pub fn managed_display_space_ids() -> HashMap<String, Vec<SpaceId>> {
     let mut out: HashMap<String, Vec<SpaceId>> = HashMap::default();
+    // SAFETY: CGSCopyManagedDisplaySpaces follows the Copy rule and returns an array of display
+    // dictionaries; the null case returns early, and each element is downcast before use.
     unsafe {
         let raw = CGSCopyManagedDisplaySpaces(main_connection());
         if raw.is_null() {

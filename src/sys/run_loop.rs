@@ -25,6 +25,8 @@ pub struct WakeupHandle(CFRetained<CFRunLoopSource>, CFRetained<CFRunLoop>);
 //   handler or allow mutation of the run loop/source beyond signaling.
 // - Therefore it is safe to treat this as Send + Sync for the purposes of a Waker hot path.
 unsafe impl Send for WakeupHandle {}
+// SAFETY: Same reasons as Send: wake() only signals the source and wakes the loop, both thread-
+// safe.
 unsafe impl Sync for WakeupHandle {}
 
 struct Handler<F> {
@@ -75,6 +77,8 @@ impl WakeupHandle {
             handler.ref_count -= 1;
             if handler.ref_count == 0 {
                 // Recreate the Box to drop it.
+                // SAFETY: The ref count hit zero, so CF holds no more copies of this box and it's
+                // freed once.
                 mem::drop(unsafe { Box::from_raw(info as *mut Handler<F>) });
             }
         }
@@ -92,9 +96,12 @@ impl WakeupHandle {
             perform: Some(perform::<F>),
         };
 
+        // SAFETY: `context` holds this handler's box and matching retain, release and perform
+        // callbacks; CF copies the context.
         let source = unsafe { CFRunLoopSource::new(None, order, &mut context as *mut _) };
 
         let run_loop = CFRunLoop::current().unwrap();
+        // SAFETY: kCFRunLoopCommonModes is an immutable CoreFoundation constant.
         run_loop.add_source(source.as_deref(), unsafe { kCFRunLoopCommonModes });
 
         WakeupHandle(source.unwrap(), run_loop)

@@ -50,6 +50,8 @@ impl Observer {
         pid: pid_t,
     ) -> Result<ObserverBuilder<F>, AxError> {
         let mut observer_ptr: *mut AXObserver = ptr::null_mut();
+        // SAFETY: `internal_callback` matches the AXObserver callback ABI, and `observer_ptr` is a
+        // live local the call writes.
         let status = unsafe {
             AXObserver::create(pid, Some(internal_callback), NonNull::from(&mut observer_ptr))
         };
@@ -70,6 +72,8 @@ impl Observer {
         pid: pid_t,
     ) -> Result<ObserverBuilder<F>, AxError> {
         let mut observer_ptr: *mut AXObserver = ptr::null_mut();
+        // SAFETY: `internal_callback_with_notification` matches the AXObserver callback ABI, and
+        // `observer_ptr` is a live local the call writes.
         let status = unsafe {
             AXObserver::create(
                 pid,
@@ -103,9 +107,11 @@ impl<F: Fn(AXUIElement, &'static str) + 'static> ObserverBuilder<F> {
 
 impl<F> ObserverBuilder<F> {
     fn install_inner(self, callback: Callback) -> Observer {
+        // SAFETY: The observer is a valid, retained AXObserver; the source it returns is retained
+        // by the observer.
         let run_loop_source = unsafe { self.0.run_loop_source() };
-        // SAFETY: kCFRunLoopCommonModes is an immutable CoreFoundation constant.
         if let Some(run_loop) = CFRunLoop::current()
+            // SAFETY: kCFRunLoopCommonModes is an immutable CoreFoundation constant.
             && let Some(mode) = unsafe { kCFRunLoopCommonModes }
         {
             let mode: &CFRunLoopMode = mode;
@@ -139,8 +145,12 @@ extern "C" fn add_notif_retry(ctx: *mut c_void) {
     if ctx.is_null() {
         return;
     }
+    // SAFETY: `ctx` is the box add_notification_inner leaked into after_f, and dispatch calls this
+    // once.
     let ctx = unsafe { Box::from_raw(ctx as *mut AddNotifRetryCtx) };
     let notification_cf = CFString::from_static_str(ctx.notification);
+    // SAFETY: The box keeps the observer, element and subscription context alive for the call, and
+    // the Observer's map keeps that context alive for later callbacks.
     let _ = unsafe {
         ctx.observer.add_notification(
             ctx.elem.as_concrete_TypeRef(),
@@ -178,6 +188,8 @@ impl Observer {
         let notification_cf = CFString::from_static_str(notification);
         let observer: &AXObserver = &self.observer;
         let callback_data = Arc::as_ptr(&callback_ctx).cast_mut().cast();
+        // SAFETY: The element and name live through the call. The Observer's map keeps
+        // `callback_ctx` alive while AX may hand `callback_data` back.
         let first = unsafe {
             observer.add_notification(
                 elem.as_concrete_TypeRef(),
@@ -189,8 +201,7 @@ impl Observer {
             return Ok(());
         }
         if first == AXError::CannotComplete {
-            let retained_observer =
-                unsafe { CFRetained::retain(CFRetained::as_ptr(&self.observer)) };
+            let retained_observer = self.observer.clone();
             let ctx = Box::new(AddNotifRetryCtx {
                 observer: retained_observer,
                 elem: elem.clone(),
@@ -199,6 +210,8 @@ impl Observer {
             });
             // The retained AX objects and subscription context survive the retry;
             // the retry passes the callback pointer without accessing its thread-local data.
+            // SAFETY: `add_notif_retry` matches dispatch's function ABI and takes ownership of the
+            // leaked box exactly once.
             unsafe {
                 queue::main().after_f(
                     Time::NOW.new_after(10_000_000),
@@ -237,6 +250,7 @@ impl Observer {
     ) -> Result<(), AxError> {
         let notification_cf = CFString::from_static_str(notification);
         let observer: &AXObserver = &self.observer;
+        // SAFETY: The element and notification name live through the call.
         let result = make_result(unsafe {
             observer.remove_notification(elem.as_concrete_TypeRef(), notification_cf.as_ref())
         });
@@ -254,9 +268,13 @@ unsafe extern "C-unwind" fn internal_callback(
     _notif: NonNull<CFString>,
     data: *mut c_void,
 ) {
+    // SAFETY: A non-null `data` is a SubscriptionContext kept alive by the Observer's map until the
+    // observer drops.
     let Some(ctx) = (unsafe { data.cast::<SubscriptionContext>().as_ref() }) else {
         return;
     };
+    // SAFETY: AX passes a valid element it owns for the callback; from_get_rule retains our own
+    // reference.
     let elem = unsafe { AXUIElement::from_get_rule(elem.as_ptr()) };
     if let Callback::Data(callback) = &ctx.callback {
         callback(elem, ctx.data.get());
@@ -269,9 +287,13 @@ unsafe extern "C-unwind" fn internal_callback_with_notification(
     _notif: NonNull<CFString>,
     data: *mut c_void,
 ) {
+    // SAFETY: A non-null `data` is a SubscriptionContext kept alive by the Observer's map until the
+    // observer drops.
     let Some(ctx) = (unsafe { data.cast::<SubscriptionContext>().as_ref() }) else {
         return;
     };
+    // SAFETY: AX passes a valid element it owns for the callback; from_get_rule retains our own
+    // reference.
     let elem = unsafe { AXUIElement::from_get_rule(elem.as_ptr()) };
     if let Callback::Notification(callback) = &ctx.callback {
         callback(elem, ctx.notification);
