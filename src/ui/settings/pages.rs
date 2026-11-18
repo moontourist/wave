@@ -26,14 +26,18 @@ pub(super) fn layouts() -> &'static [(&'static str, LayoutMode)] {
             LayoutMode::CONFIG_CHOICES
                 .iter()
                 .enumerate()
-                .map(|(index, choice)| (choice.0, LayoutMode::from_config_choice(index).unwrap()))
+                .filter_map(|(index, choice)| {
+                    Some((choice.0, LayoutMode::from_config_choice(index)?))
+                })
                 .collect()
         });
     &LAYOUTS
 }
 
 pub(super) fn layout_title(mode: LayoutMode) -> &'static str {
-    LayoutMode::CONFIG_CHOICES[mode.config_choice_index()].0
+    LayoutMode::CONFIG_CHOICES
+        .get(mode.config_choice_index())
+        .map_or("", |choice| choice.0)
 }
 
 fn insertion() -> Vec<(&'static str, WindowInsertionPoint)> {
@@ -61,6 +65,10 @@ pub(super) fn build(ui: Ui, model: &Rc<Model>, id: Category) -> Page {
         Category::StackTabs => super::interface::stack_tabs(ui, model),
         Category::About => FormBuilder::new(ui, model).finish(about(ui, &model.env)),
         Category::Advanced => advanced(ui, model),
+        #[expect(
+            clippy::unreachable,
+            reason = "the router builds Layouts through its own inspector and never calls build for it"
+        )]
         Category::Layouts => unreachable!("Layouts owns its inline inspector"),
     }
 }
@@ -95,9 +103,11 @@ fn about_layout(index: usize) -> [PreviewWindow; 3] {
             (146.0, 74.0, 90.0, 66.0),
         ],
     };
-    std::array::from_fn(|id| {
-        let (x, y, w, h) = frames[id];
-        PreviewWindow::new(id as u64, CGRect::new(CGPoint::new(x, y), CGSize::new(w, h)))
+    let mut id = 0;
+    frames.map(|(x, y, w, h)| {
+        let window = PreviewWindow::new(id, CGRect::new(CGPoint::new(x, y), CGSize::new(w, h)));
+        id += 1;
+        window
     })
 }
 
@@ -160,6 +170,10 @@ fn about_updates(ui: &Ui, env: &Rc<Env>) -> Section {
     let status =
         Rc::new(Label::new(ui, "Not checked yet").wrapping().color(&cgs::style::Color::label()));
     status.accessibility_label("Update status");
+    #[expect(
+        clippy::unwrap_used,
+        reason = "SF Symbol names are fixed strings that ship with every supported macOS"
+    )]
     let icon = Rc::new(ImageView::symbol(ui, "arrow.triangle.2.circlepath").unwrap());
     icon.width(16.0);
     icon.height(16.0);
@@ -279,6 +293,10 @@ fn about(ui: Ui, env: &Rc<Env>) -> SettingsPage {
             .font(&Font::caption())
             .color(&cgs::style::Color::secondary_label())
     };
+    #[expect(
+        clippy::unwrap_used,
+        reason = "SF Symbol names are fixed strings that ship with every supported macOS"
+    )]
     let heart = ImageView::symbol(&ui, "heart.fill").unwrap();
     heart.width(11.0);
     heart.height(11.0);
@@ -320,11 +338,12 @@ fn about(ui: Ui, env: &Rc<Env>) -> SettingsPage {
         .push(bottom);
     let page = SettingsPage::new(&ui, "").content_width(648.0).section(content);
     let scroll = page.ns_scroll_view();
-    let document = scroll.documentView().unwrap();
-    document
-        .heightAnchor()
-        .constraintGreaterThanOrEqualToAnchor(&scroll.contentView().heightAnchor())
-        .setActive(true);
+    if let Some(document) = scroll.documentView() {
+        document
+            .heightAnchor()
+            .constraintGreaterThanOrEqualToAnchor(&scroll.contentView().heightAnchor())
+            .setActive(true);
+    }
     page
 }
 
@@ -400,15 +419,13 @@ pub(super) fn spacing_gap(
 ) -> f64 {
     let gaps = source.settings.layout.gaps.effective_for_display(display);
     let axis = axis.unwrap_or(0);
-    if outer {
-        [
-            gaps.outer.top,
-            gaps.outer.right,
-            gaps.outer.bottom,
-            gaps.outer.left,
-        ][axis]
-    } else {
-        [gaps.inner.horizontal, gaps.inner.vertical][axis]
+    match (outer, axis) {
+        (true, 0) => gaps.outer.top,
+        (true, 1) => gaps.outer.right,
+        (true, 2) => gaps.outer.bottom,
+        (true, _) => gaps.outer.left,
+        (false, 0) => gaps.inner.horizontal,
+        (false, _) => gaps.inner.vertical,
     }
 }
 
@@ -477,7 +494,12 @@ pub(super) fn layout_spacing(ui: Ui, model: &Rc<Model>) -> Page {
         let value = input.unit_field(&ui, "pt");
         input.min_width(Metrics::VALUE_FIELD_WIDTH);
         // The bezel hosts the field’s view; keep its Rust owner with the row.
-        let control = HStack::new(&ui).spacing(8.0).push(slider.unwrap()).push(value).keep(input);
+        #[expect(
+            clippy::unwrap_used,
+            reason = "numeric_controls returns a slider whenever it gets a range, as it does above"
+        )]
+        let slider = slider.unwrap();
+        let control = HStack::new(&ui).spacing(8.0).push(slider).push(value).keep(input);
         simple = simple.row(f.row(title, control, message));
         let mut messages = Vec::new();
         let fields = names
@@ -496,14 +518,18 @@ pub(super) fn layout_spacing(ui: Ui, model: &Rc<Model>) -> Page {
                 (*name, input)
             })
             .collect::<Vec<_>>();
-        let first = objc2::Message::retain(fields[0].1.ns_text_field());
+        let first = fields.first().map(|(_, field)| objc2::Message::retain(field.ns_text_field()));
         let control = messages.into_iter().fold(
             VStack::new(&ui)
                 .spacing(2.0)
                 .push(super::editors::field_group(&ui, "pt", fields)),
             |stack, message| stack.push(message),
         );
-        detailed = detailed.row(SettingsRow::new(&ui, title, control).label_baseline(&first));
+        let row = SettingsRow::new(&ui, title, control);
+        detailed = detailed.row(match &first {
+            Some(first) => row.label_baseline(first),
+            None => row,
+        });
     }
     let (simple, detailed) = (Rc::new(simple), Rc::new(detailed));
     simple.set_hidden(custom);
@@ -802,7 +828,9 @@ fn width_presets(f: &mut FormBuilder) -> SettingsRow {
                 match edit {
                     ChipEdit::Add(percent) => widths.push(percent / 100.0),
                     ChipEdit::Change(index, percent) if index < widths.len() => {
-                        widths[index] = percent / 100.0
+                        if let Some(width) = widths.get_mut(index) {
+                            *width = percent / 100.0;
+                        }
                     }
                     ChipEdit::Remove(index) if index < widths.len() => {
                         widths.remove(index);

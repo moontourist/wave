@@ -26,6 +26,16 @@ pub(super) enum Target {
     Spacing,
     Displays,
 }
+/// The entry for a shared-settings target in a `[spacing, displays]` pair.
+fn for_target<T>(pair: &[T; 2], target: Target) -> &T {
+    let [spacing, displays] = pair;
+    if target == Target::Displays {
+        displays
+    } else {
+        spacing
+    }
+}
+
 /// Canvas size of each layout tile’s illustration.
 const TILE: CGSize = CGSize::new(64.0, 40.0);
 /// Cache slots after the six layouts: Spacing, then Display overrides.
@@ -152,14 +162,17 @@ impl Inspector {
 
             let mut form = FormBuilder::new(ui, model);
             let shared_hosts = std::array::from_fn(|_| Rc::new(PageHost::content_sized(&ui)));
-            let disclosures = std::array::from_fn(|index| {
+            let disclosures = [
+                (Target::Spacing, "Spacing"),
+                (Target::Displays, "Display overrides"),
+            ]
+            .map(|(target, title)| {
                 let owner = weak.clone();
-                let target = [Target::Spacing, Target::Displays][index];
                 Rc::new(
                     Disclosure::new(
                         &ui,
-                        ["Spacing", "Display overrides"][index],
-                        View::new(&ui).content(shared_hosts[index].clone(), Insets {
+                        title,
+                        View::new(&ui).content(for_target(&shared_hosts, target).clone(), Insets {
                             top: 2.0,
                             left: 12.0,
                             bottom: 14.0,
@@ -312,9 +325,8 @@ impl Inspector {
         let mode = match target {
             Target::Layout(mode) => mode,
             Target::Spacing | Target::Displays => {
-                let index = (target == Target::Displays) as usize;
                 if self.set_shared(target, true) {
-                    self.disclosures[index].set_expanded(true);
+                    for_target(&self.disclosures, target).set_expanded(true);
                 }
                 return;
             }
@@ -331,11 +343,16 @@ impl Inspector {
         }
         self.selected.set(mode);
         let index = mode.config_choice_index();
-        if self.pages.borrow()[index].is_none() {
-            self.pages.borrow_mut()[index] = Some(pages::layout_options(self.ui, &model, mode));
+        if self.pages.borrow().get(index).is_some_and(Option::is_none) {
+            let page = pages::layout_options(self.ui, &model, mode);
+            if let Some(slot) = self.pages.borrow_mut().get_mut(index) {
+                *slot = Some(page);
+            }
         }
         let pages = self.pages.borrow();
-        let page = pages[index].as_ref().unwrap();
+        let Some(page) = pages.get(index).and_then(Option::as_ref) else {
+            return;
+        };
         page.synchronize(&model);
         self.host.set_cached_page(page.view.clone());
         let floating = mode == LayoutMode::Floating;
@@ -348,23 +365,27 @@ impl Inspector {
     /// Mount a shared editor before its disclosure expands, or commit its field before
     /// it collapses. Returns false to keep the disclosure as it is.
     fn set_shared(&self, target: Target, expanded: bool) -> bool {
-        let index = (target == Target::Displays) as usize;
-        let host = &self.shared_hosts[index];
+        let host = for_target(&self.shared_hosts, target);
         if !expanded {
             return finish_editing(host.ns_view());
         }
         let Some(model) = self.model.upgrade() else {
             return false;
         };
-        let slot = SHARED + index;
-        if self.pages.borrow()[slot].is_none() {
-            self.pages.borrow_mut()[slot] = Some(match target {
+        let slot = SHARED + usize::from(target == Target::Displays);
+        if self.pages.borrow().get(slot).is_some_and(Option::is_none) {
+            let page = match target {
                 Target::Spacing => pages::layout_spacing(self.ui, &model),
                 _ => editors::display_inspector(self.ui, &model),
-            });
+            };
+            if let Some(entry) = self.pages.borrow_mut().get_mut(slot) {
+                *entry = Some(page);
+            }
         }
         let pages = self.pages.borrow();
-        let page = pages[slot].as_ref().unwrap();
+        let Some(page) = pages.get(slot).and_then(Option::as_ref) else {
+            return false;
+        };
         page.synchronize(&model);
         if !host.ns_view().subviews().is_empty() {
             return true;
@@ -378,7 +399,7 @@ impl Inspector {
         context.setDuration(0.0);
         context.setAllowsImplicitAnimation(false);
         let view = host.ns_view();
-        let width = self.disclosures[index].ns_view().frame().size.width - 24.0;
+        let width = for_target(&self.disclosures, target).ns_view().frame().size.width - 24.0;
         view.setFrameSize(CGSize::new(width, view.fittingSize().height));
         view.layoutSubtreeIfNeeded();
         objc2_app_kit::NSAnimationContext::endGrouping();
@@ -397,7 +418,9 @@ impl Inspector {
         }
         let title = pages::layout_title(mode);
         self.title.set_text(title);
-        self.summary.set_text(LayoutMode::CONFIG_CHOICES[mode.config_choice_index()].1);
+        if let Some(&(_, summary)) = LayoutMode::CONFIG_CHOICES.get(mode.config_choice_index()) {
+            self.summary.set_text(summary);
+        }
         self.actions.accessibility_label(&format!("{title} actions"));
         self.default_popup.set_selected(default.config_choice_index());
         let edited = self.default_items.len() - 1;
@@ -405,7 +428,7 @@ impl Inspector {
             let choice = if index == edited {
                 mode
             } else {
-                pages::layouts()[index].1
+                pages::layouts().get(index).map_or(mode, |&(_, choice)| choice)
             };
             item.set_checked(choice == default);
             item.set_enabled(choice != default);
@@ -418,12 +441,12 @@ impl Inspector {
         };
         self.root.synchronize(&model);
         let pages = self.pages.borrow();
-        if let Some(page) = &pages[self.selected.get().config_choice_index()] {
+        if let Some(Some(page)) = pages.get(self.selected.get().config_choice_index()) {
             page.synchronize(&model);
         }
         for (index, host) in self.shared_hosts.iter().enumerate() {
             if !host.ns_view().isHiddenOrHasHiddenAncestor()
-                && let Some(page) = &pages[SHARED + index]
+                && let Some(Some(page)) = pages.get(SHARED + index)
             {
                 page.synchronize(&model);
             }
@@ -446,7 +469,7 @@ impl Inspector {
         };
         self.root.synced_revision.set(None);
         self.root.synchronize(&model);
-        if let Some(page) = &self.pages.borrow()[SHARED + 1] {
+        if let Some(Some(page)) = self.pages.borrow().get(SHARED + 1) {
             page.synced_revision.set(None);
             page.synchronize(&model);
         }
@@ -573,10 +596,12 @@ fn sample(source: &ConfigSource, mode: LayoutMode, size: CGSize) -> [PreviewWind
     let scale = size.height / TILE.height;
     let margin = 5.0 * scale.sqrt();
     let mut add = |x, y, width, height| {
-        windows[count] = PreviewWindow::new(
-            count as u64,
-            CGRect::new(CGPoint::new(x + margin, y + margin), CGSize::new(width, height)),
-        );
+        if let Some(slot) = windows.get_mut(count) {
+            *slot = PreviewWindow::new(
+                count as u64,
+                CGRect::new(CGPoint::new(x + margin, y + margin), CGSize::new(width, height)),
+            );
+        }
         count += 1;
     };
     let (w, h, gap) = (

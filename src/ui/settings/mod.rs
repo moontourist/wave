@@ -75,7 +75,7 @@ pub(super) enum Category {
 impl Category {
     fn index(self) -> usize { self as usize }
 
-    fn title(self) -> &'static str { CATEGORIES[self.index()].1 }
+    fn title(self) -> &'static str { CATEGORIES.get(self.index()).map_or("", |c| c.1) }
 }
 pub(super) const CATEGORIES: [(Category, &str, &str); 11] = [
     (Category::General, "General", "gearshape"),
@@ -101,6 +101,10 @@ fn report(message: &Weak<ValidationMessage>, result: &Result<(), String>) {
 }
 
 /// The shipped defaults, parsed once, so menus can mark each setting’s default choice.
+#[expect(
+    clippy::expect_used,
+    reason = "the bundled template is fixed at build time and parsed by default_document_is_the_canonical_template"
+)]
 fn defaults() -> &'static ConfigSource {
     static DEFAULTS: std::sync::OnceLock<ConfigSource> = std::sync::OnceLock::new();
     DEFAULTS.get_or_init(|| {
@@ -336,20 +340,24 @@ impl Router {
     fn show(&self, id: Category) {
         let navigation = timing::start();
         self.title.set_text(id.title());
-        if self.pages.borrow()[id.index()].is_none() {
+        if self.pages.borrow().get(id.index()).is_some_and(Option::is_none) {
             let page_timing = timing::start();
             let page = if id == Category::Layouts {
                 self.layouts().page()
             } else {
                 pages::build(self.ui, &self.model, id)
             };
-            self.pages.borrow_mut()[id.index()] = Some(page);
+            if let Some(slot) = self.pages.borrow_mut().get_mut(id.index()) {
+                *slot = Some(page);
+            }
             if id == Category::General {
                 timing::finish(page_timing, "initial page construction");
             }
         }
         let pages = self.pages.borrow();
-        let page = pages[id.index()].as_ref().unwrap();
+        let Some(page) = pages.get(id.index()).and_then(Option::as_ref) else {
+            return;
+        };
         page.synchronize(&self.model);
         self.host.set_cached_page(page.view.clone());
         if let Some(toolbar) = self.toolbar.borrow().upgrade() {
@@ -564,7 +572,7 @@ impl Settings {
     /// Updates the current page even while hidden or minimized; other pages sync when shown.
     pub fn synchronize(&self, source: impl Into<Arc<ConfigSource>>) {
         self.model().replace_source(source);
-        if let Some(page) = &self.router.pages.borrow()[self.router.current().index()] {
+        if let Some(Some(page)) = self.router.pages.borrow().get(self.router.current().index()) {
             page.synchronize(self.model());
         }
     }
@@ -828,6 +836,10 @@ impl FormBuilder {
         section
     }
 
+    #[expect(
+        clippy::panic,
+        reason = "setting keys are literals; the native settings tests build every page and fail on an unknown key"
+    )]
     fn field<T: ConfigSchema>(
         &mut self,
         key: &str,
@@ -871,6 +883,10 @@ impl FormBuilder {
         let (slider, input, message) =
             self.numeric_controls(title, 100.0, false, Some(Rc::new(range)), get, set);
         // Percentages move in steps of five; the field still takes exact values.
+        #[expect(
+            clippy::unwrap_used,
+            reason = "numeric_controls returns a slider whenever it gets a range, as it does above"
+        )]
         let slider = slider.unwrap();
         slider.set_step(5.0);
         self.row(title, NumberSlider::new(&self.ui, slider, input), message)
@@ -907,7 +923,7 @@ impl FormBuilder {
         }
         let slider = slider_range.as_ref().map(|range| {
             let model = self.model.clone();
-            let (min, max) = range(&model.upgrade().unwrap().source.borrow());
+            let (min, max) = model.upgrade().map_or((0.0, 1.0), |m| range(&m.source.borrow()));
             let range = range.clone();
             let preview = self.live_preview.clone();
             let preview_input = Rc::downgrade(&input);
@@ -1011,9 +1027,13 @@ impl FormBuilder {
         let choices = items.clone();
         let change = self.assign(move |s| current(s), set, Rc::downgrade(&message));
         let input = Rc::new(
-            Popup::new(&self.ui)
-                .items(values.iter().map(|(label, _)| *label))
-                .on_change(move |index| change(choices[index].clone())),
+            Popup::new(&self.ui).items(values.iter().map(|(label, _)| *label)).on_change(
+                move |index| {
+                    if let Some(choice) = choices.get(index) {
+                        change(choice.clone());
+                    }
+                },
+            ),
         );
         let default = get(defaults());
         if let Some(index) = items.iter().position(|item| *item == default) {
@@ -1057,7 +1077,12 @@ impl FormBuilder {
                     values.iter().map(|(label, _)| *label).collect(),
                 ])
                 .on_change(move |index| {
-                    change(index.checked_sub(1).map(|index| choices[index].1.clone()))
+                    change(
+                        index
+                            .checked_sub(1)
+                            .and_then(|index| choices.get(index))
+                            .map(|choice| choice.1.clone()),
+                    )
                 }),
         );
         input.accessibility_label(title);
@@ -1088,7 +1113,7 @@ impl FormBuilder {
                 let current = get(s);
                 input.set_selected(current.as_ref().and_then(position).map_or(0, |i| i + 1));
                 if let Some(caption) = caption.upgrade() {
-                    let label = position(&followed).map_or("", |i| values[i].0);
+                    let label = position(&followed).and_then(|i| values.get(i)).map_or("", |v| v.0);
                     caption.set_text(&describe(label));
                     caption.set_hidden(current.is_some());
                 }

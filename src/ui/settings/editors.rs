@@ -49,7 +49,9 @@ fn record_editor_with_delete(
     let draft = model.draft();
     let page = Rc::new(build(&draft));
     page.synchronize(&draft);
-    *draft.draft.as_ref().unwrap().page.borrow_mut() = Some(page.clone());
+    if let Some(state) = draft.draft.as_ref() {
+        *state.page.borrow_mut() = Some(page.clone());
+    }
     let weak = Rc::downgrade(model);
     let cancel = Rc::new(SheetActions::new(&ui));
     cancel.set_on_cancel(move || {
@@ -59,11 +61,13 @@ fn record_editor_with_delete(
     });
     cancel.set_changed(draft.draft.as_ref().is_some_and(|d| *draft.source.borrow() != d.base));
     let dirty_cancel = Rc::downgrade(&cancel);
-    *draft.draft.as_ref().unwrap().changed.borrow_mut() = Some(Box::new(move |dirty| {
-        if let Some(cancel) = dirty_cancel.upgrade() {
-            cancel.set_changed(dirty);
-        }
-    }));
+    if let Some(state) = draft.draft.as_ref() {
+        *state.changed.borrow_mut() = Some(Box::new(move |dirty| {
+            if let Some(cancel) = dirty_cancel.upgrade() {
+                cancel.set_changed(dirty);
+            }
+        }));
+    }
     let message = Rc::new(ValidationMessage::new(&ui));
     let error = Rc::downgrade(&message);
     let weak = Rc::downgrade(model);
@@ -77,7 +81,9 @@ fn record_editor_with_delete(
             return;
         }
         let value = draft.source.borrow().clone();
-        let base = draft.draft.as_ref().unwrap().base.clone();
+        let Some(base) = draft.draft.as_ref().map(|d| d.base.clone()) else {
+            return;
+        };
         if value == base {
             model.close_sheet();
             return;
@@ -113,7 +119,11 @@ fn record_editor_with_delete(
     });
     let footer: Rc<dyn NativeView> = if let Some(index) = delete_rule {
         let weak = Rc::downgrade(model);
-        let base = draft.draft.as_ref().unwrap().base.clone();
+        // A sheet's model is always a draft; the live source is the same base otherwise.
+        let base = draft
+            .draft
+            .as_ref()
+            .map_or_else(|| draft.source.borrow().clone(), |d| d.base.clone());
         let error = Rc::downgrade(&message);
         let delete = Button::new(&ui, "Delete Rule").on_click(move || {
             let Some(model) = weak.upgrade() else { return };
@@ -182,6 +192,10 @@ fn record_editor_with_delete(
 
 pub(super) fn workspaces(ui: Ui, model: &Rc<Model>) -> Page {
     let mut f = FormBuilder::new(ui, model);
+    #[expect(
+        clippy::unwrap_used,
+        reason = "setting keys are literals; the native settings tests build every page and fail on an unknown key"
+    )]
     let mode = VirtualWorkspaceSettings::field("mode").unwrap();
     let separate = f.switch(
         mode.title,
@@ -349,7 +363,9 @@ pub(super) fn workspace_detail(ui: Ui, model: &Rc<Model>, i: usize) -> Page {
             if s.virtual_workspaces.workspace_names.len() <= i {
                 s.virtual_workspaces.workspace_names.resize(i + 1, String::new());
             }
-            s.virtual_workspaces.workspace_names[i] = v.clone();
+            if let Some(slot) = s.virtual_workspaces.workspace_names.get_mut(i) {
+                *slot = v.clone();
+            }
             if let Some(old) = old.filter(|v| !v.is_empty()) {
                 for rule in &mut s.virtual_workspaces.workspace_rules {
                     if rule.workspace == WorkspaceSelector::Name(old.clone()) {
@@ -443,8 +459,8 @@ fn workspace_display_row(f: &mut FormBuilder, model: &Rc<Model>, i: usize) -> Se
                 if values.contains(&value) {
                     return;
                 }
-                if let Some(index) = old.and_then(|old| values.iter().position(|v| *v == old)) {
-                    values[index] = value;
+                if let Some(slot) = old.and_then(|old| values.iter_mut().find(|v| **v == old)) {
+                    *slot = value;
                 } else {
                     values.push(value);
                 }
@@ -499,7 +515,7 @@ fn workspace_display_row(f: &mut FormBuilder, model: &Rc<Model>, i: usize) -> Se
                         let uuid = value.len() == 36
                             && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
                         if uuid {
-                            let id = &value[..8];
+                            let id = value.get(..8).unwrap_or(value.as_str());
                             (
                                 value.clone(),
                                 "Unknown Display".into(),
@@ -706,8 +722,11 @@ fn edit_workspace_rule<T>(
     let matches = |r: &WorkspaceLayoutRule| selector_matches(&r.workspace, i, Some(&name));
     let target = rules.iter_mut().rposition(|r| matches(r) && property(r).is_some());
     if let Some(value) = value {
-        if let Some(index) = target.or_else(|| rules.iter().rposition(matches)) {
-            *property(&mut rules[index]) = Some(value);
+        if let Some(rule) = target
+            .or_else(|| rules.iter().rposition(matches))
+            .and_then(|i| rules.get_mut(i))
+        {
+            *property(rule) = Some(value);
         } else {
             let mut rule = WorkspaceLayoutRule {
                 workspace: WorkspaceSelector::Name(name),
@@ -1251,10 +1270,10 @@ fn window_tag_picker(f: &mut FormBuilder, model: &Rc<Model>, i: usize) -> Settin
             if let Some(count) = weak_count.upgrade() {
                 count.set_text(&format!("{} selected", bits.count_ones()));
             }
-            let text = match names.len() {
-                0 => "Not configured".to_string(),
-                1..=2 => names.join(", "),
-                count => format!("{}, {} +{}", names[0], names[1], count - 2),
+            let text = match names.as_slice() {
+                [] => "Not configured".to_string(),
+                [_] | [_, _] => names.join(", "),
+                [first, second, rest @ ..] => format!("{first}, {second} +{}", rest.len()),
             };
             summary.set_text(&text);
             summary.tooltip(&names.join(", "));
@@ -2077,32 +2096,32 @@ fn display_options(ui: Ui, model: &Rc<Model>, uuid: String) -> Page {
         }
     }
     fn inherited_width(s: &ScrollingLayoutSettings, field: usize) -> f64 {
-        [
-            s.column_width_ratio,
-            s.min_column_width_ratio,
-            s.max_column_width_ratio,
-        ][field]
+        match field {
+            0 => s.column_width_ratio,
+            1 => s.min_column_width_ratio,
+            _ => s.max_column_width_ratio,
+        }
     }
     let message = Rc::new(ValidationMessage::new(&ui));
-    let fields = (0..3)
-        .map(|field| {
+    let fields = WIDTHS
+        .iter()
+        .enumerate()
+        .map(|(field, &label)| {
             let (get_id, set_id) = (uuid.clone(), uuid.clone());
             (
-                WIDTHS[field],
+                label,
                 inherited_field(
                     &mut f,
-                    &format!("{} column width", WIDTHS[field]),
+                    &format!("{label} column width"),
                     "%",
                     100.0,
                     Rc::downgrade(&message),
                     move |s| {
                         let scrolling = &s.settings.layout.scrolling;
-                        let own = scrolling.per_display.get(&get_id).and_then(|o| {
-                            [
-                                o.column_width_ratio,
-                                o.min_column_width_ratio,
-                                o.max_column_width_ratio,
-                            ][field]
+                        let own = scrolling.per_display.get(&get_id).and_then(|o| match field {
+                            0 => o.column_width_ratio,
+                            1 => o.min_column_width_ratio,
+                            _ => o.max_column_width_ratio,
                         });
                         (own, inherited_width(scrolling, field))
                     },
@@ -2197,7 +2216,7 @@ fn override_group(
     reset.tooltip(&format!("{revert}: follow {source} again on this display"));
     // Under the label, whether this display follows the shared values or its own.
     let status = Rc::new(Caption::single_line(&ui, ""));
-    let first = objc2::Message::retain(fields[0].1.ns_text_field());
+    let first = fields.first().map(|(_, field)| objc2::Message::retain(field.ns_text_field()));
     let weak_reset = Rc::downgrade(&reset);
     let source = source.to_owned();
     let current = overridden.clone();
@@ -2217,7 +2236,11 @@ fn override_group(
         },
     );
     let control = field_group(&ui, unit, fields).push(reset);
-    f.row(title, control, message).description_view(status).label_baseline(&first)
+    let row = f.row(title, control, message).description_view(status);
+    match &first {
+        Some(first) => row.label_baseline(first),
+        None => row,
+    }
 }
 
 /// Compact fields in a row, each captioned beneath, as in an inspector.
