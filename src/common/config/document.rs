@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::Path;
 
+use anyhow::Context;
 use serde::Serialize;
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
@@ -14,6 +15,10 @@ pub struct ConfigDocument {
 }
 
 impl Default for ConfigDocument {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "the bundled template is fixed at build time and parsed by default_document_is_the_canonical_template"
+    )]
     fn default() -> Self {
         Self {
             document: include_str!("../../../rift.default.toml").parse().unwrap(),
@@ -90,8 +95,8 @@ impl ConfigDocument {
         let mut document = self.clone();
         patch(
             document.document.as_table_mut(),
-            before.as_table().unwrap(),
-            after.as_table().unwrap(),
+            before.as_table().context("config source did not serialize to a table")?,
+            after.as_table().context("edited config source did not serialize to a table")?,
             "",
             None,
         )?;
@@ -226,7 +231,7 @@ fn patch(
         if let Some(array) = value.as_array_mut() {
             let old_array = table.get(actual).and_then(Item::as_array);
             let old_values = before.get(key).and_then(toml::Value::as_array);
-            let new_values = new.as_array().unwrap();
+            let new_values = new.as_array().context("array setting serialized to a non-array")?;
             let mut matched = Vec::new();
             if key == "workspace_rules"
                 && let Some(values) = old_values
@@ -243,8 +248,8 @@ fn patch(
                         .filter(|old| old.get("workspace") == selector)
                         .count()
                         == new_values.iter().filter(|new| new.get("workspace") == selector).count();
-                    if let Some(old) = values.iter().enumerate().position(|(i, old)| {
-                        !used[i]
+                    if let Some(old) = values.iter().zip(&used).position(|(old, &taken)| {
+                        !taken
                             && if same_count {
                                 old.get("workspace") == selector
                             } else {
@@ -252,40 +257,45 @@ fn patch(
                                     || ["layout", "display"].iter().any(|property| {
                                         new.get(property).is_none()
                                             && old.get(property).is_some()
-                                            && old
-                                                .as_table()
-                                                .unwrap()
-                                                .iter()
-                                                .filter(|(key, _)| key.as_str() != *property)
-                                                .eq(new.as_table().unwrap().iter())
+                                            && old.as_table().zip(new.as_table()).is_some_and(
+                                                |(old, new)| {
+                                                    old.iter()
+                                                        .filter(|(key, _)| {
+                                                            key.as_str() != *property
+                                                        })
+                                                        .eq(new.iter())
+                                                },
+                                            )
                                     })
                             }
-                    }) {
-                        matched[index] = Some(old);
-                        used[old] = true;
+                    }) && let (Some(slot), Some(taken)) =
+                        (matched.get_mut(index), used.get_mut(old))
+                    {
+                        *slot = Some(old);
+                        *taken = true;
                     }
                 }
                 // Reserve unchanged occurrences before pairing edited selectors.
                 for (index, new) in new_values.iter().enumerate() {
-                    if matched[index].is_none()
-                        && let Some(old) = values.iter().enumerate().position(|(i, old)| {
-                            !used[i] && old.get("workspace") == new.get("workspace")
+                    if let Some(slot @ None) = matched.get_mut(index)
+                        && let Some(old) = values.iter().zip(&used).position(|(old, &taken)| {
+                            !taken && old.get("workspace") == new.get("workspace")
                         })
+                        && let Some(taken) = used.get_mut(old)
                     {
-                        matched[index] = Some(old);
-                        used[old] = true;
+                        *slot = Some(old);
+                        *taken = true;
                     }
                 }
             }
-            for (index, element) in array.iter_mut().enumerate() {
+            for (index, (element, new_value)) in array.iter_mut().zip(new_values).enumerate() {
                 let source = if key == "workspace_rules" {
                     matched.get(index).copied().flatten()
                 } else {
-                    old_values
-                        .and_then(|values| values.iter().position(|old| old == &new_values[index]))
+                    old_values.and_then(|values| values.iter().position(|old| old == new_value))
                 };
                 if let Some(old_index) =
-                    source.filter(|&old| old_values.unwrap()[old] == new_values[index])
+                    source.filter(|&old| old_values.and_then(|v| v.get(old)) == Some(new_value))
                     && let Some(old) = old_array.and_then(|array| array.get(old_index))
                 {
                     *element = old.clone();
@@ -293,17 +303,14 @@ fn patch(
                     && let Some(old_index) = source
                     && let Some(old) = old_array.and_then(|array| array.get(old_index))
                     && let Some(old_table) = old.as_inline_table()
+                    && let Some(old_rule) =
+                        old_values.and_then(|v| v.get(old_index)).and_then(toml::Value::as_table)
+                    && let Some(new_rule) = new_value.as_table()
                 {
                     // Edit the same rule in place: retain its indentation, comments,
                     // selector spelling and field order instead of reserializing it.
                     let mut updated = old_table.clone();
-                    patch(
-                        &mut updated,
-                        old_values.unwrap()[old_index].as_table().unwrap(),
-                        new_values[index].as_table().unwrap(),
-                        "workspace_rules",
-                        None,
-                    )?;
+                    patch(&mut updated, old_rule, new_rule, "workspace_rules", None)?;
                     *element = toml_edit::Value::InlineTable(updated);
                 } else if matches!(
                     key.as_str(),
@@ -369,11 +376,8 @@ fn insert_value(table: &mut dyn TableLike, key: &str, value: toml_edit::Value) {
                     .strip_prefix(key)
                     .is_some_and(|rest| rest.trim_start().starts_with('='))
             }) {
-                return Some((
-                    name.to_string(),
-                    prefix[..end].to_string(),
-                    prefix[end..].to_string(),
-                ));
+                let (leading, remaining) = prefix.split_at_checked(end)?;
+                return Some((name.to_string(), leading.to_string(), remaining.to_string()));
             }
         }
         None
@@ -382,13 +386,15 @@ fn insert_value(table: &mut dyn TableLike, key: &str, value: toml_edit::Value) {
         let tail: Vec<_> = table
             .iter()
             .skip_while(|(name, _)| *name != anchor)
-            .map(|(name, item)| (table.key(name).unwrap().clone(), item.clone()))
+            .filter_map(|(name, item)| Some((table.key(name)?.clone(), item.clone())))
             .collect();
         for (key, _) in &tail {
             table.remove(key.get());
         }
         table.insert(key, Item::Value(value));
-        table.key_mut(key).unwrap().leaf_decor_mut().set_prefix(leading);
+        if let Some(mut inserted) = table.key_mut(key) {
+            inserted.leaf_decor_mut().set_prefix(leading);
+        }
         for (mut old_key, item) in tail {
             if old_key.get() == anchor {
                 old_key.leaf_decor_mut().set_prefix(remaining.clone());
@@ -415,8 +421,8 @@ fn remove_value(table: &mut dyn TableLike, key: &str) {
     table.remove(key);
     if let Some(next) = next
         && !prefix.is_empty()
+        && let Some(mut key) = table.key_mut(&next)
     {
-        let mut key = table.key_mut(&next).unwrap();
         let suffix = key.leaf_decor().prefix().and_then(|prefix| prefix.as_str()).unwrap_or("");
         let combined = format!("{prefix}{suffix}");
         key.leaf_decor_mut().set_prefix(combined);
