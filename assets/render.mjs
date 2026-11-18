@@ -15,23 +15,13 @@ const tmp = mkdtempSync(join(tmpdir(), 'wave-render-'));
 const C = { bg: '#282828', text: '#d4be98', dim: '#a09176', accent: '#d8a657', aqua: '#89b482', blue: '#7daea3', line: '#7c6f64' };
 const FONT = '"JetBrainsMono NFM", "JetBrains Mono", ui-monospace, Menlo, monospace';
 
-// The wave, one row per line: [color, text] runs. Foam on top, the curl in aqua, open water in blue.
-const WAVE = [
-  [['text', '             _.-~~-._'], ['line', '   .']],
-  [['text', "          .-'  .--.  '."], ['line', "  ' ."]],
-  [['aqua', "       .-'    / .-.\\   \\"]],
-  [['aqua', "    .-'      | (  ~ |   |"], ['line', ' .']],
-  [['aqua', " .-'          \\ '--'   /"]],
-  [['blue', "~~~~~~~~~~~~~~~'~~~~~~'~~~~~~~"]],
-  [['blue', '  ~~~~~  ~~~~~~~  ~~~~~~  ~~~~']],
-];
-const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
-const art = WAVE.map((row) => row.map(([c, s]) => `<span style="color:${C[c]}">${escape(s)}</span>`).join('')).join('\n');
+// The mark: [~], a wave between brackets, the way tascii's is [x].
+const mark = `<span>[</span><b style="color:${C.blue}">~</b><span>]</span>`;
 
-const [w, h] = [960, 300];
+const [w, h] = [960, 260];
 const html = `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;width:${w}px;height:${h}px;overflow:hidden;background:${C.bg};font-family:${FONT}}</style>
-<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:64px">
-  <pre style="margin:0;font:inherit;font-size:22px;line-height:1.2">${art}</pre>
+<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:56px">
+  <div style="font-size:120px;font-weight:800;color:${C.text};letter-spacing:-0.04em;line-height:1">${mark}</div>
   <div style="display:flex;flex-direction:column;gap:14px">
     <div style="font-size:64px;font-weight:800;color:${C.accent};letter-spacing:-0.02em;line-height:1">wave</div>
     <div style="font-size:20px;color:${C.text}">a tiling window manager for macOS</div>
