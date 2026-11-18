@@ -25,7 +25,11 @@ pub fn start() -> io::Result<Child> {
         .stdout(Stdio::piped())
         .spawn()?;
     let mut ready = [0];
-    if let Err(error) = child.stdout.take().unwrap().read_exact(&mut ready) {
+    let ready = match child.stdout.take() {
+        Some(mut stdout) => stdout.read_exact(&mut ready),
+        None => Err(io::Error::other("recovery helper has no stdout pipe")),
+    };
+    if let Err(error) = ready {
         let _ = child.kill();
         let _ = child.wait();
         return Err(error);
@@ -46,7 +50,10 @@ pub fn run(_pid: i32) -> io::Result<()> {
         eprintln!("window recovery timed out after 60 seconds");
         std::process::exit(1);
     });
-    objc2::rc::autoreleasepool(|_| recover(MainThreadMarker::new().unwrap()));
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Err(io::Error::other("window recovery must run on the main thread"));
+    };
+    objc2::rc::autoreleasepool(|_| recover(mtm));
     Ok(())
 }
 

@@ -255,10 +255,10 @@ fn modifier_from_token(token: &str) -> Option<Modifiers> {
     let t = normalize_token(token);
     let (side, base) = split_side(&t);
     let family = match base {
-        "alt" | "option" => &MOD_FAMILIES[1],
-        "ctrl" | "control" => &MOD_FAMILIES[0],
-        "shift" => &MOD_FAMILIES[2],
-        "meta" | "cmd" | "command" => &MOD_FAMILIES[3],
+        "alt" | "option" => MOD_FAMILIES.get(1)?,
+        "ctrl" | "control" => MOD_FAMILIES.get(0)?,
+        "shift" => MOD_FAMILIES.get(2)?,
+        "meta" | "cmd" | "command" => MOD_FAMILIES.get(3)?,
         _ => return None,
     };
 
@@ -698,8 +698,8 @@ impl FromStr for KeyCode {
         // function keys
         if let Some(rest) = t.strip_prefix('f') {
             if let Ok(n) = rest.parse::<u8>() {
-                if (1..=20).contains(&n) {
-                    return Ok(F_KEYS[(n - 1) as usize]);
+                if let Some(&key) = usize::from(n).checked_sub(1).and_then(|i| F_KEYS.get(i)) {
+                    return Ok(key);
                 }
             }
         }
@@ -1285,7 +1285,10 @@ fn generate_virtual_keymap(_mtm: MainThreadMarker) -> StdHashMap<String, KeyCode
                 continue;
             }
 
-            let s = String::from_utf16_lossy(&chars[..len]).to_lowercase();
+            let Some(typed) = chars.get(..len) else {
+                continue;
+            };
+            let s = String::from_utf16_lossy(typed).to_lowercase();
 
             keymap.entry(s).or_insert(key_code_enum);
         }

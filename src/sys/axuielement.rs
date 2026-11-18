@@ -8,13 +8,12 @@ use std::ptr::{self, NonNull};
 use cgs::compositor::G_CONNECTION;
 use objc2_application_services::{AXError, AXUIElement as RawAXUIElement, AXValue, AXValueType};
 use objc2_core_foundation::{
-    CFArray, CFBoolean, CFData, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize, ConcreteType,
+    CFArray, CFBoolean, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize, ConcreteType,
 };
 
 use super::skylight::CGSGetWindowBounds;
 use crate::actor::app::WindowId;
 use crate::sys::app::pid_t;
-use crate::sys::skylight::_AXUIElementCreateWithRemoteToken;
 
 pub const AX_WINDOW_ROLE: &str = "AXWindow";
 pub const AX_STANDARD_WINDOW_SUBROLE: &str = "AXStandardWindow";
@@ -83,35 +82,6 @@ impl AXUIElement {
         Self::new(inner)
     }
 
-    // TODO: im not sure this works...
-    #[inline]
-    pub fn from_window_id(wid: WindowId) -> Self {
-        const BUFSIZE: usize = 0x14;
-        const MAGIC: u32 = 0x636f636f;
-
-        let mut data = [0u8; BUFSIZE];
-
-        let pid_bytes = (wid.pid as u32).to_ne_bytes();
-        data[0x0..0x0 + pid_bytes.len()].copy_from_slice(&pid_bytes);
-
-        let magic_bytes = MAGIC.to_ne_bytes();
-        data[0x8..0x8 + magic_bytes.len()].copy_from_slice(&magic_bytes);
-
-        let element_id = wid.idx.get() as u64;
-        let element_bytes = element_id.to_ne_bytes();
-        data[0xc..0xc + element_bytes.len()].copy_from_slice(&element_bytes);
-
-        debug_assert_eq!(data.len(), BUFSIZE);
-        let data = CFData::from_bytes(&data);
-
-        let inner = unsafe {
-            _AXUIElementCreateWithRemoteToken(CFRetained::<CFData>::as_ptr(&data).as_ptr())
-        };
-        Self::new(unsafe {
-            CFRetained::from_raw(NonNull::new(inner).expect("non-null AXUIElement pointer"))
-        })
-    }
-
     #[inline]
     pub fn retained(&self) -> CFRetained<RawAXUIElement> { self.inner.clone() }
 
@@ -122,14 +92,36 @@ impl AXUIElement {
     #[inline]
     pub fn raw_ptr(&self) -> NonNull<RawAXUIElement> { CFRetained::as_ptr(&self.inner) }
 
+    /// # Safety
+    ///
+    /// `ptr` must be a non-null, valid `AXUIElement` the caller doesn't own.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ptr` is null.
     #[inline]
+    #[expect(
+        clippy::expect_used,
+        reason = "the caller passes a non-null object, the first precondition in # Safety"
+    )]
     pub unsafe fn from_get_rule(ptr: *const RawAXUIElement) -> Self {
         let ptr = NonNull::new(ptr.cast_mut()).expect("attempted to create a NULL object");
         let retained = unsafe { CFRetained::retain(ptr) };
         Self::new(retained)
     }
 
+    /// # Safety
+    ///
+    /// `ptr` must be a non-null, valid `AXUIElement` whose +1 reference passes to the result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ptr` is null.
     #[inline]
+    #[expect(
+        clippy::expect_used,
+        reason = "the caller passes a non-null object, the first precondition in # Safety"
+    )]
     pub unsafe fn from_create_rule(ptr: *const RawAXUIElement) -> Self {
         let ptr = NonNull::new(ptr.cast_mut()).expect("attempted to create a NULL object");
         let retained = unsafe { CFRetained::from_raw(ptr) };
@@ -139,28 +131,14 @@ impl AXUIElement {
     fn copy_attribute(&self, name: &'static str) -> Result<Option<CFRetained<CFType>>> {
         let attr = CFString::from_static_str(name);
         let mut value: *const CFType = ptr::null();
-        let status = unsafe {
-            self.inner.copy_attribute_value(
-                attr.as_ref(),
-                NonNull::new((&mut value) as *mut *const CFType)
-                    .expect("pointer to local is never null"),
-            )
-        };
+        let status =
+            unsafe { self.inner.copy_attribute_value(attr.as_ref(), NonNull::from(&mut value)) };
         match status {
-            AXError::Success => {
-                if value.is_null() {
-                    Ok(None)
-                } else {
-                    // SAFETY: The function follows the Copy rule and returns
-                    // a value the caller owns.
-                    let retained = unsafe {
-                        CFRetained::from_raw(
-                            NonNull::new(value as *mut CFType).expect("non-null value pointer"),
-                        )
-                    };
-                    Ok(Some(retained))
-                }
-            }
+            AXError::Success => Ok(NonNull::new(value.cast_mut()).map(|value| {
+                // SAFETY: The function follows the Copy rule and returns
+                // a value the caller owns.
+                unsafe { CFRetained::from_raw(value) }
+            })),
             AXError::NoValue => Ok(None),
             err => Err(Error::Ax(err)),
         }
@@ -371,13 +349,11 @@ impl AXUIElement {
                 std::ptr::NonNull::new_unchecked(&mut out_ptr),
             )
         };
-        if status == AXError::Success && !out_ptr.is_null() {
-            let retained = unsafe {
-                CFRetained::from_raw(
-                    std::ptr::NonNull::new(out_ptr as *mut RawAXUIElement)
-                        .expect("non-null AXUIElement pointer"),
-                )
-            };
+        if status == AXError::Success
+            && let Some(out) = std::ptr::NonNull::new(out_ptr.cast_mut())
+        {
+            // SAFETY: copy_element_at_position follows the Copy rule; the caller owns `out`.
+            let retained = unsafe { CFRetained::from_raw(out) };
             return Some(Self::new(retained));
         }
 
@@ -514,12 +490,8 @@ fn decode_string(value: CFRetained<CFType>) -> Result<String> {
 
 fn rect_from_axvalue(value: &AXValue) -> Result<CGRect> {
     let mut rect = CGRect::default();
-    let success = unsafe {
-        value.value(
-            AXValueType::CGRect,
-            NonNull::new((&mut rect as *mut CGRect).cast::<c_void>()).expect("rect pointer"),
-        )
-    };
+    let success =
+        unsafe { value.value(AXValueType::CGRect, NonNull::from(&mut rect).cast::<c_void>()) };
     if success {
         Ok(rect)
     } else {
@@ -528,7 +500,7 @@ fn rect_from_axvalue(value: &AXValue) -> Result<CGRect> {
 }
 
 fn make_axvalue<T>(ty: AXValueType, value: &mut T) -> Result<CFRetained<AXValue>> {
-    let ptr = NonNull::new((value as *mut T).cast::<c_void>()).expect("value pointer");
+    let ptr = NonNull::from(value).cast::<c_void>();
     unsafe { AXValue::new(ty, ptr) }.ok_or(Error::Ax(AXError::Failure))
 }
 

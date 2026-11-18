@@ -41,6 +41,13 @@ impl WakeupHandle {
     /// The handler is run in all common modes. `order` controls the order it is
     /// run in relative to other run loop sources, and should normally be set to
     /// 0.
+    /// # Panics
+    ///
+    /// Panics if CoreFoundation can't allocate the run loop source.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "every thread has a current run loop, and CFRunLoopSourceCreate fails only on allocation failure"
+    )]
     pub fn for_current_thread<F: Fn() + 'static>(order: CFIndex, handler: F) -> WakeupHandle {
         let handler_ptr = Box::into_raw(Box::new(Handler { ref_count: 0, func: handler }));
 

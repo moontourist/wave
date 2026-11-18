@@ -51,16 +51,13 @@ impl Observer {
     ) -> Result<ObserverBuilder<F>, AxError> {
         let mut observer_ptr: *mut AXObserver = ptr::null_mut();
         let status = unsafe {
-            AXObserver::create(
-                pid,
-                Some(internal_callback),
-                NonNull::new(&mut observer_ptr as *mut *mut AXObserver).expect("nonnull pointer"),
-            )
+            AXObserver::create(pid, Some(internal_callback), NonNull::from(&mut observer_ptr))
         };
         make_result(status)?;
-        let observer = unsafe {
-            CFRetained::from_raw(NonNull::new(observer_ptr).expect("observer must be non-null"))
-        };
+        let observer = NonNull::new(observer_ptr)
+            .ok_or(AxError::Ax(objc2_application_services::AXError::Failure))?;
+        // SAFETY: AXObserverCreate follows the Create rule; the caller owns the observer.
+        let observer = unsafe { CFRetained::from_raw(observer) };
         Ok(ObserverBuilder(observer, PhantomData))
     }
 
@@ -77,13 +74,14 @@ impl Observer {
             AXObserver::create(
                 pid,
                 Some(internal_callback_with_notification),
-                NonNull::new(&mut observer_ptr as *mut *mut AXObserver).expect("nonnull pointer"),
+                NonNull::from(&mut observer_ptr),
             )
         };
         make_result(status)?;
-        let observer = unsafe {
-            CFRetained::from_raw(NonNull::new(observer_ptr).expect("observer must be non-null"))
-        };
+        let observer = NonNull::new(observer_ptr)
+            .ok_or(AxError::Ax(objc2_application_services::AXError::Failure))?;
+        // SAFETY: AXObserverCreate follows the Create rule; the caller owns the observer.
+        let observer = unsafe { CFRetained::from_raw(observer) };
         Ok(ObserverBuilder(observer, PhantomData))
     }
 }
@@ -106,9 +104,11 @@ impl<F: Fn(AXUIElement, &'static str) + 'static> ObserverBuilder<F> {
 impl<F> ObserverBuilder<F> {
     fn install_inner(self, callback: Callback) -> Observer {
         let run_loop_source = unsafe { self.0.run_loop_source() };
-        if let Some(run_loop) = CFRunLoop::current() {
-            let mode: &CFRunLoopMode =
-                unsafe { kCFRunLoopCommonModes.expect("kCFRunLoopCommonModes") };
+        // SAFETY: kCFRunLoopCommonModes is an immutable CoreFoundation constant.
+        if let Some(run_loop) = CFRunLoop::current()
+            && let Some(mode) = unsafe { kCFRunLoopCommonModes }
+        {
+            let mode: &CFRunLoopMode = mode;
             run_loop.add_source(Some(run_loop_source.as_ref()), Some(mode));
         }
         Observer {

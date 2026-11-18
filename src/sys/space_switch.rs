@@ -421,6 +421,10 @@ fn generate_iohid_system_queue_element(event: &CGEvent) -> Vec<u8> {
     out
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "CGEventCreate with no source fails only on allocation failure"
+)]
 fn new_event() -> CFRetained<CGEvent> { CGEvent::new(None).expect("CGEventCreate should succeed") }
 
 fn configure_dock_swipe_event(event: &CGEvent, phase: i64) {

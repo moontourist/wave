@@ -72,6 +72,10 @@ impl EventLoopWaker {
         });
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "AppKit fails to build an ApplicationDefined event only on allocation failure, and a lost wake would stall the executor"
+    )]
     fn make_wake_event() -> Retained<NSEvent> {
         NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
             NSEventType::ApplicationDefined,

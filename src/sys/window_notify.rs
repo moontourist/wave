@@ -104,13 +104,10 @@ pub fn update_window_notifications(window_ids: &[u32]) {
 #[inline(always)]
 fn read<T: Copy + Sized + 'static>(bytes: &[u8], off: usize) -> Option<T> {
     let n = std::mem::size_of::<T>();
-    if bytes.len() < off + n {
-        return None;
-    }
-    let mut buf = [0u8; 32];
-    assert!(n <= buf.len(), "read_ne: type too large");
-    buf[..n].copy_from_slice(&bytes[off..off + n]);
-    Some(unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const T) })
+    let src = bytes.get(off..off.checked_add(n)?)?;
+    // SAFETY: `src` holds exactly size_of::<T>() initialized bytes, and read_unaligned
+    // has no alignment requirement. Callers read plain integer types.
+    Some(unsafe { std::ptr::read_unaligned(src.as_ptr().cast::<T>()) })
 }
 
 fn read_u32s(bytes: &[u8], off: usize, count: usize) -> Option<Vec<u32>> {

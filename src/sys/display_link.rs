@@ -109,7 +109,10 @@ impl DisplayLink {
                 if state.cancelled.load(Ordering::Acquire) {
                     return;
                 }
-                let mtm = MainThreadMarker::new().expect("main dispatch queue");
+                // The main dispatch queue runs on the main thread.
+                let Some(mtm) = MainThreadMarker::new() else {
+                    return;
+                };
                 let Some(screen) = NSScreen::screens(mtm)
                     .iter()
                     .find(|screen| screen.get_number() == Ok(ScreenId::new(display)))

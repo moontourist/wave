@@ -61,11 +61,10 @@ fn bundle_executable(path: PathBuf) -> PathBuf {
             if ancestor.file_name().is_some_and(|name| name == "Cellar") {
                 if let Ok(relative) = real.strip_prefix(ancestor) {
                     let mut parts = relative.components();
-                    if parts.next().is_some_and(|part| part.as_os_str() == "rift") {
-                        let stable = ancestor
-                            .parent()
-                            .unwrap()
-                            .join("opt/rift/Rift.app/Contents/MacOS/rift");
+                    if parts.next().is_some_and(|part| part.as_os_str() == "rift")
+                        && let Some(prefix) = ancestor.parent()
+                    {
+                        let stable = prefix.join("opt/rift/Rift.app/Contents/MacOS/rift");
                         if stable.is_file() {
                             return stable;
                         }
@@ -88,10 +87,7 @@ fn find_rift_executable_in_path(path_env: &std::ffi::OsStr) -> io::Result<Option
 
             let base = match current_dir.as_ref() {
                 Some(dir) => dir,
-                None => {
-                    current_dir = Some(env::current_dir()?);
-                    current_dir.as_ref().expect("just set")
-                }
+                None => &*current_dir.insert(env::current_dir()?),
             };
             return Ok(Some(bundle_executable(base.join(candidate))));
         }
@@ -297,6 +293,16 @@ pub fn service_uninstall() -> io::Result<()> {
     Ok(())
 }
 
+/// The plist path as a launchctl argument.
+fn plist_arg(path: &Path) -> io::Result<&str> {
+    path.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "LaunchAgent plist path is not UTF-8",
+        )
+    })
+}
+
 pub fn service_start() -> io::Result<()> {
     let plist_path = plist_path()?;
     if !plist_path.is_file() {
@@ -331,10 +337,7 @@ pub fn service_start() -> io::Result<()> {
     }
     if !is_bootstrapped || plist_changed {
         let _ = run_launchctl(&["enable", &service_target], true);
-        let code = run_launchctl(
-            &["bootstrap", &domain_target, plist_path.to_str().unwrap()],
-            false,
-        )?;
+        let code = run_launchctl(&["bootstrap", &domain_target, plist_arg(&plist_path)?], false)?;
         if code != 0 {
             return Err(io::Error::other(format!("bootstrap failed (exit {code})")));
         }
@@ -407,8 +410,7 @@ pub fn service_stop() -> io::Result<()> {
             ))
         }
     } else {
-        let code1 =
-            run_launchctl(&["bootout", &domain_target, plist_path.to_str().unwrap()], false)?;
+        let code1 = run_launchctl(&["bootout", &domain_target, plist_arg(&plist_path)?], false)?;
         let code2 = run_launchctl(&["disable", &service_target], false)?;
 
         if code1 == 0 && code2 == 0 {

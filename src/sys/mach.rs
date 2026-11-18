@@ -22,9 +22,13 @@ static G_NAME: &str = "acsandmann.rift";
 
 fn bs_name() -> CString {
     if let Ok(name) = std::env::var("RIFT_BS_NAME") {
-        return CString::new(name).unwrap();
+        match CString::new(name) {
+            Ok(name) => return name,
+            Err(error) => tracing::warn!(%error, "ignoring RIFT_BS_NAME with a NUL byte"),
+        }
     }
-    CString::new(format!("{}{}", MACH_BS_NAME_FMT_PREFIX, G_NAME)).unwrap()
+    // Both parts are NUL-free constants.
+    CString::new(format!("{MACH_BS_NAME_FMT_PREFIX}{G_NAME}")).unwrap_or_default()
 }
 
 pub fn is_mach_server_registered() -> bool {
@@ -468,11 +472,13 @@ unsafe extern "C" {
 }
 
 fn cstr_bytes_eq(left: *const c_char, right_with_nul: &[u8]) -> bool {
-    if left.is_null() || right_with_nul.is_empty() || *right_with_nul.last().unwrap() != 0 {
+    let Some((&0, right)) = right_with_nul.split_last() else {
+        return false;
+    };
+    if left.is_null() {
         return false;
     }
 
-    let right = &right_with_nul[..right_with_nul.len() - 1];
     unsafe { CStr::from_ptr(left).to_bytes() == right }
 }
 
@@ -548,9 +554,9 @@ pub unsafe fn macho_find_symbol(
     target_image: &[u8],
     target_symbol: &[u8],
 ) -> Option<*const c_void> {
-    if target_symbol.is_empty() || *target_symbol.last().unwrap() != 0 {
+    let Some((&0, target)) = target_symbol.split_last() else {
         return None;
-    }
+    };
 
     let mut slide = 0isize;
     let header = macho_find_image_header(target_image, &mut slide)?;
@@ -561,7 +567,6 @@ pub unsafe fn macho_find_symbol(
         + slide) as usize;
     let symbol_str = (linkedit_base + (*symtab_command).stroff as usize) as *const c_char;
     let symbol_sym = (linkedit_base + (*symtab_command).symoff as usize) as *const nlist_64;
-    let target = &target_symbol[..target_symbol.len() - 1];
 
     for i in 0..symbol_count {
         let list = symbol_sym.add(i);
@@ -594,7 +599,9 @@ unsafe fn create_connection_server_port() -> mach_port_t {
 
     let bundle = b"com.acsandmann.rift";
     let copy_len = bundle.len().min(msg.0.bundle_name.len());
-    msg.0.bundle_name[..copy_len].copy_from_slice(&bundle[..copy_len]);
+    for (dst, &src) in msg.0.bundle_name.iter_mut().zip(bundle) {
+        *dst = src;
+    }
     msg.0.bundle_size = copy_len as i32;
 
     let header_ptr = core::ptr::addr_of_mut!(msg.0.header);

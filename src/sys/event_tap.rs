@@ -152,10 +152,11 @@ impl EventTap {
             }
             return None;
         };
-        if let Some(rl) = CFRunLoop::current() {
-            let mode: &CFRunLoopMode = unsafe {
-                kCFRunLoopCommonModes.expect("kCFRunLoopCommonModes should be available on macOS")
-            };
+        // SAFETY: kCFRunLoopCommonModes is an immutable CoreFoundation constant.
+        if let Some(rl) = CFRunLoop::current()
+            && let Some(mode) = unsafe { kCFRunLoopCommonModes }
+        {
+            let mode: &CFRunLoopMode = mode;
             rl.add_source(Some(&source), Some(mode));
         }
         CGEvent::tap_enable(&port, true);

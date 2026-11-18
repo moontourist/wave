@@ -3,14 +3,13 @@ use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
 use cgs::compositor::{G_CONNECTION, main_connection};
-use objc2::rc::Retained;
 use objc2::{ClassType, msg_send};
 use objc2_app_kit::NSScreen;
 use objc2_core_foundation::{
     CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize,
 };
 use objc2_core_graphics::{CGDisplayBounds, CGError, CGGetActiveDisplayList, CGMainDisplayID};
-use objc2_foundation::{MainThreadMarker, NSArray, NSNumber, ns_string};
+use objc2_foundation::{MainThreadMarker, NSNumber, ns_string};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -253,11 +252,10 @@ impl<S: System> ScreenCache<S> {
 
         let screens: Vec<ScreenInfo> = cg_screens
             .iter()
-            .enumerate()
-            .map(|(idx, &CGScreenInfo { cg_id, bounds })| {
+            .zip(uuid_strings)
+            .map(|(&CGScreenInfo { cg_id, bounds }, display_uuid)| {
                 let notch_height = self.system.notch_height(cg_id.as_u32());
                 let frame = constrain_display_bounds(cg_id.as_u32(), bounds, notch_height);
-                let display_uuid = uuid_strings[idx].clone();
                 ScreenInfo {
                     id: cg_id,
                     frame,
@@ -744,13 +742,6 @@ pub mod diagnostic {
     pub fn managed_displays() -> CFRetained<CFArray> {
         unsafe {
             CFRetained::from_raw(NonNull::new_unchecked(CGSCopyManagedDisplays(main_connection())))
-        }
-    }
-
-    pub fn managed_display_spaces() -> Retained<NSArray> {
-        unsafe {
-            Retained::from_raw(CGSCopyManagedDisplaySpaces(main_connection()))
-                .expect("CGSCopyManagedDisplaySpaces returned null")
         }
     }
 }

@@ -192,6 +192,14 @@ impl Timer {
     ///
     /// * `fire_date` - The absolute time when the timer should fire (CFAbsoluteTime)
     /// * `interval` - The repeat interval in seconds (0.0 for one-shot timer)
+    ///
+    /// # Panics
+    ///
+    /// Panics if CoreFoundation can't allocate the timer.
+    #[expect(
+        clippy::expect_used,
+        reason = "every thread has a current run loop, and CFRunLoopTimerCreate fails only on allocation failure"
+    )]
     pub fn new(fire_date: CFAbsoluteTime, interval: CFTimeInterval) -> Self {
         let inner = Arc::new(Mutex::new(TimerState {
             cf_timer: None,

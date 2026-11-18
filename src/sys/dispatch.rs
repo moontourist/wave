@@ -165,6 +165,6 @@ pub fn reap_on_exit_proc(pid: pid_t) {
     unsafe { dispatch_set_context(src.deref() as *const _ as *mut c_void, ctx) };
     src.set_event_handler_f(proc_event_handler);
     let mut sources = sources_map().lock();
+    src.resume();
     sources.insert(pid, src);
-    sources[&pid].resume();
 }
