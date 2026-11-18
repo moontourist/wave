@@ -41,6 +41,7 @@ impl Dimmer {
     fn new(client: RiftMachClient) -> Self {
         Self {
             client,
+            // SAFETY: SLSMainConnectionID takes no arguments and returns this process's connection.
             cid: unsafe { SLSMainConnectionID() },
             dimmed: Arc::default(),
             space_by_display: HashMap::new(),
@@ -159,6 +160,7 @@ fn set_brightness(cid: ConnID, changes: impl IntoIterator<Item = (WinID, f32)>) 
         return Ok(());
     }
 
+    // SAFETY: `windows` and `levels` both hold `windows.len()` elements and outlive the call.
     let result = unsafe {
         SLSSetWindowListBrightness(cid, windows.as_ptr(), levels.as_ptr(), windows.len() as isize)
     };

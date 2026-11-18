@@ -101,7 +101,7 @@ impl RiftMachClient {
     pub fn is_available(&self) -> bool {
         let service_port = service_name()
             .ok()
-            .and_then(|name| unsafe { lookup_service(&name).ok() })
+            .and_then(|name| lookup_service(&name).ok())
             .map(ServicePort::new);
         service_port.is_some()
     }
@@ -118,7 +118,7 @@ impl RiftMachClient {
         request: &RiftRequest,
     ) -> Result<RiftResponse<T>, ClientError> {
         let request_json = serde_json::to_vec(request).map_err(ClientError::Encode)?;
-        let response = unsafe { send_request(&request_json, None)? };
+        let response = send_request(&request_json, None)?;
         parse_json_payload(&response, "response")
     }
 
@@ -261,7 +261,7 @@ impl RiftMachClient {
         let reply_port = ReplyPort::allocate(MACH_PORT_QLIMIT_LARGE)?;
         let request_json = serde_json::to_vec(&request).map_err(ClientError::Encode)?;
         let deadline = std::time::Instant::now() + Duration::from_millis(REQUEST_TIMEOUT_MS.into());
-        let mut payload = unsafe { send_request(&request_json, Some(reply_port.name))? };
+        let mut payload = send_request(&request_json, Some(reply_port.name))?;
         let mut pending = VecDeque::new();
         loop {
             let value: Value = parse_json_payload(&payload, "response")?;
@@ -276,7 +276,7 @@ impl RiftMachClient {
                     .saturating_duration_since(std::time::Instant::now())
                     .as_millis()
                     .min(u32::MAX.into()) as u32;
-                payload = unsafe { receive_message(reply_port.name, Some(timeout))?.1 };
+                payload = receive_message(reply_port.name, Some(timeout))?.1;
                 continue;
             }
             return match parse_json_payload::<RiftResponse<T>>(&payload, "response")? {
@@ -348,10 +348,8 @@ impl WindowManagementSession {
         let id = self.next_request_id();
         let payload = serde_json::to_vec(&request).map_err(ClientError::Encode)?;
         let port = self.reply_port.name;
-        let response = unsafe {
-            let first = send_request_with_id(&payload, Some((port, id)))?;
-            receive_reply(port, id, first)?
-        };
+        let first = send_request_with_id(&payload, Some((port, id)))?;
+        let response = receive_reply(port, id, first)?;
         match parse_json_payload::<RiftResponse>(&response, "response")? {
             RiftResponse::Success { .. } => Ok(()),
             RiftResponse::Error { error } => Err(ClientError::Server(error)),
@@ -393,7 +391,7 @@ impl RiftMachSubscription {
         let pending = self.pending.lock().map_err(|_| ClientError::Poisoned)?.pop_front();
         let payload = match pending {
             Some(payload) => payload,
-            None => unsafe { receive_message(self.reply_port.name, None)?.1 },
+            None => receive_message(self.reply_port.name, None)?.1,
         };
         parse_json_payload(&payload, "event")
     }
@@ -443,6 +441,10 @@ struct ReceiveBuffer {
 /// Initializes only the inline message bytes declared in the Mach header.
 /// Keeping the maximum-sized storage uninitialized avoids clearing 256 KiB
 /// for every usually-small client request without introducing an allocation.
+///
+/// # Safety
+///
+/// `payload.len()` must be at most `MAX_MESSAGE_SIZE`, the size of the inline data.
 unsafe fn prepare_inline_send(
     storage: &mut MaybeUninit<InlineMessage>,
     mut header: MachMessageHeader,
@@ -454,12 +456,18 @@ unsafe fn prepare_inline_send(
     header.size = (size_of::<MachMessageHeader>() + aligned_len) as u32;
 
     let message = storage.as_mut_ptr();
+    // SAFETY: `message` points into `storage`, so projecting to its header field stays in bounds.
     let header_ptr = unsafe { addr_of_mut!((*message).header) };
+    // SAFETY: `header_ptr` is an aligned, writable header slot inside `storage`.
     unsafe { header_ptr.write(header) };
 
+    // SAFETY: `message` points into `storage`, so projecting to its data field stays in bounds.
     let data = unsafe { addr_of_mut!((*message).data) }.cast::<u8>();
+    // SAFETY: The caller keeps `payload` within MAX_MESSAGE_SIZE, the size of `data`, and the two
+    // buffers don't overlap.
     unsafe { copy_nonoverlapping(payload.as_ptr(), data, payload.len()) };
     if aligned_len > payload.len() {
+        // SAFETY: MAX_MESSAGE_SIZE is a multiple of 4, so the aligned length still fits in `data`.
         unsafe {
             std::ptr::write_bytes(
                 data.add(payload.len()),
@@ -530,6 +538,7 @@ impl ServicePort {
 
 impl Drop for ServicePort {
     fn drop(&mut self) {
+        // SAFETY: `self.name` holds a send right this ServicePort owns, released once here.
         unsafe {
             let _ = mach_port_deallocate(mach_task_self(), self.name);
         }
@@ -538,6 +547,8 @@ impl Drop for ServicePort {
 
 impl ReplyPort {
     fn allocate(queue_limit: u32) -> Result<Self, ClientError> {
+        // SAFETY: Every out-pointer and the limits struct are live locals; each failure path
+        // releases what it allocated.
         unsafe {
             let task = mach_task_self();
             let mut name = 0;
@@ -574,6 +585,8 @@ impl ReplyPort {
 
 impl Drop for ReplyPort {
     fn drop(&mut self) {
+        // SAFETY: `self.name` is the receive and send right this ReplyPort allocated, released once
+        // here.
         unsafe {
             let task = mach_task_self();
             let _ = mach_port_mod_refs(task, self.name, MACH_PORT_RIGHT_RECEIVE, -1);
@@ -582,8 +595,9 @@ impl Drop for ReplyPort {
     }
 }
 
-unsafe fn lookup_service(name: &CStr) -> Result<MachPort, ClientError> {
+fn lookup_service(name: &CStr) -> Result<MachPort, ClientError> {
     let mut bootstrap_port = 0;
+    // SAFETY: `bootstrap_port` is a live local the call writes.
     let result = unsafe {
         task_get_special_port(mach_task_self(), TASK_BOOTSTRAP_PORT, &mut bootstrap_port)
     };
@@ -595,7 +609,9 @@ unsafe fn lookup_service(name: &CStr) -> Result<MachPort, ClientError> {
     }
 
     let mut service_port = 0;
+    // SAFETY: `name` is a NUL-terminated C string, and `service_port` is a live local.
     let result = unsafe { bootstrap_look_up(bootstrap_port, name.as_ptr(), &mut service_port) };
+    // SAFETY: This releases the bootstrap send right task_get_special_port returned, once.
     let _ = unsafe { mach_port_deallocate(mach_task_self(), bootstrap_port) };
     if result != KERN_SUCCESS {
         return Err(ClientError::ServiceUnavailable);
@@ -603,15 +619,17 @@ unsafe fn lookup_service(name: &CStr) -> Result<MachPort, ClientError> {
     Ok(service_port)
 }
 
-unsafe fn find_service_with_retry() -> Result<ServicePort, ClientError> {
+fn find_service_with_retry() -> Result<ServicePort, ClientError> {
     #[cfg(test)]
     if let port @ 1.. = tests::SERVICE.get() {
+        // SAFETY: Tests store a live send right in SERVICE; the returned ServicePort releases this
+        // extra reference.
         unsafe { mach_port_mod_refs(mach_task_self(), port, tests::MACH_PORT_RIGHT_SEND, 1) };
         return Ok(ServicePort::new(port));
     }
     let name = service_name()?;
     for attempt in 0..5 {
-        if let Ok(port) = unsafe { lookup_service(&name) } {
+        if let Ok(port) = lookup_service(&name) {
             return Ok(ServicePort::new(port));
         }
         thread::sleep(Duration::from_millis(50 * (1 << attempt)));
@@ -619,16 +637,16 @@ unsafe fn find_service_with_retry() -> Result<ServicePort, ClientError> {
     Err(ClientError::ServiceUnavailable)
 }
 
-unsafe fn send_request(
+fn send_request(
     payload: &[u8],
     subscription_port: Option<MachPort>,
 ) -> Result<Vec<u8>, ClientError> {
     let reply = subscription_port.map(|port| (port, port as i32));
-    Ok(unsafe { send_request_with_id(payload, reply)? }.1)
+    Ok(send_request_with_id(payload, reply)?.1)
 }
 
 /// Sends on a persistent `(port, id)` reply destination, or a one-shot port.
-unsafe fn send_request_with_id(
+fn send_request_with_id(
     payload: &[u8],
     persistent: Option<(MachPort, i32)>,
 ) -> Result<(i32, Vec<u8>), ClientError> {
@@ -636,7 +654,7 @@ unsafe fn send_request_with_id(
         return Err(ClientError::MessageTooLarge);
     }
 
-    let service_port = unsafe { find_service_with_retry()? };
+    let service_port = find_service_with_retry()?;
     let owned_reply_port;
     let (reply_port, id) = match persistent {
         Some(reply) => reply,
@@ -662,9 +680,13 @@ unsafe fn send_request_with_id(
         id,
     };
     let mut storage = MaybeUninit::<InlineMessage>::uninit();
+    // SAFETY: `payload.len()` was checked against MAX_MESSAGE_SIZE above.
     let header_ptr = unsafe { prepare_inline_send(&mut storage, header, payload) };
+    // SAFETY: `header_ptr` points at the header prepare_inline_send just wrote.
     let send_size = unsafe { (*header_ptr).size };
 
+    // SAFETY: `header_ptr` is an initialized message of `send_size` bytes in `storage`, which
+    // outlives the call.
     let result = unsafe {
         mach_msg(
             header_ptr,
@@ -679,6 +701,8 @@ unsafe fn send_request_with_id(
     if result == MACH_SEND_TIMED_OUT {
         // The kernel returns an unsent message's rights: mach_msg_destroy releases the
         // destination (remote) right but not the reply (local) right.
+        // SAFETY: The unsent message still carries its rights, so this releases the reply right and
+        // then the destination once each.
         unsafe {
             let _ = mach_port_deallocate(mach_task_self(), (*header_ptr).local_port);
             mach_msg_destroy(header_ptr);
@@ -692,11 +716,11 @@ unsafe fn send_request_with_id(
         });
     }
 
-    unsafe { receive_message(reply_port, Some(REQUEST_TIMEOUT_MS)) }
+    receive_message(reply_port, Some(REQUEST_TIMEOUT_MS))
 }
 
 /// Returns the message id (echoed from the request by replies) and payload.
-unsafe fn receive_message(
+fn receive_message(
     reply_port: MachPort,
     timeout: Option<u32>,
 ) -> Result<(i32, Vec<u8>), ClientError> {
@@ -704,7 +728,9 @@ unsafe fn receive_message(
     // the maximum-sized backing storage untouched until then.
     let mut buffer = MaybeUninit::<ReceiveBuffer>::uninit();
     let buffer_ptr = buffer.as_mut_ptr();
+    // SAFETY: `buffer_ptr` points into `buffer`, so projecting to the header field stays in bounds.
     let header_ptr = unsafe { addr_of_mut!((*buffer_ptr).message.header) };
+    // SAFETY: The receive size is the whole buffer, so the kernel writes only inside `buffer`.
     let result = unsafe {
         mach_msg(
             header_ptr,
@@ -731,21 +757,28 @@ unsafe fn receive_message(
         });
     }
 
+    // SAFETY: The receive succeeded, so the kernel initialized the header.
     let payload_len = unsafe { (*header_ptr).size }
         .saturating_sub(size_of::<MachMessageHeader>() as u32) as usize;
     if payload_len > MAX_MESSAGE_SIZE {
+        // SAFETY: The received message's rights are released once here before returning.
         unsafe { mach_msg_destroy(header_ptr) };
         return Err(ClientError::MessageTooLarge);
     }
+    // SAFETY: `buffer_ptr` points into `buffer`, so projecting to the data field stays in bounds.
     let data = unsafe { addr_of_mut!((*buffer_ptr).message.data) }.cast::<u8>();
+    // SAFETY: The kernel initialized `payload_len` bytes of data, and `payload_len` is at most
+    // MAX_MESSAGE_SIZE.
     let payload = unsafe { std::slice::from_raw_parts(data, payload_len) }.to_vec();
+    // SAFETY: The receive succeeded, so the kernel initialized the header.
     let id = unsafe { (*header_ptr).id };
+    // SAFETY: The received message's rights are released once here.
     unsafe { mach_msg_destroy(header_ptr) };
     Ok((id, payload))
 }
 
 /// Receives until the reply to request `id`, discarding replies to abandoned requests.
-unsafe fn receive_reply(
+fn receive_reply(
     port: MachPort,
     id: i32,
     (mut reply_id, mut payload): (i32, Vec<u8>),
@@ -756,7 +789,7 @@ unsafe fn receive_reply(
             .saturating_duration_since(std::time::Instant::now())
             .as_millis()
             .min(u32::MAX.into()) as u32;
-        (reply_id, payload) = unsafe { receive_message(port, Some(timeout))? };
+        (reply_id, payload) = receive_message(port, Some(timeout))?;
     }
     Ok(payload)
 }
@@ -984,13 +1017,11 @@ mod tests {
         deliver(port, 1, b"late\0");
         deliver(port, 2, b"current\0");
         deliver(port, 1, b"later\0");
-        unsafe {
-            let first = receive_message(port, Some(0)).unwrap();
-            assert_eq!(receive_reply(port, 2, first).unwrap(), b"current\0");
-            let first = receive_message(port, Some(0)).unwrap();
-            deliver(port, 3, b"next\0");
-            assert_eq!(receive_reply(port, 3, first).unwrap(), b"next\0\0\0\0");
-        }
+        let first = receive_message(port, Some(0)).unwrap();
+        assert_eq!(receive_reply(port, 2, first).unwrap(), b"current\0");
+        let first = receive_message(port, Some(0)).unwrap();
+        deliver(port, 3, b"next\0");
+        assert_eq!(receive_reply(port, 3, first).unwrap(), b"next\0\0\0\0");
     }
 
     #[test]
