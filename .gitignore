@@ -5,3 +5,4 @@ src/bin/dev.rs
 .claude/
 .DS_Store
 PLAN.md
+dist/
