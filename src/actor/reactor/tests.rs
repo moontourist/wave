@@ -4907,8 +4907,9 @@ fn workspace_query_exposes_scrolling_order_for_inactive_workspace() {
     });
     apps.simulate_until_quiet(&mut reactor);
 
-    // The latest window is selected. Moving it left changes topology without changing
-    // workspace membership/insertion order.
+    // Moving the latest window left changes topology without changing workspace
+    // membership/insertion order.
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space, w3));
     reactor.handle_test_layout_command(LayoutCommand::MoveNode(Direction::Left));
     apps.simulate_until_quiet(&mut reactor);
     reactor.send_layout_event(LayoutEvent::WindowFocused(space, w2));
@@ -4953,8 +4954,9 @@ fn windows_query_exposes_scrolling_order() {
     });
     apps.simulate_until_quiet(&mut reactor);
 
-    // Moving the selected window left changes scroll order without changing the
+    // Moving the latest window left changes scroll order without changing the
     // membership order the window store reports.
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space, w3));
     reactor.handle_test_layout_command(LayoutCommand::MoveNode(Direction::Left));
     apps.simulate_until_quiet(&mut reactor);
 
