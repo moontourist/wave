@@ -50,6 +50,10 @@ pub struct BspLayoutSystem {
     window_insertion_point: WindowInsertionPoint,
     #[serde(skip, default)]
     single_window_aspect_ratio: Option<f64>,
+    /// Each layout's tiling area at its last layout pass, so a new window can split its tile
+    /// along the longer side.
+    #[serde(skip, default)]
+    areas: slotmap::SecondaryMap<LayoutId, CGSize>,
 }
 
 impl BspLayoutSystem {
@@ -249,6 +253,7 @@ impl Default for BspLayoutSystem {
             stacks: Default::default(),
             window_insertion_point: WindowInsertionPoint::default(),
             single_window_aspect_ratio: None,
+            areas: Default::default(),
         }
     }
 }
@@ -324,6 +329,37 @@ impl BspLayoutSystem {
             current = parent;
         }
         depth
+    }
+
+    /// Splits `leaf` along its longer side, as Hyprland's dwindle layout does: a wide tile puts the
+    /// new window beside it and a tall one puts it below. Before the layout's first pass its size
+    /// is unknown, and the split alternates with depth instead.
+    fn split_orientation(&self, layout: LayoutId, leaf: NodeId) -> Orientation {
+        let Some(area) = self.areas.get(layout) else {
+            return self.orientation_for_depth(self.node_depth(leaf));
+        };
+        let (mut width, mut height) = (area.width, area.height);
+        let mut node = leaf;
+        while let Some(parent) = node.parent(&self.tree.map) {
+            if let Some(NodeKind::Split { orientation, ratio }) = self.kind.get(parent) {
+                let ratio = f64::from(*ratio);
+                let share = if node.prev_sibling(&self.tree.map).is_none() {
+                    ratio
+                } else {
+                    1.0 - ratio
+                };
+                match orientation {
+                    Orientation::Horizontal => width *= share,
+                    Orientation::Vertical => height *= share,
+                }
+            }
+            node = parent;
+        }
+        if height > width {
+            Orientation::Vertical
+        } else {
+            Orientation::Horizontal
+        }
     }
 
     /// Returns the orientation for a new split based on the node's depth.
@@ -514,9 +550,7 @@ impl BspLayoutSystem {
                         self.stacks.insert(left, stack);
                     }
 
-                    // Use alternating orientations based on depth for fibonacci spiral
-                    let depth = self.node_depth(sel);
-                    let orientation = self.orientation_for_depth(depth);
+                    let orientation = self.split_orientation(layout, sel);
                     self.kind.insert(sel, NodeKind::Split { orientation, ratio: 0.5 });
                     left.detach(&mut self.tree).push_back(sel);
                     right.detach(&mut self.tree).push_back(sel);
@@ -1180,6 +1214,28 @@ mod tests {
     }
 
     #[test]
+    fn a_new_window_splits_its_tile_along_the_longer_side() {
+        // On a 32:9 display, Hyprland's dwindle puts three windows side by side before stacking.
+        let size = CGSize::new(3840.0, 1080.0);
+        let (mut system, layout) = tiled(&[1]);
+        for window in 2..=5 {
+            system.prepare_layout(
+                layout,
+                CGRect::new(CGPoint::ZERO, size),
+                &HashMap::default(),
+                &Default::default(),
+            );
+            system.add_window_after_selection(layout, w(window));
+        }
+        let frames = calculate_frames(&system, layout, size, &HashMap::default());
+        assert_frame(&frames, w(1), (0.0, 0.0, 1920.0, 1080.0));
+        assert_frame(&frames, w(2), (1920.0, 0.0, 960.0, 1080.0));
+        assert_frame(&frames, w(3), (2880.0, 0.0, 960.0, 540.0));
+        assert_frame(&frames, w(4), (2880.0, 540.0, 480.0, 540.0));
+        assert_frame(&frames, w(5), (3360.0, 540.0, 480.0, 540.0));
+    }
+
+    #[test]
     fn rebalance_splits_each_axis_evenly() {
         let size = CGSize::new(1200.0, 900.0);
 
@@ -1506,6 +1562,9 @@ impl LayoutSystem for BspLayoutSystem {
             }
         }
         let new_layout = self.create_layout();
+        if let Some(area) = self.areas.get(layout).copied() {
+            self.areas.insert(new_layout, area);
+        }
         for group in groups {
             let mut members = group.into_iter();
             let Some(first) = members.next() else { continue };
@@ -1526,6 +1585,7 @@ impl LayoutSystem for BspLayoutSystem {
     }
 
     fn remove_layout(&mut self, layout: LayoutId) {
+        self.areas.remove(layout);
         if let Some(state) = self.layouts.remove(layout) {
             let ids: Vec<_> = state.root.traverse_preorder(&self.tree.map).collect();
             for id in ids {
@@ -1671,6 +1731,18 @@ impl LayoutSystem for BspLayoutSystem {
         };
         let selected = self.tree.data.selection.current_selection(state.root);
         snapshot(self, state.root, selected)
+    }
+
+    fn prepare_layout(
+        &mut self,
+        layout: LayoutId,
+        screen: CGRect,
+        _constraints: &HashMap<WindowId, WindowLayoutConstraints>,
+        gaps: &crate::common::config::GapSettings,
+    ) {
+        if self.layouts.contains_key(layout) {
+            self.areas.insert(layout, compute_tiling_area(screen, gaps).size);
+        }
     }
 
     fn calculate_layout(

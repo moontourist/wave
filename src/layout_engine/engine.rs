@@ -231,6 +231,20 @@ pub struct LayoutEngine {
     native_reconcile_batch: Option<HashSet<VirtualWorkspaceId>>,
     // Windows a display departure moved to another display, by where they came from.
     evicted: HashMap<WindowId, EvictedWindow>,
+    /// The window most recently added to a tiling layout, which the next one joins while focus
+    /// stays where it was.
+    burst_anchor: Option<BurstAnchor>,
+}
+
+/// A burst of new windows, such as a mashed hotkey, appears before macOS focuses any of them, so
+/// the selection stays on the window focused before the burst. Each new window joins the one
+/// added before it instead, as if that one had been focused, and the burst tiles in order.
+#[derive(Clone, Copy, Debug)]
+struct BurstAnchor {
+    workspace: VirtualWorkspaceId,
+    window: WindowId,
+    /// The focused window when `window` was added. Any focus change ends the burst.
+    focus: Option<WindowId>,
 }
 
 /// Where a display departure moved a window from, so the display's return can put it back
@@ -1653,9 +1667,25 @@ impl LayoutEngine {
                 {
                     self.preserve_scrolling_window_width(window_store, wid);
                 }
-                self.workspaces[assigned_workspace]
-                    .layout_system
-                    .add_window_after_selection(layout, wid);
+                let anchor = self
+                    .burst_anchor
+                    .filter(|anchor| {
+                        anchor.workspace == assigned_workspace
+                            && anchor.focus == self.focused_window
+                    })
+                    .map(|anchor| anchor.window);
+                let system = &mut self.workspaces[assigned_workspace].layout_system;
+                if let Some(anchor) = anchor
+                    && system.contains_window(layout, anchor)
+                {
+                    let _ = system.select_window(layout, anchor);
+                }
+                system.add_window_after_selection(layout, wid);
+                self.burst_anchor = Some(BurstAnchor {
+                    workspace: assigned_workspace,
+                    window: wid,
+                    focus: self.focused_window,
+                });
                 inserted = true;
             }
         } else {
@@ -1863,6 +1893,7 @@ impl LayoutEngine {
             native_layouts: HashMap::default(),
             native_reconcile_batch: None,
             evicted: HashMap::default(),
+            burst_anchor: None,
         }
     }
 
@@ -4014,6 +4045,40 @@ mod tests {
         AppRulePosition, AppRuleSize, AppWorkspaceRule, LayoutMode, LayoutSettings,
         VirtualWorkspaceSettings, WorkspaceLayoutRule, WorkspaceSelector,
     };
+
+    #[test]
+    fn a_burst_of_new_windows_dwindles_while_focus_stays_on_the_first() {
+        // macOS focuses a burst's new windows only after they appear, and meanwhile keeps
+        // reporting the first, which takes the selection back. Each new window still splits the
+        // one before it.
+        let mut settings = LayoutSettings::default();
+        settings.mode = LayoutMode::Bsp;
+        let mut engine = LayoutEngine::new(&VirtualWorkspaceSettings::default(), &settings, None);
+        let mut store = WindowStore::default();
+        let space = SpaceId::new(92);
+        let screen = CGRect::new(CGPoint::ZERO, CGSize::new(1200.0, 800.0));
+        let gaps = engine.layout_settings.gaps.clone();
+        let _ = engine.handle_event(&mut store, LayoutEvent::SpaceExposed(space, screen.size));
+        let first = WindowId::new(1, 1);
+        let _ = engine.handle_event(&mut store, LayoutEvent::WindowAdded(space, first));
+        let _ = engine.handle_event(&mut store, LayoutEvent::WindowFocused(space, first));
+        let mut first_frame = None;
+        for pid in 2..=4 {
+            let window = WindowId::new(pid, 1);
+            let _ = engine.handle_event(&mut store, LayoutEvent::WindowAdded(space, window));
+            let _ = engine.handle_event(&mut store, LayoutEvent::WindowFocused(space, first));
+            let frames: HashMap<WindowId, CGRect> = engine
+                .calculate_layout(space, screen, &gaps, Default::default())
+                .into_iter()
+                .collect();
+            let frame = frames[&first];
+            assert_eq!(
+                *first_frame.get_or_insert(frame),
+                frame,
+                "window {pid} split the first"
+            );
+        }
+    }
 
     #[test]
     fn simultaneous_suspensions_keep_workspace_owners_through_inactive_returns_and_mode_changes() {

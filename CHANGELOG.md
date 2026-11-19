@@ -10,10 +10,12 @@ All notable changes to wave are listed here. The format follows [Keep a Changelo
 
 ### Changed
 - During a burst of new windows, only the first pops in and the rest slide into place, so each pop-in's preparation no longer delays the next window.
+- The bsp layout splits a new window's tile along its longer side, as Hyprland's dwindle does. A wide tile puts the new window beside it and a tall one below, so a 32:9 display fits three windows side by side before stacking.
 
 ### Fixed
 - A window that opens thin in one direction, such as a 48-point-tall Ghostty window opened while many are tiled, is tiled instead of skipped as a tooltip.
 - Borders move in one commit per frame and run on their own thread, so with many windows they no longer slow window motion.
+- Windows opened in quick succession tile in order, each splitting or following the one before it. macOS focuses none of them until the burst ends, which left every new window next to the one selected before it.
 
 ## [0.1.0] - 2026-11-18
 
