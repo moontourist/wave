@@ -280,11 +280,12 @@ pub fn handle_window_server_appeared(
             return Ok(outcome);
         }
 
-        // Filter out very small windows (likely tooltips or similar UI elements)
-        // that shouldn't be managed by the window manager
+        // Skip windows tiny in both dimensions, such as helper stubs. A window thin in only one
+        // is real: with many windows tiled, a new one can open at a squeezed tile's size, as
+        // Ghostty's 48-point-tall windows do, and skipping it here leaves it unmanaged.
         const MIN_MANAGEABLE_WINDOW_SIZE: f64 = 50.0;
         if window_server_info.frame.size.width < MIN_MANAGEABLE_WINDOW_SIZE
-            || window_server_info.frame.size.height < MIN_MANAGEABLE_WINDOW_SIZE
+            && window_server_info.frame.size.height < MIN_MANAGEABLE_WINDOW_SIZE
         {
             state.windows.clear_window_server_observed(wsid);
             trace!(
@@ -361,4 +362,52 @@ pub fn handle_mission_control_native_exited(
     } else {
         outcome
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+
+    use super::*;
+
+    fn appeared_with_size(width: f64, height: f64) -> EventOutcome {
+        let id = WindowServerId::new(7);
+        let mut state = WaveState::default();
+        handle_window_server_appeared(
+            &mut state,
+            WindowServerLifecyclePayload {
+                window_server_id: id,
+                space: SpaceId::new(1),
+                kind: SpaceEventKind::User,
+            },
+            WindowServerAppearedObservations {
+                resolved_space: None,
+                active_spaces: HashSet::default(),
+                mission_control_active: false,
+                last_known_user_space: None,
+                window_server_info: Some(crate::sys::window_server::WindowServerInfo {
+                    id,
+                    pid: 42,
+                    layer: 0,
+                    frame: CGRect::new(CGPoint::ZERO, CGSize::new(width, height)),
+                    min_frame: CGSize::ZERO,
+                    max_frame: CGSize::ZERO,
+                }),
+                app_known: true,
+                running_app_info: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_window_squeezed_thin_is_inventoried_but_a_tiny_one_is_not() {
+        assert_eq!(appeared_with_size(1527.0, 48.0).window_inventory_requests, vec![
+            42
+        ]);
+        assert_eq!(appeared_with_size(48.0, 900.0).window_inventory_requests, vec![
+            42
+        ]);
+        assert!(appeared_with_size(20.0, 20.0).window_inventory_requests.is_empty());
+    }
 }

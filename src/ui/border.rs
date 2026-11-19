@@ -9,11 +9,14 @@
 //! the outline from the layer's border properties, with no bitmap, so it costs the same whatever
 //! the window's size. Border windows are kept in a small pool and reused.
 //!
-//! The animation thread owns the borders through a [`BorderFollower`]. On every display tick it
-//! moves each border to the frame it just sent that window, so the two move together.
+//! The borders run on their own thread, a [`BorderThread`]. On every display tick the animation
+//! thread sends it the frames it just gave each moving window, and the borders follow. Creating a
+//! border window is a WindowServer round trip, slow while apps are launching, so it must never
+//! hold up the animation thread's next frame.
 
 use std::collections::hash_map::Entry;
 use std::time::Duration;
+use std::{iter, thread};
 
 use cgs::compositor::{
     CgsWindow, CgsWindowError, WindowSurface, WindowTransaction, with_disabled_actions,
@@ -92,9 +95,72 @@ impl Style {
     fn color(self, focused: bool) -> [f64; 4] { if focused { self.active } else { self.inactive } }
 }
 
-/// Owns the borders on the animation thread and keeps each on its window's current frame.
+/// What the animation thread sends the border thread.
+enum Update {
+    Scene(Option<BorderScene>),
+    /// The frames just sent to every moving window. Other windows are at rest.
+    Frames(Vec<(WindowId, CGRect)>),
+}
+
+/// The animation thread's handle to the border thread. Dropping it ends the thread and releases
+/// every border window.
+#[derive(Debug)]
+pub struct BorderThread {
+    tx: Option<crossbeam_channel::Sender<Update>>,
+    sent_frames: Vec<(WindowId, CGRect)>,
+}
+
+impl BorderThread {
+    pub fn spawn() -> Self {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let spawned = thread::Builder::new().name("wave-borders".into()).spawn(move || run(&rx));
+        let tx = match spawned {
+            Ok(_) => Some(tx),
+            Err(error) => {
+                tracing::warn!(%error, "border thread failed to start; no borders");
+                None
+            }
+        };
+        Self { tx, sent_frames: Vec::new() }
+    }
+
+    pub fn set_scene(&self, scene: Option<BorderScene>) { self.send(Update::Scene(scene)); }
+
+    /// Sends this tick's frames for moving windows, unless they're the same as last tick's.
+    pub fn follow(&mut self, frames: Vec<(WindowId, CGRect)>) {
+        if frames != self.sent_frames {
+            self.sent_frames.clone_from(&frames);
+            self.send(Update::Frames(frames));
+        }
+    }
+
+    fn send(&self, update: Update) {
+        if let Some(tx) = &self.tx {
+            // The thread only stops when this handle drops.
+            _ = tx.send(update);
+        }
+    }
+}
+
+/// Applies updates as fast as WindowServer allows. Updates that queued meanwhile are taken
+/// together: every scene in order, then only the newest frames.
+fn run(rx: &crossbeam_channel::Receiver<Update>) {
+    let mut follower = BorderFollower::default();
+    let mut moving: HashMap<WindowId, CGRect> = HashMap::default();
+    while let Ok(first) = rx.recv() {
+        for update in iter::once(first).chain(rx.try_iter()) {
+            match update {
+                Update::Scene(scene) => follower.set_scene(scene),
+                Update::Frames(frames) => moving = frames.into_iter().collect(),
+            }
+        }
+        follower.follow(|wid| moving.get(&wid).copied());
+    }
+}
+
+/// Owns the borders and keeps each on its window's current frame.
 #[derive(Default)]
-pub struct BorderFollower {
+struct BorderFollower {
     borders: HashMap<WindowId, Border>,
     spare: Vec<Border>,
     scene: Option<BorderScene>,
@@ -102,7 +168,7 @@ pub struct BorderFollower {
 
 impl BorderFollower {
     /// Shows `scene`, or with `None` releases every border window.
-    pub fn set_scene(&mut self, scene: Option<BorderScene>) {
+    fn set_scene(&mut self, scene: Option<BorderScene>) {
         let Some(scene) = scene else {
             self.borders.clear();
             self.spare.clear();
@@ -149,7 +215,10 @@ impl BorderFollower {
                         };
                         border.restyle(style);
                         border.set_color(style.color(focused), None);
-                        border.place(window.frame, style)?;
+                        // Placed before it's ordered in, so it never shows at its old spot.
+                        let mut moves = Moves::default();
+                        border.place(window.frame, style, &mut moves)?;
+                        moves.commit();
                         border.order_below(window.wsid)?;
                         entry.insert(border);
                     }
@@ -167,17 +236,25 @@ impl BorderFollower {
     }
 
     /// Moves each border to its window. `animated` gives the frame a moving window was just sent.
-    pub fn follow(&mut self, animated: impl Fn(WindowId) -> Option<CGRect>) {
+    fn follow(&mut self, animated: impl Fn(WindowId) -> Option<CGRect>) {
         let Some(scene) = &self.scene else { return };
         let Some(style) = Style::new(&scene.settings) else {
             return;
         };
+        // One Core Animation commit and one WindowServer transaction for every border: per border,
+        // the commits contend for Core Animation's lock and cost a frame with many windows.
         let result = autoreleasepool(|_| -> Result<(), CgsWindowError> {
-            for window in &scene.windows {
-                if let Some(border) = self.borders.get_mut(&window.wid) {
-                    border.place(animated(window.wid).unwrap_or(window.frame), style)?;
+            let mut moves = Moves::default();
+            with_disabled_actions(|| -> Result<(), CgsWindowError> {
+                for window in &scene.windows {
+                    if let Some(border) = self.borders.get_mut(&window.wid) {
+                        let target = animated(window.wid).unwrap_or(window.frame);
+                        border.place(target, style, &mut moves)?;
+                    }
                 }
-            }
+                Ok(())
+            })?;
+            moves.commit();
             Ok(())
         });
         if let Err(error) = result {
@@ -261,8 +338,13 @@ impl Border {
         self.color = Some(color);
     }
 
-    /// Puts the outline around a window whose frame is `target`.
-    fn place(&mut self, target: CGRect, style: Style) -> Result<(), CgsWindowError> {
+    /// Puts the outline around a window whose frame is `target`, once `moves` commits.
+    fn place(
+        &mut self,
+        target: CGRect,
+        style: Style,
+        moves: &mut Moves,
+    ) -> Result<(), CgsWindowError> {
         let w = style.width;
         let frame = CGRect::new(
             CGPoint::new(target.origin.x - w, target.origin.y - w),
@@ -275,16 +357,13 @@ impl Border {
         if resized {
             with_disabled_actions(|| self.root.setBounds(bounds(frame.size)));
         }
-        let transaction = WindowTransaction::new()?;
+        let transaction = moves.transaction()?;
         if resized {
             transaction.set_rounded_frame(&self.window, frame, style.outer_radius())?;
-            self.surface.set_bounds_in(&transaction, bounds(frame.size));
+            self.surface.set_bounds_in(transaction, bounds(frame.size));
+            moves.resized = true;
         } else {
             transaction.move_window(&self.window, frame.origin);
-        }
-        transaction.commit();
-        if resized {
-            self.surface.flush();
         }
         self.frame = frame;
         Ok(())
@@ -301,6 +380,32 @@ impl Border {
         }
         // A reused border starts over: its old color must not fade into the new window's.
         self.color = None;
+    }
+}
+
+/// Border moves gathered into one WindowServer transaction, opened on the first move.
+#[derive(Default)]
+struct Moves {
+    transaction: Option<WindowTransaction>,
+    /// A border changed size, so its layer's new bounds must be flushed too.
+    resized: bool,
+}
+
+impl Moves {
+    fn transaction(&mut self) -> Result<&WindowTransaction, CgsWindowError> {
+        match &mut self.transaction {
+            Some(transaction) => Ok(transaction),
+            slot @ None => Ok(slot.insert(WindowTransaction::new()?)),
+        }
+    }
+
+    fn commit(self) {
+        if let Some(transaction) = self.transaction {
+            transaction.commit();
+            if self.resized {
+                CATransaction::flush();
+            }
+        }
     }
 }
 

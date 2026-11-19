@@ -6,6 +6,14 @@ All notable changes to wave are listed here. The format follows [Keep a Changelo
 
 ### Added
 - Window borders, built in (`[settings.ui.borders]`). Every window gets an outline that moves and resizes with it on the same animation frame. The focused window's outline is `active_color` and the rest are `inactive_color`; when focus moves they fade between the two, like Hyprland's. `inactive = false` shows only the focused window's outline. Each border costs about 16 KB.
+- `scripts/stress.sh` opens a burst of Ghostty windows and measures how fast wave tiles them, its input lag and where its threads spend the time.
+
+### Changed
+- During a burst of new windows, only the first pops in and the rest slide into place, so each pop-in's preparation no longer delays the next window.
+
+### Fixed
+- A window that opens thin in one direction, such as a 48-point-tall Ghostty window opened while many are tiled, is tiled instead of skipped as a tooltip.
+- Borders move in one commit per frame and run on their own thread, so with many windows they no longer slow window motion.
 
 ## [0.1.0] - 2026-11-18
 
