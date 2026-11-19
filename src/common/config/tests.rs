@@ -1115,3 +1115,18 @@ fn replacing_shortcuts_is_atomic_and_scoped_to_the_reviewed_mode() {
     assert_eq!(reopened.keys, source.keys);
     assert_eq!(reopened.binding_modes, source.binding_modes);
 }
+
+#[test]
+fn border_colors_parse_and_bad_ones_fail_validation() {
+    assert_eq!(
+        parse_hex_color("#7fb4ca"),
+        Some([127. / 255., 180. / 255., 202. / 255., 1.0])
+    );
+    assert_eq!(parse_hex_color("#00000080"), Some([0.0, 0.0, 0.0, 128. / 255.]));
+    for bad in ["7fb4ca", "#7fb4c", "#7fb4caz", "#gggggg", "#é7fb4c"] {
+        assert_eq!(parse_hex_color(bad), None, "{bad}");
+    }
+    let mut cfg = Config::default();
+    cfg.settings.ui.borders.active_color = "blue".into();
+    assert!(cfg.validate().iter().any(|issue| issue.contains("ui.borders.active_color")));
+}

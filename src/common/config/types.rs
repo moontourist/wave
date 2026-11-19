@@ -636,6 +636,98 @@ pub struct UiSettings {
     pub stack_line: StackLineSettings,
     #[serde(default)]
     pub mission_control: MissionControlSettings,
+    #[serde(default)]
+    pub borders: BorderSettings,
+}
+
+/// The outlines wave draws around windows: one per window, in the active color on the focused
+/// window and the inactive color on the rest, fading between them as focus moves.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct BorderSettings {
+    /// Draw the border.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Outline width, in points.
+    #[serde(default = "default_border_width")]
+    pub width: f64,
+    /// The corner radius of the windows it outlines, in points. The outline's inside edge
+    /// follows this curve.
+    #[serde(default = "default_border_radius")]
+    pub radius: f64,
+    /// The focused window's outline color, as `#rrggbb` or `#rrggbbaa`.
+    #[serde(default = "default_border_active_color")]
+    pub active_color: String,
+    /// The other windows' outline color, as `#rrggbb` or `#rrggbbaa`.
+    #[serde(default = "default_border_inactive_color")]
+    pub inactive_color: String,
+    /// Outline unfocused windows too. When off, a window's outline fades out as it loses focus.
+    #[serde(default = "yes")]
+    pub inactive: bool,
+}
+
+impl Default for BorderSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            width: default_border_width(),
+            radius: default_border_radius(),
+            active_color: default_border_active_color(),
+            inactive_color: default_border_inactive_color(),
+            inactive: true,
+        }
+    }
+}
+
+fn default_border_width() -> f64 { 2.0 }
+fn default_border_radius() -> f64 { 12.0 }
+/// Kanagawa springBlue.
+fn default_border_active_color() -> String { "#7fb4ca".into() }
+/// Kanagawa sumiInk4.
+fn default_border_inactive_color() -> String { "#2a2a37".into() }
+
+impl BorderSettings {
+    pub fn validate(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if !self.width.is_finite() || self.width <= 0.0 {
+            issues.push(format!("ui.borders.width must be positive, got {}", self.width));
+        }
+        if !self.radius.is_finite() || self.radius < 0.0 {
+            issues.push(format!(
+                "ui.borders.radius must be non-negative, got {}",
+                self.radius
+            ));
+        }
+        for (key, color) in [
+            ("active_color", &self.active_color),
+            ("inactive_color", &self.inactive_color),
+        ] {
+            if parse_hex_color(color).is_none() {
+                issues.push(format!(
+                    "ui.borders.{key} must be #rrggbb or #rrggbbaa, got {color:?}"
+                ));
+            }
+        }
+        issues
+    }
+}
+
+/// Reads `#rrggbb` or `#rrggbbaa` as red, green, blue and alpha from 0 to 1.
+pub fn parse_hex_color(hex: &str) -> Option<[f64; 4]> {
+    let digits = hex.strip_prefix('#')?;
+    if !matches!(digits.len(), 6 | 8) || !digits.is_ascii() {
+        return None;
+    }
+    let channel = |i: usize| {
+        let pair = digits.get(i..i + 2)?;
+        u8::from_str_radix(pair, 16).ok().map(|v| f64::from(v) / 255.0)
+    };
+    Some([
+        channel(0)?,
+        channel(2)?,
+        channel(4)?,
+        if digits.len() == 8 { channel(6)? } else { 1.0 },
+    ])
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, ConfigSchema)]
@@ -1596,6 +1688,7 @@ impl Settings {
 
         issues.extend(self.layout.validate());
         issues.extend(self.ui.stack_line.validate());
+        issues.extend(self.ui.borders.validate());
 
         if !(0.10..=0.45).contains(&self.drag_drop.drop_zone_fraction) {
             issues.push(format!(

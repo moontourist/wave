@@ -86,6 +86,8 @@ pub enum Message {
     Camera(Box<CameraAnimation>),
     StopCamera(SpaceId),
     Displays(Vec<u32>),
+    /// The windows that get borders, or `None` for no borders.
+    Border(Option<crate::ui::border::BorderScene>),
 }
 
 #[derive(Debug, Default)]
@@ -801,6 +803,7 @@ impl AnimationManager {
         let AnimationReceiver { commands: rx, control } = receiver;
         let (wake, ticks) = crossbeam_channel::bounded(1);
         let mut displays: HashMap<u32, DisplayPresenter> = HashMap::default();
+        let mut border = crate::ui::border::BorderFollower::default();
         loop {
             let deadline = displays
                 .values()
@@ -813,6 +816,7 @@ impl AnimationManager {
                 recv(rx) -> message => {
                     let Ok(message) = message else { break };
                     match message {
+                        Message::Border(scene) => border.set_scene(scene),
                         Message::Displays(known) => {
                             displays.retain(|display, presenter| {
                                 if known.contains(display) { return true; }
@@ -839,7 +843,7 @@ impl AnimationManager {
                                 Message::Replace(a) | Message::SkipToEnd(a) => a.display,
                                 Message::Camera(c) => c.display,
                                 // Handled by the arms above.
-                                Message::Stop(..) | Message::StopCamera(..) | Message::Displays(..) => continue,
+                                Message::Stop(..) | Message::StopCamera(..) | Message::Displays(..) | Message::Border(..) => continue,
                             };
                             let entry = displays.entry(display).or_insert_with(|| DisplayPresenter {
                                 manager: Self::new(), link: DisplayLink::for_display(display, wake.clone()),
@@ -858,7 +862,7 @@ impl AnimationManager {
                                     c.windows.retain(|w| !shared.cancelled.contains(&w.wid));
                                     c.active = !c.windows.is_empty();
                                 }
-                                Message::Stop(..) | Message::StopCamera(..) | Message::Displays(..) => {}
+                                Message::Stop(..) | Message::StopCamera(..) | Message::Displays(..) | Message::Border(..) => {}
                             }
                             entry.manager.handle_message(message);
                             entry.manager.publish_frames(&mut shared, true);
@@ -922,6 +926,15 @@ impl AnimationManager {
             for d in displays.values() {
                 d.link.set_paused(!d.manager.has_work());
             }
+            drop(shared);
+            // Same tick as the frames above: the border moves with its window.
+            border.follow(|wid| {
+                displays
+                    .values()
+                    .flat_map(|d| d.manager.motions.iter().flat_map(Motion::windows))
+                    .find(|w| w.wid == wid)
+                    .map(|w| w.frame)
+            });
         }
         for d in displays.values_mut() {
             for motion in &mut d.manager.motions {
@@ -1024,7 +1037,7 @@ impl AnimationManager {
                 animation.skip_to_end();
             }
             // The runner handles display control before dispatching here.
-            Message::StopCamera(_) | Message::Displays(_) => {}
+            Message::StopCamera(_) | Message::Displays(_) | Message::Border(_) => {}
         }
     }
 
@@ -1205,7 +1218,8 @@ impl AnimationManager {
                 Message::Stop(..)
                 | Message::Camera(_)
                 | Message::StopCamera(_)
-                | Message::Displays(_) => {}
+                | Message::Displays(_)
+                | Message::Border(_) => {}
             }
         }
     }

@@ -464,6 +464,8 @@ pub struct Reactor {
     pop_ins: pop_in::PopIns,
     /// Started on first use; keeps a picture of the focused window for its closing animation.
     closer: Option<pop_in::Closer>,
+    /// The windows that get borders, as last sent to the animation thread.
+    border_scene: Option<crate::ui::border::BorderScene>,
     #[cfg(test)]
     event_outcome_phase_trace: Vec<&'static str>,
     #[cfg(test)]
@@ -613,6 +615,7 @@ impl Reactor {
             presentations: HashMap::default(),
             pop_ins: Default::default(),
             closer: None,
+            border_scene: None,
             #[cfg(test)]
             event_outcome_phase_trace: Vec::new(),
             #[cfg(test)]
@@ -1357,6 +1360,7 @@ impl Reactor {
         if self.config.settings.window_open_close_animation {
             self.watch_focused_window();
         }
+        self.update_border();
     }
 
     #[instrument(name = "reactor::handle_event", skip(self), fields(event=?event))]
@@ -6388,6 +6392,58 @@ impl Reactor {
             return;
         };
         self.closer.get_or_insert_with(pop_in::Closer::spawn).watch(wid, frame);
+    }
+
+    /// Tells the animation thread which windows get borders and which one is focused. Sends only
+    /// on a change.
+    fn update_border(&mut self) {
+        if cfg!(test) {
+            return;
+        }
+        let settings = &self.config.settings;
+        let scene = settings.ui.borders.enabled.then(|| {
+            let mut spaces: Vec<SpaceId> = self
+                .active_spaces
+                .iter()
+                .copied()
+                .filter(|space| !self.is_fullscreen_space(*space))
+                .collect();
+            // Same scene for the same windows, whatever order the set yields.
+            spaces.sort_unstable();
+            let windows = spaces
+                .into_iter()
+                .flat_map(|space| {
+                    self.layout_manager
+                        .layout_engine
+                        .workspaces()
+                        .windows_in_active_workspace(&self.state.windows, space)
+                })
+                .filter_map(|wid| {
+                    let window = self.state.windows.window(wid)?;
+                    let wsid = window.info.sys_id?;
+                    (!window.info.is_minimized && self.state.windows.is_window_visible(wsid))
+                        .then_some(crate::ui::border::BorderedWindow {
+                            wid,
+                            wsid,
+                            frame: window.frame_monotonic,
+                        })
+                })
+                .collect();
+            crate::ui::border::BorderScene {
+                windows,
+                focused: self.main_window(),
+                settings: settings.ui.borders.clone(),
+                fade: Duration::try_from_secs_f64(settings.animation_duration).unwrap_or_default(),
+                curve: pop_in::bezier(settings.animation_easing),
+            }
+        });
+        if scene == self.border_scene {
+            return;
+        }
+        if let Some(tx) = &self.animation_tx {
+            _ = tx.send(animation::Message::Border(scene.clone()));
+        }
+        self.border_scene = scene;
     }
 
     /// Shrinks a closing tiled window's picture away; call before the window is forgotten.

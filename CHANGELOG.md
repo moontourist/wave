@@ -4,6 +4,9 @@ All notable changes to wave are listed here. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+- Window borders, built in (`[settings.ui.borders]`). Every window gets an outline that moves and resizes with it on the same animation frame. The focused window's outline is `active_color` and the rest are `inactive_color`; when focus moves they fade between the two, like Hyprland's. `inactive = false` shows only the focused window's outline. Each border costs about 16 KB.
+
 ## [0.1.0] - 2026-11-18
 
 wave's first release. It starts from [rift](https://github.com/acsandmann/rift) and adds these changes.

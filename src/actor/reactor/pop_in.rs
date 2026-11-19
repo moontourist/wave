@@ -386,7 +386,7 @@ fn wait_for_frame(wsid: WindowServerId, done: impl Fn(CGRect) -> bool) -> Option
 /// Core Animation only takes cubic Béziers, so each curve uses its standard
 /// Bézier fit (easings.net). `bezier_fits_match_the_layout_curves` checks them
 /// against the curve the neighbors use.
-fn bezier(easing: AnimationEasing) -> [f32; 4] {
+pub(super) fn bezier(easing: AnimationEasing) -> [f32; 4] {
     use AnimationEasing::*;
     match easing {
         Linear => [0.0, 0.0, 1.0, 1.0],

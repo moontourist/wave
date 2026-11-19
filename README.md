@@ -55,9 +55,11 @@ Done:
 - [x] No panics outside tests, and every `unsafe` block documented and doing one thing
 - [x] wave's own name, identity and config folder
 - [x] Memory given back: about 17 MB idle and 20 MB after using the overview, down from 153 MB
+- [x] Window borders, built in: an outline on every window that moves on the same animation frame as its window, fading between focused and unfocused colors as focus moves
 
 Next:
-- [ ] **Window borders, built in.** An outline around each window, like JankyBorders, but moving in the same animation frame as its window instead of trailing behind. Colors for focused and unfocused windows, and the color fades when focus changes.
+- [ ] **Borders for every move.** Keep borders on windows you drag or that resize themselves.
+- [ ] **Fast with many windows.** Open a burst of windows and have them all tile quickly, with no input lag.
 - [ ] **Accordion on any tile.** Fold a group of windows into one tile in any layout, not only the stack layout.
 
 Every feature is held to a memory budget: wave idles at about 17 MB and returns there after the overview, moving windows adds nothing measurable, and new features are measured against that.
