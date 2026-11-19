@@ -1,4 +1,3 @@
-use std::num::NonZeroU32;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -6,15 +5,12 @@ use tracing::{debug, trace, warn};
 
 use super::reactor::{self, Event};
 use super::spaces;
-use crate::actor::app::WindowId;
-use crate::actor::reactor::Requested;
 use crate::common::collections::{HashMap, HashSet};
-use crate::model::tx_store::WindowTxStore;
 use crate::sys::screen::SpaceId;
 use crate::sys::skylight::{CGSEventType, KnownCGSEvent};
+use crate::sys::window_notify;
 use crate::sys::window_notify::EventData;
-use crate::sys::window_server::{self, WindowIterator, WindowServerId};
-use crate::sys::{event, window_notify};
+use crate::sys::window_server::{self, WindowServerId};
 
 #[derive(Default)]
 pub struct Ignored {
@@ -100,7 +96,6 @@ pub struct WindowNotify {
 struct Dispatcher {
     events_tx: reactor::Sender,
     spaces_tx: spaces::Sender,
-    tx_store: Option<WindowTxStore>,
     focus_wake: FocusWakeSender,
 }
 
@@ -110,14 +105,12 @@ impl WindowNotify {
         spaces_tx: spaces::Sender,
         requests_rx: Receiver,
         initial_events: &[CGSEventType],
-        tx_store: Option<WindowTxStore>,
     ) -> Self {
         let (focus_wake_tx, focus_wake_rx) = mpsc::sync_channel(1);
         Self::spawn_focus_resolver(events_tx.clone(), focus_wake_rx);
         Dispatcher {
             events_tx,
             spaces_tx,
-            tx_store,
             focus_wake: FocusWakeSender { wake: focus_wake_tx },
         }
         .spawn();
@@ -262,7 +255,6 @@ impl Dispatcher {
         let Self {
             events_tx,
             spaces_tx,
-            tx_store,
             focus_wake,
         } = self;
         let event = evt.event_type;
@@ -335,32 +327,11 @@ impl Dispatcher {
             }
             CGSEventType::Known(KnownCGSEvent::WindowMoved)
             | CGSEventType::Known(KnownCGSEvent::WindowResized) => {
-                // TODO: suppress move/resize while Mission Control is active
-                let mouse_state = event::get_mouse_state();
-                let Some(window_id) = evt.window_id else {
-                    return;
-                };
-                let wsid = WindowServerId::new(window_id);
-                if let Some(query) = WindowIterator::new(&[wsid]) {
-                    if query.advance().is_none() {
-                        return;
-                    }
-                    let bounds = query.bounds();
-                    let pid = query.pid();
-                    if let Some(idx) = NonZeroU32::new(window_id) {
-                        let last_seen = tx_store
-                            .as_ref()
-                            .and_then(|store| store.get(&wsid))
-                            .map(|record| record.txid);
-                        events_tx.send(Event::WindowFrameChanged(
-                            WindowId { idx, pid },
-                            bounds,
-                            last_seen,
-                            Requested(false),
-                            mouse_state,
-                        ));
-                    }
-                };
+                // Only the borders take these, to follow drags and app moves within a frame. The
+                // reactor learns the new frame through Accessibility.
+                if let Some(window_id) = evt.window_id {
+                    crate::ui::border::window_moved(WindowServerId::new(window_id));
+                }
             }
             _ => {}
         }

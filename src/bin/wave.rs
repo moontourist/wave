@@ -322,11 +322,8 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Wave
         spaces: spaces_tx.clone(),
         topology_guard: spaces_actor.topology_guard(),
     });
-    let wn_actor = window_notify_actor::WindowNotify::new(
-        events_tx.clone(),
-        spaces_tx.clone(),
-        wnd_rx,
-        &[
+    let wn_actor =
+        window_notify_actor::WindowNotify::new(events_tx.clone(), spaces_tx.clone(), wnd_rx, &[
             // this event seems bugged
             //CGSEventType::Known(KnownCGSEvent::SpaceCurrentChanged),
             // repl for aboce
@@ -345,11 +342,10 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Wave
             CGSEventType::Known(KnownCGSEvent::WindowManagerGlobalFrontConnectionChanged),
             CGSEventType::Known(KnownCGSEvent::SpaceCreated),
             CGSEventType::Known(KnownCGSEvent::SpaceDestroyed),
-            //CGSEventType::Known(KnownCGSEvent::WindowMoved),
-            //CGSEventType::Known(KnownCGSEvent::WindowResized),
-        ],
-        Some(window_tx_store.clone()),
-    );
+            // For borders only; see `ui::border::window_moved`.
+            CGSEventType::Known(KnownCGSEvent::WindowMoved),
+            CGSEventType::Known(KnownCGSEvent::WindowResized),
+        ]);
 
     let notification_center =
         NotificationCenter::new(wm_controller_sender.clone(), spaces_tx.clone());
