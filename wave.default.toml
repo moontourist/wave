@@ -256,6 +256,22 @@ thickness = 28.0
 # spacing between the tab bar and window edges (in points)
 spacing = 0.0
 
+# An outline around each window, moving with it. The focused window's outline is in the active
+# color; as focus moves, the outlines fade between the two colors over animation_duration.
+[settings.ui.borders]
+# draw the border (defaults to off)
+enabled = true
+# outline width (in points)
+width = 2.0
+# corner radius of the windows it outlines (in points); the outline's inside edge follows it
+radius = 12.0
+# outline color for the focused window, as "#rrggbb" or "#rrggbbaa" (Kanagawa springBlue)
+active_color = "#7fb4ca"
+# outline color for the other windows
+inactive_color = "#2a2a37" # Kanagawa sumiInk4
+# outline unfocused windows too; false fades a window's outline out as it loses focus
+inactive = true
+
 # Trackpad gestures
 [settings.gestures]
 # Enable horizontal swipes to switch virtual workspaces
