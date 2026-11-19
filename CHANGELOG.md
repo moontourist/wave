@@ -15,6 +15,7 @@ All notable changes to wave are listed here. The format follows [Keep a Changelo
 
 ### Fixed
 - A window that opens thin in one direction, such as a 48-point-tall Ghostty window opened while many are tiled, is tiled instead of skipped as a tooltip.
+- A border follows its window within a frame when the window moves without wave, dragged or moved by its app, instead of trailing it.
 - Borders move in one commit per frame and run on their own thread, so with many windows they no longer slow window motion.
 - Windows opened in quick succession tile in order, each splitting or following the one before it. macOS focuses none of them until the burst ends, which left every new window next to the one selected before it.
 

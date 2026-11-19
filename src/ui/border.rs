@@ -13,6 +13,11 @@
 //! thread sends it the frames it just gave each moving window, and the borders follow. Creating a
 //! border window is a WindowServer round trip, slow while apps are launching, so it must never
 //! hold up the animation thread's next frame.
+//!
+//! A window that moves without wave, dragged by the user or moved by its app, is reported by
+//! WindowServer through [`window_moved`], and its border follows from there. The reactor learns of
+//! the move through Accessibility, which reads the frame back from the app and lags a frame or
+//! more behind.
 
 use std::collections::hash_map::Entry;
 use std::time::Duration;
@@ -25,12 +30,13 @@ use objc2::rc::{Retained, autoreleasepool};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
 use objc2_quartz_core::{CALayer, CAMediaTimingFunction, CATransaction};
+use parking_lot::Mutex;
 
 use crate::actor::app::WindowId;
 use crate::common::collections::HashMap;
 use crate::common::config::{BorderSettings, parse_hex_color};
 use crate::sys::geometry::SameAs;
-use crate::sys::window_server::WindowServerId;
+use crate::sys::window_server::{self, WindowServerId};
 
 /// How far the outline reaches in under its window, in points. macOS draws a window's visible edge
 /// a little inside its frame, so an outline that stopped at the frame would leave a thin line of
@@ -123,6 +129,20 @@ enum Update {
     Scene(Option<BorderScene>),
     /// The frames just sent to every moving window. Other windows are at rest.
     Frames(Vec<(WindowId, CGRect)>),
+    /// WindowServer moved or resized this window.
+    Moved(WindowServerId),
+}
+
+/// The running border thread's inbox, for WindowServer's move reports.
+static MOVES_INBOX: Mutex<Option<crossbeam_channel::Sender<Update>>> = Mutex::new(None);
+
+/// WindowServer moved or resized `wsid`: a drag, an app moving its own window, or one of wave's
+/// own moves. The border thread reads where the window is now and puts its border there, unless
+/// wave is animating that window, in which case its border follows the animation.
+pub fn window_moved(wsid: WindowServerId) {
+    if let Some(tx) = MOVES_INBOX.lock().as_ref() {
+        _ = tx.send(Update::Moved(wsid));
+    }
 }
 
 /// The animation thread's handle to the border thread. Dropping it ends the thread and releases
@@ -138,7 +158,10 @@ impl BorderThread {
         let (tx, rx) = crossbeam_channel::unbounded();
         let spawned = thread::Builder::new().name("wave-borders".into()).spawn(move || run(&rx));
         let tx = match spawned {
-            Ok(_) => Some(tx),
+            Ok(_) => {
+                *MOVES_INBOX.lock() = Some(tx.clone());
+                Some(tx)
+            }
             Err(error) => {
                 tracing::warn!(%error, "border thread failed to start; no borders");
                 None
@@ -165,19 +188,81 @@ impl BorderThread {
     }
 }
 
+impl Drop for BorderThread {
+    fn drop(&mut self) {
+        // The inbox's copy of the sender would keep the thread alive.
+        let mut inbox = MOVES_INBOX.lock();
+        if let (Some(ours), Some(registered)) = (&self.tx, inbox.as_ref())
+            && ours.same_channel(registered)
+        {
+            *inbox = None;
+        }
+    }
+}
+
 /// Applies updates as fast as WindowServer allows. Updates that queued meanwhile are taken
 /// together: every scene in order, then only the newest frames.
 fn run(rx: &crossbeam_channel::Receiver<Update>) {
     let mut follower = BorderFollower::default();
-    let mut moving: HashMap<WindowId, CGRect> = HashMap::default();
+    let mut latest = Latest::default();
     while let Ok(first) = rx.recv() {
         for update in iter::once(first).chain(rx.try_iter()) {
             match update {
-                Update::Scene(scene) => follower.set_scene(scene),
-                Update::Frames(frames) => moving = frames.into_iter().collect(),
+                Update::Scene(scene) => {
+                    latest.keep_only(|wid| {
+                        scene
+                            .as_ref()
+                            .is_some_and(|scene| scene.windows.iter().any(|w| w.wid == wid))
+                    });
+                    follower.set_scene(scene);
+                }
+                Update::Frames(frames) => latest.animate(frames),
+                Update::Moved(wsid) => {
+                    if let Some(wid) =
+                        follower.window_for(wsid).filter(|wid| latest.takes_report(*wid))
+                        && let Some(info) = window_server::get_window(wsid)
+                    {
+                        latest.report(wid, info.frame);
+                    }
+                }
             }
         }
-        follower.follow(|wid| moving.get(&wid).copied());
+        follower.follow(|wid| latest.frame(wid));
+    }
+}
+
+/// Frames newer than the scene's, which waits for Accessibility.
+#[derive(Default)]
+struct Latest {
+    /// The frames wave just sent to the windows it's animating.
+    moving: HashMap<WindowId, CGRect>,
+    /// Where WindowServer last reported each window at rest. It stands until wave moves the window.
+    reported: HashMap<WindowId, CGRect>,
+}
+
+impl Latest {
+    fn animate(&mut self, frames: Vec<(WindowId, CGRect)>) {
+        self.moving = frames.into_iter().collect();
+        self.reported.retain(|wid, _| !self.moving.contains_key(wid));
+    }
+
+    /// False while wave animates `wid`: WindowServer's reports trail the frames wave sends and
+    /// would pull the border back.
+    fn takes_report(&self, wid: WindowId) -> bool { !self.moving.contains_key(&wid) }
+
+    fn report(&mut self, wid: WindowId, frame: CGRect) {
+        if self.takes_report(wid) {
+            self.reported.insert(wid, frame);
+        }
+    }
+
+    /// Forgets the reports for windows that left the scene.
+    fn keep_only(&mut self, in_scene: impl Fn(WindowId) -> bool) {
+        self.reported.retain(|wid, _| in_scene(*wid));
+    }
+
+    fn frame(&self, wid: WindowId) -> Option<CGRect> {
+        self.moving.get(&wid).or_else(|| self.reported.get(&wid)).copied()
     }
 }
 
@@ -258,8 +343,14 @@ impl BorderFollower {
         self.scene = Some(scene);
     }
 
-    /// Moves each border to its window. `animated` gives the frame a moving window was just sent.
-    fn follow(&mut self, animated: impl Fn(WindowId) -> Option<CGRect>) {
+    /// The bordered window WindowServer knows as `wsid`.
+    fn window_for(&self, wsid: WindowServerId) -> Option<WindowId> {
+        self.scene.as_ref()?.windows.iter().find(|w| w.wsid == wsid).map(|w| w.wid)
+    }
+
+    /// Moves each border to its window. `current` gives a window's frame when it's newer than the
+    /// scene's: the frame a moving window was just sent, or where WindowServer saw it last.
+    fn follow(&mut self, current: impl Fn(WindowId) -> Option<CGRect>) {
         let Some(scene) = &self.scene else { return };
         let Some(style) = Style::new(&scene.settings) else {
             return;
@@ -271,7 +362,7 @@ impl BorderFollower {
             with_disabled_actions(|| -> Result<(), CgsWindowError> {
                 for window in &scene.windows {
                     if let Some(border) = self.borders.get_mut(&window.wid) {
-                        let target = animated(window.wid).unwrap_or(window.frame);
+                        let target = current(window.wid).unwrap_or(window.frame);
                         border.place(target, style, &mut moves)?;
                     }
                 }
@@ -433,3 +524,34 @@ impl Moves {
 }
 
 fn bounds(size: CGSize) -> CGRect { CGRect::new(CGPoint::ZERO, size) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: f64) -> CGRect { CGRect::new(CGPoint::new(x, 0.0), CGSize::new(100.0, 100.0)) }
+
+    #[test]
+    fn a_window_moved_without_wave_takes_its_border_until_wave_moves_it() {
+        let wid = WindowId::new(1, 1);
+        let mut latest = Latest::default();
+        assert_eq!(latest.frame(wid), None);
+
+        latest.report(wid, rect(10.0));
+        assert_eq!(latest.frame(wid), Some(rect(10.0)));
+
+        // Mid-animation reports trail the frames wave sends, so they're ignored.
+        latest.animate(vec![(wid, rect(50.0))]);
+        latest.report(wid, rect(40.0));
+        assert_eq!(latest.frame(wid), Some(rect(50.0)));
+
+        // At rest again, the scene holds until WindowServer reports a move.
+        latest.animate(Vec::new());
+        assert_eq!(latest.frame(wid), None);
+        latest.report(wid, rect(60.0));
+        assert_eq!(latest.frame(wid), Some(rect(60.0)));
+
+        latest.keep_only(|_| false);
+        assert_eq!(latest.frame(wid), None);
+    }
+}
