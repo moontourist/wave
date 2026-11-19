@@ -11,7 +11,7 @@
 #   reaction    window appears until wave first moves it
 #   settle      last window appears until every window has been still for 500 ms
 #   input lag   CLI round trips through wave's reactor every 25 ms during the burst, next to the
-#               cost of launching a do-nothing process, which is macOS's share of that lag
+#               cost of starting the same CLI without asking wave anything, which is macOS's share
 #   threads     how much of the burst each wave thread spent working, or blocked on another
 #               process (Accessibility and WindowServer calls), from a `sample` profile
 # Afterwards it quits only the Ghostty processes it started. It never sends keystrokes.
@@ -111,7 +111,7 @@ lag, spawn, stop = [], [], threading.Event()
 def probe():
     while not stop.is_set():
         lag.append(timed(cli, "query", "workspaces"))
-        spawn.append(timed("/usr/bin/true"))
+        spawn.append(timed(cli, "--help"))
         time.sleep(0.025)
 
 
@@ -180,7 +180,7 @@ else:
           f"{(settled - launches[-1]) * 1000:.0f} ms after the last launch")
 print(f"idle lag   {summary(idle)}")
 print(f"burst lag  {summary(lag)}")
-print(f"spawn only {summary(spawn)}  (macOS's share: launching /usr/bin/true)")
+print(f"spawn only {summary(spawn)}  (macOS's share: starting wave-cli without asking wave)")
 print(f"wave       {cpu:.2f} s CPU during the burst; footprint now {footprint(wave)}")
 
 # Each thread's samples, split into waiting for work, blocked on another process, and working.
@@ -223,12 +223,23 @@ for name, t in sorted(merged.items(), key=lambda kv: kv[1]["idle"] / kv[1]["tota
         print(f"  {100 * work / t['total']:5.1f}% / {100 * t['blocked'] / t['total']:5.1f}%  {label}")
 print(f"profile    {profile}")
 
-# Quit only the Ghostty processes this test started.
+# Quit only the Ghostty processes this test started. A slow launch can show up late, so look
+# twice, and kill any that ignore the quit: under a burst some never make a window.
 watch.kill()
-ours = pids(ghostty) - before
-for pid in ours:
-    os.kill(pid, signal.SIGTERM)
-time.sleep(1)
+def signal_all(pids_, sig):
+    for pid in pids_:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+ours = set()
+for _ in range(2):
+    new = pids(ghostty) - before - ours
+    signal_all(new, signal.SIGTERM)
+    ours |= new
+    time.sleep(1)
+signal_all(pids(ghostty) & ours, signal.SIGKILL)
+time.sleep(0.5)
 left = pids(ghostty) & ours
 print(f"cleanup    quit {len(ours) - len(left)} test Ghostty processes"
       + (f", {len(left)} still running: {sorted(left)}" if left else ""))
