@@ -386,8 +386,8 @@ pub enum Event {
         sequence_id: u64,
     },
 
-    /// A window's pop-in picture is ready (or the pop-in gave up); start the held slide.
-    PopInReady(WindowId),
+    /// A popping-in window sits in its tile under its picture; its real border takes over.
+    PopInLanded(WindowId),
     /// A window's pop-in animation ended and the window is in its tile.
     PopInFinished(WindowId),
 
@@ -1756,9 +1756,7 @@ impl Reactor {
                         window_server_info: ws_info,
                     },
                 )?;
-                if self.config.settings.window_open_close_animation {
-                    self.pop_ins.note_created(wid);
-                }
+                self.pop_ins.note_created(wid);
                 outcome.focused_window = raised_window;
                 return Ok(outcome);
             }
@@ -1881,8 +1879,7 @@ impl Reactor {
             Event::WindowServerAppeared(wsid, sid, kind) => {
                 // A window can open without an AX creation event; the inventory refresh
                 // that follows adds it, so mark it as opening here too.
-                if self.config.settings.window_open_close_animation
-                    && matches!(kind, SpaceEventKind::User)
+                if matches!(kind, SpaceEventKind::User)
                     && !self.state.windows.knows_window_server_id(wsid)
                 {
                     self.pop_ins.note_appeared(wsid);
@@ -2519,12 +2516,11 @@ impl Reactor {
             Event::RaiseTimeout { sequence_id } => {
                 return Ok(system_workflow::handle_raise_timeout(sequence_id)?);
             }
-            Event::PopInReady(wid) => {
-                animation::AnimationManager::release_animation_held_for(self, wid);
+            Event::PopInLanded(wid) => {
+                self.pop_ins.land(wid);
                 return Ok(EventOutcome::no_change());
             }
             Event::PopInFinished(wid) => {
-                animation::AnimationManager::release_animation_held_for(self, wid);
                 // Arrange again in case the layout moved on while the window was popping in.
                 return Ok(if self.pop_ins.finish(wid) {
                     EventOutcome::layout_changed(false)
@@ -6418,6 +6414,8 @@ impl Reactor {
                         .workspaces()
                         .windows_in_active_workspace(&self.state.windows, space)
                 })
+                // A popping-in window's picture draws its border until it lands.
+                .filter(|wid| !self.pop_ins.draws_border(*wid))
                 .filter_map(|wid| {
                     let window = self.state.windows.window(wid)?;
                     let wsid = window.info.sys_id?;
@@ -6463,6 +6461,7 @@ impl Reactor {
             window.frame_monotonic,
             Duration::from_secs_f64(settings.animation_duration),
             settings.animation_easing,
+            settings.ui.borders.enabled.then(|| settings.ui.borders.clone()),
         );
     }
 

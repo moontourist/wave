@@ -1,19 +1,23 @@
-//! Opening and closing animations for tiled windows. A new window flies from
-//! where macOS opened it into its tile, in step with its neighbors' slide; a
-//! closing window shrinks and fades away while its neighbors close the gap.
+//! Opening and closing animations for tiled windows, like Hyprland's "popin": a
+//! new window grows into its tile from a little smaller as it fades in, while its
+//! neighbors slide aside; a closing window shrinks and fades away while its
+//! neighbors close the gap. The picture carries the window's border, so the
+//! border grows and shrinks with it.
 //!
 //! Closing (`Closer`): once a window is gone there is nothing left to capture,
 //! so a background thread keeps one low-resolution picture of the focused tiled
 //! window and shrinks that picture away when the window closes.
 //!
 //! Opening:
-//! macOS gives wave no way to move, fade or scale another app's window
-//! smoothly, so the animation runs on a picture of it. The window is captured
-//! where it opened, and a wave-owned overlay covers it with that picture, so
-//! nothing visibly changes. The real window then moves off screen unresized
-//! (its picture stays true), the picture flies into the tile on the GPU (Core
-//! Animation) while the neighbors slide, the real window lands in the tile
-//! underneath and redraws, and the picture cross-fades away.
+//! macOS gives wave no way to fade or scale another app's window, so the
+//! animation runs on a picture of it, taken where macOS opened the window (a
+//! window off screen captures only the part still on a display). The window
+//! then moves off screen and takes its tile's size there, out of sight. Its
+//! picture grows into the tile on the GPU (Core Animation), pinned to the
+//! tile's top-left corner with the window's background color filling the rest,
+//! timed to settle together with the neighbors' slide. The real window lands in
+//! the tile under the picture, its real border appears, and the picture fades
+//! away.
 //!
 //! Every failure (no Screen Recording permission, a window that never takes
 //! its tile size, a capture or overlay error) falls back to placing the window
@@ -31,31 +35,42 @@ use cgs::compositor::{
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
 use objc2_core_foundation::{CFArray, CFRetained, CGPoint, CGRect, CGSize};
-use objc2_core_graphics::{CGImage, CGPreflightScreenCaptureAccess};
-use objc2_quartz_core::{CALayer, CAMediaTimingFunction, CATransaction};
+use objc2_core_graphics::{CGColor, CGDataProvider, CGImage, CGPreflightScreenCaptureAccess};
+use objc2_quartz_core::{
+    CALayer, CAMediaTimingFunction, CATransaction, CATransform3D, kCAGravityTopLeft,
+};
 use parking_lot::Mutex;
 use tracing::{debug, warn};
 
-use super::animation::Animation;
 use super::{Event, Reactor, Sender, TransactionId};
 use crate::actor::app::{AppThreadHandle, Request, WindowId};
 use crate::common::collections::HashMap;
-use crate::common::config::AnimationEasing;
+use crate::common::config::{AnimationEasing, BorderSettings};
 use crate::model::hidden_window_placement::{HiddenWindowPlacement, HideCorner};
 use crate::sys::geometry::SameAs;
 use crate::sys::screen::SpaceId;
 use crate::sys::skylight::SLSHWCaptureWindowList;
 use crate::sys::window_server::{self, WindowServerId};
+use crate::ui::border;
 
 /// A window laid out this long after it was created no longer counts as "opening".
 const CANDIDATE_TTL: Duration = Duration::from_secs(2);
 /// How long to wait for the app to apply a frame before giving up on the pop-in.
 const FRAME_TIMEOUT: Duration = Duration::from_millis(250);
 const FRAME_POLL: Duration = Duration::from_millis(8);
-/// Time for a just-opened window to draw its first frame before it is captured.
-const FIRST_DRAW: Duration = Duration::from_millis(16);
-/// Time for the app to redraw at its tile size under the picture. Finder needs about 30 ms.
-const TILE_REDRAW: Duration = Duration::from_millis(40);
+/// How long a new window gets to draw where it opened before the pop-in gives up on it.
+const FIRST_DRAW: Duration = Duration::from_millis(150);
+/// A new window's picture starts at this fraction of its tile, and a closing one shrinks to it.
+const POP_SCALE: f64 = 0.85;
+/// The shortest a pop-in runs, as a share of the animation duration. It lasts until the
+/// neighbors' slide ends, but getting the picture ready can eat into that.
+const MIN_POP_SHARE: f64 = 0.6;
+/// The share of a pop-in its fade-in takes; the growing takes all of it.
+const FADE_IN_SHARE: f64 = 0.4;
+/// How long the picture's outline stays over the window's real border while that is drawn.
+const BORDER_HANDOFF: Duration = Duration::from_millis(100);
+/// How long the picture waits for the window to land in its tile before leaving anyway.
+const LAND_TIMEOUT: Duration = Duration::from_secs(1);
 /// The picture's cross-fade into the real window.
 const FADE_OUT: Duration = Duration::from_millis(80);
 /// Capture at full backing resolution, ignoring the window's clip shape: the
@@ -64,13 +79,14 @@ const CAPTURE_OPTIONS: u32 = (1 << 11) | (1 << 8);
 /// The closing picture is kept around, so capture at nominal (1x) resolution:
 /// about 10 MB for a big tile instead of 38 MB, and a 0.2 s fade hides the softness.
 const CLOSE_CAPTURE_OPTIONS: u32 = (1 << 11) | (1 << 9);
+/// `kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst`: premultiplied BGRA bytes, the
+/// layout window captures come in.
+const BGRA: u32 = 0x2002;
 /// Refresh the closing picture once focus has rested this long, so sweeping the
 /// mouse across windows (focus follows mouse) costs one capture, not one per window.
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
 /// A closed window's picture holds its spot at most this long, waiting for the neighbors' slide.
 const COVER_TIMEOUT: Duration = Duration::from_millis(300);
-/// A closing window shrinks to this fraction of its tile as it fades.
-const CLOSE_SCALE: f64 = 0.85;
 
 /// Reactor-side bookkeeping: which windows just opened, and which are popping in.
 #[derive(Default, Debug)]
@@ -79,14 +95,14 @@ pub(super) struct PopIns {
     /// creation event and WindowServer's "appeared" event can mark a window.
     candidates: HashMap<NonZeroU32, Instant>,
     active: HashMap<WindowId, Popping>,
-    /// The neighbors' slide, waiting for this window's picture.
-    held: Option<(WindowId, Animation)>,
 }
 
 #[derive(Debug)]
 struct Popping {
     target: CGRect,
     cancelled: Arc<Mutex<bool>>,
+    /// The window sits in its tile under the picture, so its real border can be drawn.
+    landed: bool,
 }
 
 impl PopIns {
@@ -123,8 +139,21 @@ impl PopIns {
         self.active.insert(wid, Popping {
             target,
             cancelled: cancelled.clone(),
+            landed: false,
         });
         cancelled
+    }
+
+    /// True while `wid`'s picture draws its border, so the border thread leaves it out.
+    pub(super) fn draws_border(&self, wid: WindowId) -> bool {
+        self.active.get(&wid).is_some_and(|p| !p.landed && !*p.cancelled.lock())
+    }
+
+    /// `wid` sits in its tile under its picture: its real border takes over.
+    pub(super) fn land(&mut self, wid: WindowId) {
+        if let Some(popping) = self.active.get_mut(&wid) {
+            popping.landed = true;
+        }
     }
 
     /// Hands `wid` back to the caller, which must place it: the picture goes
@@ -135,27 +164,13 @@ impl PopIns {
         }
     }
 
-    pub(super) fn hold(&mut self, wid: WindowId, anim: Animation) { self.held = Some((wid, anim)); }
-
-    pub(super) fn take_held(&mut self) -> Option<Animation> {
-        self.held.take().map(|(_, anim)| anim)
-    }
-
-    pub(super) fn take_held_for(&mut self, wid: WindowId) -> Option<Animation> {
-        if self.held.as_ref().is_some_and(|(w, _)| *w == wid) {
-            self.take_held()
-        } else {
-            None
-        }
-    }
-
     /// True if `wid` was popping in, so the layout should be applied again.
     pub(super) fn finish(&mut self, wid: WindowId) -> bool { self.active.remove(&wid).is_some() }
 }
 
-/// Starts a pop-in for `wid` if it just opened and can pop in; otherwise the
-/// caller animates it as usual. `park_txid` is the transaction the caller
-/// already registered for `target`.
+/// Starts a pop-in for `wid`, which just opened, if it can pop in; otherwise the
+/// caller places it. `park_txid` is the transaction the caller already registered
+/// for `target`. The neighbors' slide starts now, and the pop-in settles with it.
 pub(super) fn try_start(
     reactor: &mut Reactor,
     space: SpaceId,
@@ -163,10 +178,10 @@ pub(super) fn try_start(
     park_txid: TransactionId,
     target: CGRect,
 ) -> bool {
-    // During a burst of new windows, only the first pops in: each pop-in holds its neighbors'
-    // slide until its picture is ready, and those waits would add up window after window.
+    // During a burst of new windows, only the first pops in: each pop-in captures its window
+    // and composites an overlay, and that WindowServer work would slow every window after it.
     if reactor.animation_tx.is_none()
-        || !reactor.pop_ins.take_candidate(wid)
+        || !reactor.config.settings.window_open_close_animation
         || !reactor.pop_ins.active.is_empty()
         || reactor.layout_manager.layout_engine.is_window_floating(wid)
     {
@@ -187,6 +202,8 @@ pub(super) fn try_start(
     reactor.transaction_manager.update_txid_entries([(wsid, final_txid, target)]);
     let cancelled = reactor.pop_ins.begin(wid, target);
     debug!(?wid, ?target, "pop-in started");
+    let settings = &reactor.config.settings;
+    let duration = Duration::from_secs_f64(settings.animation_duration);
     Job {
         handle,
         wid,
@@ -196,8 +213,10 @@ pub(super) fn try_start(
         target,
         park_txid,
         final_txid,
-        duration: Duration::from_secs_f64(reactor.config.settings.animation_duration),
-        easing: reactor.config.settings.animation_easing,
+        duration,
+        slide_ends: Instant::now() + duration,
+        easing: settings.animation_easing,
+        outline: settings.ui.borders.enabled.then(|| settings.ui.borders.clone()),
         events: reactor.communication_manager.events_tx.clone(),
         cancelled,
     }
@@ -219,7 +238,11 @@ pub(super) struct Job {
     pub park_txid: TransactionId,
     pub final_txid: TransactionId,
     pub duration: Duration,
+    /// When the neighbors' slide ends; the picture grows in until then.
+    pub slide_ends: Instant,
     pub easing: AnimationEasing,
+    /// The border settings, when borders are on: the picture draws the window's outline.
+    pub outline: Option<BorderSettings>,
     pub events: Option<Sender>,
     /// Set by the reactor when a layout takes the window back (workspace switch, display change).
     pub cancelled: Arc<Mutex<bool>>,
@@ -241,7 +264,6 @@ impl Job {
         let started = Instant::now();
         let presented = self.present(started);
         if !presented {
-            self.ready();
             self.place_unless_cancelled();
         }
         debug!(wid = ?self.wid, presented, elapsed = ?started.elapsed(), "pop-in finished");
@@ -258,57 +280,80 @@ impl Job {
             debug!("pop-in skipped: Screen Recording permission not granted");
             return false;
         }
-        // A window can be laid out before macOS shows it; wait for where it opened.
-        let Some(spot) = wait_for_frame(self.wsid, |f| f.size.width > 0.0 && f.size.height > 0.0)
-        else {
-            debug!(wid = ?self.wid, "pop-in skipped: window never appeared");
+        let Some(opened) = window_server::get_window(self.wsid).map(|info| info.frame) else {
             return false;
         };
-        thread::sleep(FIRST_DRAW);
-        let Some(image) = capture(self.wsid, CAPTURE_OPTIONS) else {
-            debug!(wid = ?self.wid, "pop-in skipped: capture failed");
-            return false;
+        let deadline = Instant::now() + FIRST_DRAW;
+        let picture = loop {
+            if let Some(picture) = Picture::take(self.wsid, CAPTURE_OPTIONS, opened.size) {
+                break picture;
+            }
+            if Instant::now() >= deadline {
+                debug!(wid = ?self.wid, "pop-in skipped: window did not draw where it opened");
+                return false;
+            }
+            thread::sleep(FRAME_POLL);
         };
         step("captured");
-        if self.is_cancelled() {
-            return true;
-        }
-        // The picture covers the window exactly, so swapping one for the other is invisible.
-        let overlay = match Overlay::new(spot, self.target, &image, Some(self.wsid)) {
+        // Out of sight, the window takes its tile's size and redraws at it.
+        let parked = HiddenWindowPlacement::calculate(
+            self.screen,
+            self.target,
+            HideCorner::BottomRight,
+            &self.screens,
+        );
+        self.write(parked, self.park_txid);
+        // The overlay starts out shrunk and see-through, so making it now shows nothing.
+        let overlay = match Overlay::new(
+            self.target,
+            Some(&picture),
+            self.outline.as_ref(),
+            Some(self.wsid),
+            Start::Hidden,
+        ) {
             Ok(overlay) => overlay,
             Err(error) => {
                 debug!(wid = ?self.wid, ?error, "pop-in skipped: overlay failed");
                 return false;
             }
         };
-        step("covered");
-        // Parking keeps the opening size, so the picture stays true to the window.
-        let parked = HiddenWindowPlacement::calculate(
-            self.screen,
-            spot,
-            HideCorner::BottomRight,
-            &self.screens,
-        );
-        self.write(parked, self.park_txid);
-        // The picture may only leave once the real window is gone from under it.
-        let gone = |frame: CGRect| !frame.origin.same_as(spot.origin);
-        if wait_for_frame(self.wsid, gone).is_none() {
-            debug!(wid = ?self.wid, "pop-in skipped: window did not move off screen");
+        let resized = |frame: CGRect| {
+            frame.size.same_as(self.target.size) && !frame.origin.same_as(opened.origin)
+        };
+        if wait_for_frame(self.wsid, resized).is_none() {
+            debug!(wid = ?self.wid, "pop-in skipped: window did not take its tile size off screen");
             return false;
         }
         step("parked");
-        self.ready();
-        overlay.animate(self.target, 1.0, self.duration, self.easing);
-        if !self.sleep_unless_interrupted(self.duration) || !self.place_unless_cancelled() {
+        if self.is_cancelled() {
+            return true;
+        }
+        let duration = self
+            .slide_ends
+            .saturating_duration_since(Instant::now())
+            .max(self.duration.mul_f64(MIN_POP_SHARE));
+        overlay.animate(1.0, 1.0, duration, self.easing);
+        if !self.sleep_unless_interrupted(duration) || !self.place_unless_cancelled() {
             // Closed or taken back mid-flight: drop the picture now, leave the window be.
             debug!(wid = ?self.wid, "pop-in cut short");
             return true;
         }
         step("placed");
-        // Keep covering until the real window has landed and redrawn underneath.
-        wait_for_frame(self.wsid, |frame| frame.origin.same_as(self.target.origin));
+        // Keep covering until the real window is in its tile and has drawn there: a launching
+        // app can take a while to apply the move, and an app that stops drawing off screen
+        // shows nothing until it draws again.
+        let deadline = Instant::now() + LAND_TIMEOUT;
+        while !(window_server::get_window(self.wsid)
+            .is_some_and(|info| info.frame.origin.same_as(self.target.origin))
+            && Picture::take(self.wsid, CLOSE_CAPTURE_OPTIONS, self.target.size).is_some())
+        {
+            if Instant::now() >= deadline || !self.sleep_unless_interrupted(FRAME_POLL) {
+                break;
+            }
+        }
         step("landed");
-        if self.sleep_unless_interrupted(TILE_REDRAW) {
+        self.send(Event::PopInLanded(self.wid));
+        if self.sleep_unless_interrupted(BORDER_HANDOFF) {
             overlay.fade_out(FADE_OUT);
             self.sleep_unless_interrupted(FADE_OUT);
         }
@@ -352,8 +397,6 @@ impl Job {
             debug!(wid = ?self.wid, ?error, "pop-in frame write failed; app may have quit");
         }
     }
-
-    fn ready(&self) { self.send(Event::PopInReady(self.wid)); }
 
     fn finish(&self) { self.send(Event::PopInFinished(self.wid)); }
 
@@ -427,26 +470,125 @@ fn capture(wsid: WindowServerId, options: u32) -> Option<CFRetained<CGImage>> {
     images.iter().next()
 }
 
-/// A wave-owned window over the tile that shows the captured picture.
+/// How an overlay starts out.
+#[derive(Clone, Copy, Debug)]
+enum Start {
+    /// At full size and opaque, standing in for a window that just closed.
+    Shown,
+    /// Shrunk and see-through, ready to grow in.
+    Hidden,
+}
+
+/// A window's picture, with its own copy of the pixels: a hardware capture can share the window's
+/// live backing store, which empties out when the window moves or redraws.
+struct Picture {
+    image: CFRetained<CGImage>,
+    /// The window's size when it was taken, in points.
+    size: CGSize,
+    /// The window's background, for the part of a bigger tile the picture doesn't reach.
+    background: Option<CFRetained<CGColor>>,
+}
+
+impl Picture {
+    /// Captures the window, `size` points big. `None` while it hasn't drawn, which captures as all
+    /// zero bytes whatever the pixel format, or if part of it is off screen and so missing.
+    fn take(wsid: WindowServerId, options: u32, size: CGSize) -> Option<Self> {
+        // The capture leaves autoreleased buffers behind, and a pop-in captures every few
+        // milliseconds while it waits for the window.
+        autoreleasepool(|_| Self::take_in_pool(wsid, options, size))
+    }
+
+    fn take_in_pool(wsid: WindowServerId, options: u32, size: CGSize) -> Option<Self> {
+        let image = capture(wsid, options)?;
+        let width = CGImage::width(Some(&image));
+        let height = CGImage::height(Some(&image));
+        let [pixels_wide, pixels_high] =
+            [width, height].map(|n| u32::try_from(n).map_or(0.0, f64::from));
+        if size.width < 1.0
+            || size.height < 1.0
+            || (pixels_wide / size.width - pixels_high / size.height).abs() > 0.02
+        {
+            return None;
+        }
+        let data = CGImage::data_provider(Some(&image))
+            .and_then(|provider| CGDataProvider::data(Some(&provider)))?;
+        // SAFETY: the CFData is immutable and this function holds the only reference to it.
+        let bytes = unsafe { data.as_bytes_unchecked() };
+        let row = CGImage::bytes_per_row(Some(&image));
+        let pixel = (CGImage::bits_per_pixel(Some(&image)) / 8).max(1);
+        // A few rows across the middle, every 16th pixel: corners can be transparent by design.
+        let drawn = [1, 2, 3].into_iter().any(|quarter| {
+            let start = row * (height * quarter / 4);
+            bytes.get(start..start + row).is_some_and(|line| {
+                line.chunks(pixel).step_by(16).any(|px| px.iter().any(|&byte| byte != 0))
+            })
+        });
+        if !drawn {
+            return None;
+        }
+        // Sampled low and to the right, clear of most content.
+        let sample = row * (height * 3 / 4) + pixel * (width * 7 / 8);
+        let background = match bytes.get(sample..sample + 4) {
+            Some(&[b, g, r, a]) if CGImage::bitmap_info(Some(&image)).0 == BGRA && a > 0 => {
+                let alpha = f64::from(a);
+                Some(CGColor::new_generic_rgb(
+                    f64::from(r) / alpha,
+                    f64::from(g) / alpha,
+                    f64::from(b) / alpha,
+                    alpha / 255.0,
+                ))
+            }
+            _ => None,
+        };
+        let provider = CGDataProvider::with_cf_data(Some(&data))?;
+        // SAFETY: every layout argument is read from `image`, whose pixels `provider` holds, and
+        // a null decode array means no remapping.
+        let image = unsafe {
+            CGImage::new(
+                width,
+                height,
+                CGImage::bits_per_component(Some(&image)),
+                CGImage::bits_per_pixel(Some(&image)),
+                row,
+                CGImage::color_space(Some(&image)).as_deref(),
+                CGImage::bitmap_info(Some(&image)),
+                Some(&provider),
+                std::ptr::null(),
+                false,
+                CGImage::rendering_intent(Some(&image)),
+            )
+        }?;
+        Some(Self { image, size, background })
+    }
+}
+
+/// A wave-owned window over a tile that shows a window's captured picture, with the window's
+/// outline around it when borders are on.
 struct Overlay {
     // The surface must be detached before its owning WindowServer window drops.
     surface: WindowSurface,
     window: CgsWindow,
-    /// The overlay window's screen frame.
-    frame: CGRect,
-    picture: Retained<CALayer>,
+    /// The picture and its outline, scaled and faded together about the tile's center.
+    tile: Retained<CALayer>,
 }
 
 impl Overlay {
-    /// One overlay window spans the whole flight; the picture starts exactly over
-    /// `spot`. With no window to sit above, it goes on top of the normal windows.
+    /// Covers `target`, plus the outline's width around it. With no window to sit above, it goes
+    /// on top of the normal windows.
     fn new(
-        spot: CGRect,
         target: CGRect,
-        image: &CGImage,
+        picture: Option<&Picture>,
+        outline: Option<&BorderSettings>,
         above: Option<WindowServerId>,
+        start: Start,
     ) -> Result<Self, CgsWindowError> {
-        let frame = union(spot, target);
+        let outline = outline.and_then(|settings| {
+            let layer = CALayer::layer();
+            border::draw_focused_outline(&layer, settings)
+                .map(|(width, radius)| (layer, width, radius))
+        });
+        let reach = outline.as_ref().map_or(0.0, |(_, width, _)| *width);
+        let frame = outset(target, reach);
         let window = CgsWindow::new_compositor(frame, 0.0)?;
         window.disable_shadow();
         window.set_alpha(1.0)?;
@@ -454,7 +596,8 @@ impl Overlay {
 
         let bounds = CGRect::new(CGPoint::ZERO, frame.size);
         let root = CALayer::layer();
-        let picture = CALayer::layer();
+        let tile = CALayer::layer();
+        let picture_layer = CALayer::layer();
         with_disabled_actions(|| {
             root.setBounds(bounds);
             root.setPosition(CGPoint::ZERO);
@@ -462,36 +605,49 @@ impl Overlay {
             root.setOpaque(false);
             // Top-left origin, like the screen frames wave works in.
             root.setGeometryFlipped(true);
-            picture.setAnchorPoint(CGPoint::ZERO);
-            picture.setFrame(local(spot, frame));
-            picture.setContentsScale(CGImage::width(Some(image)) as f64 / spot.size.width);
-            // SAFETY: A CGImage is a CF type toll-free bridged to an Objective-C object.
-            let contents = unsafe { &*(image as *const CGImage as *const AnyObject) };
-            // SAFETY: CALayer.contents takes a CGImage, and the layer retains it.
-            unsafe { picture.setContents(Some(contents)) };
-            root.addSublayer(&picture);
+            // The tile keeps its center anchor, so it scales about the tile's center.
+            tile.setFrame(bounds);
+            if let Some((layer, _, radius)) = &outline {
+                layer.setFrame(bounds);
+                tile.addSublayer(layer);
+                picture_layer.setCornerRadius(*radius);
+            }
+            picture_layer.setFrame(CGRect::new(CGPoint::new(reach, reach), target.size));
+            // A picture from a different size than the tile is cropped or padded, never stretched.
+            picture_layer.setMasksToBounds(true);
+            // SAFETY: a constant string Core Animation exports.
+            picture_layer.setContentsGravity(unsafe { kCAGravityTopLeft });
+            tile.addSublayer(&picture_layer);
+            if let Start::Hidden = start {
+                tile.setTransform(CATransform3D::new_scale(POP_SCALE, POP_SCALE, 1.0));
+                tile.setOpacity(0.0);
+            }
+            root.addSublayer(&tile);
         });
+        if let Some(picture) = picture {
+            show_picture(&picture_layer, picture);
+        }
         let surface = WindowSurface::new(window.id(), bounds, &root)?;
         surface.flush();
         window.order_above(above.map(|id| id.as_u32()))?;
-        Ok(Self {
-            surface,
-            window,
-            frame,
-            picture,
-        })
+        Ok(Self { surface, window, tile })
     }
 
-    /// Hands the motion to Core Animation; the render server runs it on the GPU.
-    fn animate(&self, to: CGRect, opacity: f32, duration: Duration, easing: AnimationEasing) {
+    /// Scales and fades the picture and its outline on the GPU, which runs the motion.
+    fn animate(&self, scale: f64, opacity: f32, duration: Duration, easing: AnimationEasing) {
         let [x1, y1, x2, y2] = bezier(easing);
         CATransaction::begin();
         CATransaction::setAnimationDuration(duration.as_secs_f64());
         CATransaction::setAnimationTimingFunction(Some(
             &CAMediaTimingFunction::functionWithControlPoints(x1, y1, x2, y2),
         ));
-        self.picture.setFrame(local(to, self.frame));
-        self.picture.setOpacity(opacity);
+        self.tile.setTransform(CATransform3D::new_scale(scale, scale, 1.0));
+        // Fading in finishes early, so whatever the neighbors uncover never shows through.
+        let fade_share = if opacity > 0.0 { FADE_IN_SHARE } else { 1.0 };
+        CATransaction::begin();
+        CATransaction::setAnimationDuration(duration.as_secs_f64() * fade_share);
+        self.tile.setOpacity(opacity);
+        CATransaction::commit();
         CATransaction::commit();
         self.surface.flush();
     }
@@ -499,7 +655,7 @@ impl Overlay {
     fn fade_out(&self, duration: Duration) {
         CATransaction::begin();
         CATransaction::setAnimationDuration(duration.as_secs_f64());
-        self.picture.setOpacity(0.0);
+        self.tile.setOpacity(0.0);
         CATransaction::commit();
         self.surface.flush();
     }
@@ -512,6 +668,7 @@ enum CloseMsg {
         frame: CGRect,
         duration: Duration,
         easing: AnimationEasing,
+        outline: Option<BorderSettings>,
     },
     SlideStarted,
 }
@@ -544,18 +701,26 @@ impl Closer {
         _ = self.tx.send(CloseMsg::Watch(wid));
     }
 
-    /// Shrinks `wid`'s picture away from `frame`, if the picture is of `wid`.
+    /// Shrinks `wid`'s picture away from `frame`, if the picture is of `wid`. The picture
+    /// carries the focused window's outline when `outline` is set.
     pub(super) fn closed(
         &mut self,
         wid: WindowId,
         frame: CGRect,
         duration: Duration,
         easing: AnimationEasing,
+        outline: Option<BorderSettings>,
     ) {
         if self.watched.is_some_and(|(w, _)| w == wid) {
             self.watched = None;
         }
-        _ = self.tx.send(CloseMsg::Closed { wid, frame, duration, easing });
+        _ = self.tx.send(CloseMsg::Closed {
+            wid,
+            frame,
+            duration,
+            easing,
+            outline,
+        });
     }
 
     /// The neighbors started sliding: a closed window's picture now shrinks with them.
@@ -606,13 +771,21 @@ fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
                 }
             }
             Ok(CloseMsg::Watch(wid)) => pending = Some((wid, Instant::now() + WATCH_DEBOUNCE)),
-            Ok(CloseMsg::Closed { wid, frame, duration, easing }) => {
+            Ok(CloseMsg::Closed {
+                wid,
+                frame,
+                duration,
+                easing,
+                outline,
+            }) => {
                 pending.take_if(|(w, _)| *w == wid);
                 if let Some(cover) = covering.take() {
                     cover.shrink();
                 }
                 match picture.take_if(|(w, _)| *w == wid) {
-                    Some((_, image)) => covering = Cover::new(frame, &image, duration, easing),
+                    Some((_, image)) => {
+                        covering = Cover::new(frame, &image, outline.as_ref(), duration, easing);
+                    }
                     None => debug!(?wid, "close not animated: no picture of this window"),
                 }
             }
@@ -629,7 +802,6 @@ fn run_closer(rx: crossbeam_channel::Receiver<CloseMsg>) {
 /// A closed window's picture, holding its spot at full size until the neighbors move.
 struct Cover {
     overlay: Overlay,
-    frame: CGRect,
     duration: Duration,
     easing: AnimationEasing,
     /// Shrink by now even if no slide starts (the last window on a workspace closed).
@@ -639,14 +811,19 @@ struct Cover {
 impl Cover {
     fn new(
         frame: CGRect,
-        image: &CGImage,
+        image: &CFRetained<CGImage>,
+        outline: Option<&BorderSettings>,
         duration: Duration,
         easing: AnimationEasing,
     ) -> Option<Self> {
-        match Overlay::new(frame, frame, image, None) {
+        let picture = Picture {
+            image: image.clone(),
+            size: frame.size,
+            background: None,
+        };
+        match Overlay::new(frame, Some(&picture), outline, None, Start::Shown) {
             Ok(overlay) => Some(Self {
                 overlay,
-                frame,
                 duration,
                 easing,
                 deadline: Instant::now() + COVER_TIMEOUT,
@@ -659,33 +836,32 @@ impl Cover {
     }
 
     fn shrink(self) {
-        let to = scaled_about_center(self.frame, CLOSE_SCALE);
-        self.overlay.animate(to, 0.0, self.duration, self.easing);
+        self.overlay.animate(POP_SCALE, 0.0, self.duration, self.easing);
         thread::sleep(self.duration);
     }
 }
 
-fn scaled_about_center(rect: CGRect, scale: f64) -> CGRect {
-    let size = CGSize::new(rect.size.width * scale, rect.size.height * scale);
-    let origin = CGPoint::new(
-        rect.origin.x + (rect.size.width - size.width) / 2.0,
-        rect.origin.y + (rect.size.height - size.height) / 2.0,
-    );
-    CGRect::new(origin, size)
+/// Shows `picture` on `layer`.
+fn show_picture(layer: &CALayer, picture: &Picture) {
+    // Pixels per point, so a Retina capture stays sharp.
+    let scale = u32::try_from(CGImage::width(Some(&picture.image)))
+        .map_or(2.0, |pixels| f64::from(pixels) / picture.size.width);
+    with_disabled_actions(|| {
+        layer.setContentsScale(scale);
+        layer.setBackgroundColor(picture.background.as_deref());
+        // SAFETY: A CGImage is a CF type toll-free bridged to an Objective-C object.
+        let contents =
+            unsafe { &*std::ptr::from_ref::<CGImage>(&picture.image).cast::<AnyObject>() };
+        // SAFETY: CALayer.contents takes a CGImage, and the layer retains it.
+        unsafe { layer.setContents(Some(contents)) };
+    });
 }
 
-fn union(a: CGRect, b: CGRect) -> CGRect {
-    let (x0, y0) = (a.origin.x.min(b.origin.x), a.origin.y.min(b.origin.y));
-    let x1 = (a.origin.x + a.size.width).max(b.origin.x + b.size.width);
-    let y1 = (a.origin.y + a.size.height).max(b.origin.y + b.size.height);
-    CGRect::new(CGPoint::new(x0, y0), CGSize::new(x1 - x0, y1 - y0))
-}
-
-/// `rect` relative to the overlay window at `frame`.
-fn local(rect: CGRect, frame: CGRect) -> CGRect {
+/// `rect` grown by `by` on every side.
+fn outset(rect: CGRect, by: f64) -> CGRect {
     CGRect::new(
-        CGPoint::new(rect.origin.x - frame.origin.x, rect.origin.y - frame.origin.y),
-        rect.size,
+        CGPoint::new(rect.origin.x - by, rect.origin.y - by),
+        CGSize::new(rect.size.width + 2.0 * by, rect.size.height + 2.0 * by),
     )
 }
 
@@ -797,36 +973,26 @@ mod tests {
     }
 
     #[test]
-    fn the_overlay_spans_the_flight_and_starts_over_the_window() {
-        let spot = CGRect::new(CGPoint::new(400.0, 300.0), CGSize::new(900.0, 500.0));
-        let tile = CGRect::new(CGPoint::new(2300.0, 800.0), CGSize::new(1500.0, 250.0));
-        let frame = union(spot, tile);
-        assert_eq!(
-            frame,
-            CGRect::new(CGPoint::new(400.0, 300.0), CGSize::new(3400.0, 750.0))
-        );
-        assert_eq!(local(spot, frame).origin, CGPoint::ZERO);
-        assert_eq!(
-            local(tile, frame),
-            CGRect::new(CGPoint::new(1900.0, 500.0), tile.size)
-        );
-    }
-
-    #[test]
-    fn a_closing_window_shrinks_about_its_center() {
+    fn the_overlay_reaches_out_to_cover_the_outline() {
         let tile = CGRect::new(CGPoint::new(100.0, 200.0), CGSize::new(1000.0, 400.0));
-        let small = scaled_about_center(tile, 0.85);
-        assert_eq!(small.size, CGSize::new(850.0, 340.0));
-        assert_eq!(small.origin, CGPoint::new(175.0, 230.0));
+        assert_eq!(
+            outset(tile, 2.0),
+            CGRect::new(CGPoint::new(98.0, 198.0), CGSize::new(1004.0, 404.0))
+        );
+        assert_eq!(outset(tile, 0.0), tile);
     }
 
     #[test]
-    fn a_held_slide_is_released_only_for_its_own_window() {
+    fn the_real_border_waits_until_the_window_lands_or_is_taken_back() {
         let mut pop_ins = PopIns::default();
-        pop_ins.hold(wid(1), Animation::new(100.0, 0.2, AnimationEasing::default()));
-        assert!(pop_ins.take_held_for(wid(2)).is_none());
-        assert!(pop_ins.take_held_for(wid(1)).is_some());
-        assert!(pop_ins.take_held().is_none());
+        pop_ins.begin(wid(1), rect(0.0));
+        pop_ins.begin(wid(2), rect(0.0));
+        assert!(pop_ins.draws_border(wid(1)));
+        pop_ins.land(wid(1));
+        assert!(!pop_ins.draws_border(wid(1)));
+        pop_ins.cancel(wid(2));
+        assert!(!pop_ins.draws_border(wid(2)));
+        assert!(!pop_ins.draws_border(wid(3)));
     }
 
     #[test]
