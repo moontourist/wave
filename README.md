@@ -55,10 +55,10 @@ Done:
 - [x] No panics outside tests, and every `unsafe` block documented and doing one thing
 - [x] wave's own name, identity and config folder
 - [x] Memory given back: about 17 MB idle and 20 MB after using the overview, down from 153 MB
-- [x] Window borders, built in: an outline on every window that moves on the same animation frame as its window, fading between focused and unfocused colors as focus moves
+- [x] Window borders, built in: an outline on every window that moves on the same animation frame as its window, fading between focused and unfocused colors as focus moves. Borders follow windows you drag or that move themselves, and sit under their window, so an overlapping window covers them
+- [x] New windows pop into their tile like Hyprland's, with their border, while the neighbors slide aside
 
 Next:
-- [ ] **Borders for every move.** Keep borders on windows you drag or that resize themselves.
 - [ ] **Fast with many windows.** Open a burst of windows and have them all tile quickly, with no input lag.
 - [ ] **Accordion on any tile.** Fold a group of windows into one tile in any layout, not only the stack layout.
 

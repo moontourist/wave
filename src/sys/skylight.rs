@@ -448,6 +448,27 @@ unsafe extern "C" {
     pub fn SLSWindowQueryRun(cid: c_int, query: *mut CFType, flags: c_int) -> *mut CFType;
     pub fn SLSWindowQueryResultCopyWindows(query: *mut CFType) -> *mut CFType;
     pub fn SLSGetWindowLevel(cid: cid_t, wid: u32, level: *mut i32) -> CGError;
+    pub fn CGSNewRegionWithRect(rect: *const CGRect, region: *mut *mut CFType) -> CGError;
+    pub fn SLSNewWindow(
+        cid: cid_t,
+        backing: c_int,
+        x: f32,
+        y: f32,
+        region: *mut CFType,
+        wid: *mut u32,
+    ) -> CGError;
+    pub fn SLSReleaseWindow(cid: cid_t, wid: u32) -> CGError;
+    pub fn SLSTransactionCreate(cid: cid_t) -> *mut CFType;
+    pub fn SLSTransactionSetWindowLevel(transaction: *mut CFType, wid: u32, level: c_int);
+    pub fn SLSTransactionSetWindowSubLevel(transaction: *mut CFType, wid: u32, sub_level: c_int);
+    /// `order` is 1 for above `relative_to`, -1 for below and 0 for out.
+    pub fn SLSTransactionOrderWindow(
+        transaction: *mut CFType,
+        wid: u32,
+        order: c_int,
+        relative_to: u32,
+    );
+    pub fn SLSTransactionCommit(transaction: *mut CFType, options: u32);
 
     pub fn SLSWindowIteratorAdvance(iterator: *mut CFType) -> bool;
     pub fn SLSWindowIteratorGetParentID(iterator: *mut CFType) -> u32;

@@ -20,15 +20,17 @@
 //! more behind.
 
 use std::collections::hash_map::Entry;
+use std::ptr::NonNull;
 use std::time::Duration;
 use std::{iter, thread};
 
 use cgs::compositor::{
-    CgsWindow, CgsWindowError, WindowSurface, WindowTransaction, with_disabled_actions,
+    CgsWindow, CgsWindowError, G_CONNECTION, WindowSurface, WindowTransaction,
+    with_disabled_actions,
 };
 use objc2::rc::{Retained, autoreleasepool};
-use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_core_graphics::CGColor;
+use objc2_core_foundation::{CFRetained, CFType, CGPoint, CGRect, CGSize};
+use objc2_core_graphics::{CGColor, CGError};
 use objc2_quartz_core::{CALayer, CAMediaTimingFunction, CATransaction};
 use parking_lot::Mutex;
 
@@ -36,6 +38,11 @@ use crate::actor::app::WindowId;
 use crate::common::collections::HashMap;
 use crate::common::config::{BorderSettings, parse_hex_color};
 use crate::sys::geometry::SameAs;
+use crate::sys::skylight::{
+    CGSNewRegionWithRect, SLSNewWindow, SLSReleaseWindow, SLSTransactionCommit,
+    SLSTransactionCreate, SLSTransactionOrderWindow, SLSTransactionSetWindowLevel,
+    SLSTransactionSetWindowSubLevel, SLSWindowTags,
+};
 use crate::sys::window_server::{self, WindowServerId};
 
 /// How far the outline reaches in under its window, in points. macOS draws a window's visible edge
@@ -382,7 +389,7 @@ impl BorderFollower {
 struct Border {
     // The surface must be detached before its owning WindowServer window drops.
     surface: WindowSurface,
-    window: CgsWindow,
+    window: PlainWindow,
     root: Retained<CALayer>,
     /// The border window's own frame: the target window's frame grown by the width on each side.
     frame: CGRect,
@@ -393,7 +400,12 @@ struct Border {
 impl Border {
     fn new() -> Result<Self, CgsWindowError> {
         let frame = CGRect::new(CGPoint::ZERO, CGSize::new(1., 1.));
-        let window = CgsWindow::new_compositor(frame, 0.)?;
+        let window = PlainWindow::new(frame)?;
+        window
+            .set_tags(SLSWindowTags::FLOATING.bits() | SLSWindowTags::IGNORE_FOR_EVENTS.bits())?;
+        window.set_resolution(2.0)?;
+        window.set_opacity(false)?;
+        window.clear_backing(frame.size)?;
         window.disable_shadow();
         window.set_tags(1 << 3)?;
         let root = CALayer::layer();
@@ -485,7 +497,8 @@ impl Border {
 
     fn order_below(&self, wsid: WindowServerId) -> Result<(), CgsWindowError> {
         self.window.set_alpha(1.0)?;
-        self.window.order_below(Some(wsid.as_u32()))
+        order_just_below(self.window.id(), wsid);
+        Ok(())
     }
 
     fn hide(&mut self) {
@@ -524,6 +537,84 @@ impl Moves {
 }
 
 fn bounds(size: CGSize) -> CGRect { CGRect::new(CGPoint::ZERO, size) }
+
+/// Puts border window `border` just under `target`. WindowServer orders a window against another
+/// only within one level and sub-level, so the border takes its target's in the same transaction,
+/// as JankyBorders does. A window kept above the normal level keeps its border just under it.
+fn order_just_below(border: u32, target: WindowServerId) {
+    let level = window_server::window_level(target.as_u32())
+        .and_then(|level| i32::try_from(level).ok())
+        .unwrap_or(0);
+    let sub_level = window_server::window_sub_level(target.as_u32());
+    // SAFETY: G_CONNECTION is this process's live SkyLight connection.
+    let raw = unsafe { SLSTransactionCreate(*G_CONNECTION) };
+    let Some(raw) = NonNull::new(raw) else {
+        tracing::warn!("failed to start a transaction to order a border");
+        return;
+    };
+    // SAFETY: SLSTransactionCreate follows the Create rule, so the transaction is ours to release.
+    let transaction: CFRetained<CFType> = unsafe { CFRetained::from_raw(raw) };
+    let tx = CFRetained::as_ptr(&transaction).as_ptr();
+    // SAFETY: `tx` is a live transaction, and `border` is a window this connection owns.
+    unsafe { SLSTransactionSetWindowLevel(tx, border, level) };
+    // SAFETY: as above.
+    unsafe { SLSTransactionSetWindowSubLevel(tx, border, sub_level) };
+    // SAFETY: as above; `target` is only a reference point for the ordering.
+    unsafe { SLSTransactionOrderWindow(tx, border, -1, target.as_u32()) };
+    // SAFETY: `tx` is live until `transaction` drops after this call.
+    unsafe { SLSTransactionCommit(tx, 0) };
+}
+
+/// A plain WindowServer window, released when dropped. JankyBorders makes its borders this way:
+/// a compositor window from [`CgsWindow::new_compositor`] stays above every app window, so it
+/// can't sit under the window it outlines.
+struct PlainWindow(CgsWindow);
+
+impl PlainWindow {
+    fn new(frame: CGRect) -> Result<Self, CgsWindowError> {
+        let mut region: *mut CFType = std::ptr::null_mut();
+        // SAFETY: both pointers are valid for the call.
+        let error = unsafe { CGSNewRegionWithRect(&frame, &mut region) };
+        let region = NonNull::new(region)
+            .filter(|_| error == CGError::Success)
+            .ok_or(CgsWindowError::Window(error))?;
+        // SAFETY: CGSNewRegionWithRect returns a region we own.
+        let region: CFRetained<CFType> = unsafe { CFRetained::from_raw(region) };
+        let mut wid = 0;
+        // SAFETY: the region is live for the call, and `wid` is valid to write. 2 is
+        // kCGBackingStoreBuffered; the window starts off screen until it's placed.
+        let error = unsafe {
+            SLSNewWindow(
+                *G_CONNECTION,
+                2,
+                -9999.0,
+                -9999.0,
+                CFRetained::as_ptr(&region).as_ptr(),
+                &mut wid,
+            )
+        };
+        if error != CGError::Success {
+            return Err(CgsWindowError::Window(error));
+        }
+        Ok(Self(CgsWindow::from_existing(wid)))
+    }
+}
+
+impl std::ops::Deref for PlainWindow {
+    type Target = CgsWindow;
+
+    fn deref(&self) -> &CgsWindow { &self.0 }
+}
+
+impl Drop for PlainWindow {
+    fn drop(&mut self) {
+        // SAFETY: this connection created the window, and nothing uses it after this.
+        let error = unsafe { SLSReleaseWindow(*G_CONNECTION, self.0.id()) };
+        if error != CGError::Success {
+            tracing::warn!(?error, "failed to release a border window");
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
