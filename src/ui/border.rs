@@ -95,6 +95,29 @@ impl Style {
     fn color(self, focused: bool) -> [f64; 4] { if focused { self.active } else { self.inactive } }
 }
 
+/// Draws the focused window's outline from `settings` on `layer`, for a picture that stands in for
+/// a window while it opens or closes. The window's picture covers the part that reaches in under
+/// it. Returns how far the outline reaches outside the window and the window's corner radius, or
+/// `None` with borders off.
+pub(crate) fn draw_focused_outline(
+    layer: &CALayer,
+    settings: &BorderSettings,
+) -> Option<(f64, f64)> {
+    if !settings.enabled {
+        return None;
+    }
+    let style = Style::new(settings)?;
+    let [r, g, b, a] = style.active;
+    let color: Retained<CGColor> = CGColor::new_generic_rgb(r, g, b, a).into();
+    with_disabled_actions(|| {
+        layer.setContentsScale(2.0);
+        layer.setCornerRadius(style.outer_radius());
+        layer.setBorderWidth(style.width + OVERLAP);
+        layer.setBorderColor(Some(&color));
+    });
+    Some((style.width, style.radius))
+}
+
 /// What the animation thread sends the border thread.
 enum Update {
     Scene(Option<BorderScene>),
