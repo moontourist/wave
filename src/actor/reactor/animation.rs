@@ -803,7 +803,7 @@ impl AnimationManager {
         let AnimationReceiver { commands: rx, control } = receiver;
         let (wake, ticks) = crossbeam_channel::bounded(1);
         let mut displays: HashMap<u32, DisplayPresenter> = HashMap::default();
-        let mut border = crate::ui::border::BorderFollower::default();
+        let mut border = crate::ui::border::BorderThread::spawn();
         loop {
             let deadline = displays
                 .values()
@@ -928,13 +928,13 @@ impl AnimationManager {
             }
             drop(shared);
             // Same tick as the frames above: the border moves with its window.
-            border.follow(|wid| {
+            border.follow(
                 displays
                     .values()
                     .flat_map(|d| d.manager.motions.iter().flat_map(Motion::windows))
-                    .find(|w| w.wid == wid)
-                    .map(|w| w.frame)
-            });
+                    .map(|w| (w.wid, w.frame))
+                    .collect(),
+            );
         }
         for d in displays.values_mut() {
             for motion in &mut d.manager.motions {

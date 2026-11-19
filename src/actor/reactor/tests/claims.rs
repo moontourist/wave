@@ -780,3 +780,29 @@ fn claimed_floating_window_stays_floating_through_minimize_and_admission_changes
     assert!(reactor.test_active_workspace_windows(space).contains(&window));
     reactor.state.windows.debug_assert_invariants();
 }
+
+#[test]
+fn an_app_focused_before_its_launch_event_still_gets_its_window_tiled() {
+    // Launching many apps at once can deliver WindowServer's focus change for a new window
+    // before the app thread reports the app, as with a burst of `open -na Ghostty`.
+    for focused_first in [false, true] {
+        let (mut apps, mut reactor, space) = settled(1);
+        let new = WindowId::new(2, 1);
+        let launched = apps.make_app_with_opts(2, make_windows(1), Some(new), true, true);
+        reactor.handle_event(Event::ApplicationGloballyActivated(2));
+        reactor.handle_event(Event::WindowServerAppeared(
+            WindowServerId::new(20_001),
+            space,
+            SpaceEventKind::User,
+        ));
+        if focused_first {
+            reactor.handle_event(Event::WindowServerFocusChanged(new, space));
+        }
+        reactor.handle_events(launched);
+        apps.simulate_until_quiet(&mut reactor);
+        assert!(
+            tiled(&mut reactor, space).contains(&new),
+            "focused first: {focused_first}"
+        );
+    }
+}

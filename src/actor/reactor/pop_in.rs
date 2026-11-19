@@ -163,8 +163,11 @@ pub(super) fn try_start(
     park_txid: TransactionId,
     target: CGRect,
 ) -> bool {
+    // During a burst of new windows, only the first pops in: each pop-in holds its neighbors'
+    // slide until its picture is ready, and those waits would add up window after window.
     if reactor.animation_tx.is_none()
         || !reactor.pop_ins.take_candidate(wid)
+        || !reactor.pop_ins.active.is_empty()
         || reactor.layout_manager.layout_engine.is_window_floating(wid)
     {
         return false;
