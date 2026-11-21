@@ -57,6 +57,8 @@ pub enum WmEvent {
     SpaceStateUpdated(ForwardedSpaceState, CoordinateConverter),
     PowerStateChanged(bool),
     KeyboardLayoutChanged,
+    /// A macOS setting wave follows changed; see [`crate::sys::system_settings`].
+    SystemSettingsChanged,
     OverviewChanged,
     OverviewActivationTarget(reactor::OverviewTarget),
     ConfigUpdated(crate::common::config::Config),
@@ -393,6 +395,7 @@ impl WmController {
             KeyboardLayoutChanged => {
                 _ = self.input_tx.send(input::Request::KeyboardLayoutChanged);
             }
+            SystemSettingsChanged => self.events_tx.send(Event::SystemSettingsChanged),
             Command(Wm(ReloadConfig)) => self.reload_config(),
             Command(Wm(BindingMode(target))) => {
                 _ = self.input_tx.send(input::Request::SetBindingMode(target));

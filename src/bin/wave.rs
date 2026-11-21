@@ -182,6 +182,7 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Wave
     }
 
     wave_wm::sys::hotkey::refresh_virtual_keymap(mtm);
+    wave_wm::sys::system_settings::refresh(mtm);
 
     let config_path = opt.config.clone().unwrap_or_else(|| config_file());
     let mut config = if config_path.exists() {

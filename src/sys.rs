@@ -29,6 +29,7 @@ pub mod screen;
 pub mod service;
 pub mod skylight;
 pub mod space_switch;
+pub mod system_settings;
 pub mod timer;
 pub mod window_notify;
 pub mod window_recovery;

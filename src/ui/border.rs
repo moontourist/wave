@@ -36,13 +36,14 @@ use parking_lot::Mutex;
 
 use crate::actor::app::WindowId;
 use crate::common::collections::HashMap;
-use crate::common::config::{BorderSettings, parse_hex_color};
+use crate::common::config::BorderSettings;
 use crate::sys::geometry::SameAs;
 use crate::sys::skylight::{
     CGSNewRegionWithRect, SLSNewWindow, SLSReleaseWindow, SLSTransactionCommit,
     SLSTransactionCreate, SLSTransactionOrderWindow, SLSTransactionSetWindowLevel,
     SLSTransactionSetWindowSubLevel, SLSWindowTags,
 };
+use crate::sys::system_settings::{self, SystemSettings};
 use crate::sys::window_server::{self, WindowServerId};
 
 /// How far the outline reaches in under its window, in points. macOS draws a window's visible edge
@@ -72,6 +73,8 @@ pub struct BorderScene {
     pub fade: Duration,
     /// The fade's timing curve, as cubic bezier control points.
     pub curve: [f32; 4],
+    /// The macOS colors and accessibility settings that `system` border colors follow.
+    pub system: SystemSettings,
 }
 
 /// The parts of [`BorderSettings`] every outline shares.
@@ -85,10 +88,10 @@ struct Style {
 
 impl Style {
     /// `None` for settings that failed validation; the config loader reports those.
-    fn new(settings: &BorderSettings) -> Option<Self> {
-        let active = parse_hex_color(&settings.active_color)?;
+    fn new(settings: &BorderSettings, system: &SystemSettings) -> Option<Self> {
+        let active = system.border_color(&settings.active_color, system.accent)?;
         let inactive = if settings.inactive {
-            parse_hex_color(&settings.inactive_color)?
+            system.border_color(&settings.inactive_color, system.separator)?
         } else {
             // Fade out in the active color's own hue, so the fade doesn't pass through gray.
             let [r, g, b, _] = active;
@@ -119,7 +122,7 @@ pub(crate) fn draw_focused_outline(
     if !settings.enabled {
         return None;
     }
-    let style = Style::new(settings)?;
+    let style = Style::new(settings, &system_settings::current())?;
     let [r, g, b, a] = style.active;
     let color: Retained<CGColor> = CGColor::new_generic_rgb(r, g, b, a).into();
     with_disabled_actions(|| {
@@ -290,7 +293,7 @@ impl BorderFollower {
             self.scene = None;
             return;
         };
-        let Some(style) = Style::new(&scene.settings) else {
+        let Some(style) = Style::new(&scene.settings, &scene.system) else {
             self.set_scene(None);
             return;
         };
@@ -359,7 +362,7 @@ impl BorderFollower {
     /// scene's: the frame a moving window was just sent, or where WindowServer saw it last.
     fn follow(&mut self, current: impl Fn(WindowId) -> Option<CGRect>) {
         let Some(scene) = &self.scene else { return };
-        let Some(style) = Style::new(&scene.settings) else {
+        let Some(style) = Style::new(&scene.settings, &scene.system) else {
             return;
         };
         // One Core Animation commit and one WindowServer transaction for every border: per border,

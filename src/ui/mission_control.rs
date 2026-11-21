@@ -279,7 +279,10 @@ fn pill(frame: CGRect, scale: f64, radius: f64) -> Retained<CALayer> {
     let l = layer(frame, scale);
     l.setCornerRadius(radius);
     l.setMasksToBounds(true);
-    if let Some(blur) = cgs::compositor::backdrop_blur(16.) {
+    // Under Reduce Transparency the pill is solid, like macOS's own controls.
+    let solid = crate::sys::system_settings::current().reduce_transparency;
+    let blur = (!solid).then(|| cgs::compositor::backdrop_blur(16.)).flatten();
+    if let Some(blur) = blur {
         blur.setFrame(l.bounds());
         blur.setAutoresizingMask(
             objc2_quartz_core::CAAutoresizingMask::LayerWidthSizable
@@ -292,7 +295,7 @@ fn pill(frame: CGRect, scale: f64, radius: f64) -> Retained<CALayer> {
         objc2_quartz_core::CAAutoresizingMask::LayerWidthSizable
             | objc2_quartz_core::CAAutoresizingMask::LayerHeightSizable,
     );
-    tint.setBackgroundColor(Some(&color(0.12, 0.13, 0.14, 0.72)));
+    tint.setBackgroundColor(Some(&color(0.12, 0.13, 0.14, if solid { 1.0 } else { 0.72 })));
     l.addSublayer(&tint);
     l.setBorderWidth(0.5);
     l.setBorderColor(Some(&color(1., 1., 1., 0.15)));

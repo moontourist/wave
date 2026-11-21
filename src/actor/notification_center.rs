@@ -11,7 +11,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{AnyThread, DeclaredClass, MainThreadMarker, define_class, msg_send, sel};
 use objc2_app_kit::{
-    self, NSApplicationDidChangeScreenParametersNotification, NSRunningApplication, NSWorkspace,
+    self, NSApplicationDidChangeScreenParametersNotification, NSRunningApplication,
+    NSSystemColorsDidChangeNotification, NSWorkspace,
+    NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
     NSWorkspaceActiveSpaceDidChangeNotification, NSWorkspaceApplicationKey,
     NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidDeactivateApplicationNotification,
     NSWorkspaceDidWakeNotification, NSWorkspaceSessionDidBecomeActiveNotification,
@@ -29,6 +31,21 @@ use crate::sys::app::NSRunningApplicationExt;
 use crate::sys::dispatch::DispatchExt;
 use crate::sys::power::{init_power_state, set_low_power_mode_state};
 use crate::sys::skylight::{CGDisplayRegisterReconfigurationCallback, DisplayReconfigFlags};
+use crate::sys::system_settings;
+
+/// How long after a settings notification wave reads the settings a second time.
+const APPEARANCE_SETTLE_NS: i64 = 300_000_000;
+
+/// Reads the macOS settings wave follows, and tells the reactor if they changed. Runs on the
+/// main thread: notifications and the main queue both deliver there.
+fn refresh_system_settings(events_tx: wm_controller::Sender) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    if system_settings::refresh(mtm) {
+        _ = events_tx.send(WmEvent::SystemSettingsChanged);
+    }
+}
 
 #[repr(C)]
 struct Instance {
@@ -93,6 +110,21 @@ define_class! {
         fn recv_dock_pref_changed(&self, notif: &NSNotification) {
             trace!("{notif:#?}");
             self.handle_dock_pref_changed();
+        }
+
+        /// Accessibility display options, system colors, and light or dark mode.
+        #[unsafe(method(recvSystemSettingsChanged:))]
+        fn recv_system_settings_changed(&self, notif: &NSNotification) {
+            trace!("{notif:#?}");
+            let events_tx = &self.ivars().events_tx;
+            refresh_system_settings(events_tx.clone());
+            // AppKit updates the app's appearance from the same notifications, maybe after this
+            // observer runs, so look again once it has.
+            queue::main().after_f_s(
+                Time::NOW.new_after(APPEARANCE_SETTLE_NS),
+                events_tx.clone(),
+                refresh_system_settings,
+            );
         }
 
         #[unsafe(method(recvKeyboardLayoutChanged:))]
@@ -358,7 +390,11 @@ impl NotificationCenter {
         };
 
         let active_display = NSString::from_str("NSWorkspaceActiveDisplayDidChangeNotification");
-        let workspace_events: [(Sel, &NSString); 8] = [
+        let workspace_events: [(Sel, &NSString); 9] = [
+            // SAFETY: An immutable AppKit constant.
+            (sel!(recvSystemSettingsChanged:), unsafe {
+                NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
+            }),
             (sel!(recvScreenChangedEvent:), &active_display),
             // SAFETY: An immutable AppKit constant.
             (sel!(recvScreenChangedEvent:), unsafe {
@@ -394,7 +430,11 @@ impl NotificationCenter {
         let dock_pref = NSString::from_str("com.apple.dock.prefchanged");
         let menu_bar_pref = NSString::from_str("AppleInterfaceMenuBarHidingChangedNotification");
         let power_state = NSString::from_str("NSProcessInfoPowerStateDidChangeNotification");
-        let default_events: [(Sel, &NSString); 4] = [
+        let default_events: [(Sel, &NSString); 5] = [
+            // SAFETY: An immutable AppKit constant.
+            (sel!(recvSystemSettingsChanged:), unsafe {
+                NSSystemColorsDidChangeNotification
+            }),
             // SAFETY: An immutable AppKit constant.
             (sel!(recvScreenChangedEvent:), unsafe {
                 NSApplicationDidChangeScreenParametersNotification
@@ -411,6 +451,10 @@ impl NotificationCenter {
             (
                 sel!(recvKeyboardLayoutChanged:),
                 "com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged",
+            ),
+            (
+                sel!(recvSystemSettingsChanged:),
+                "AppleInterfaceThemeChangedNotification",
             ),
             (sel!(recvSessionEvent:), "com.apple.screenIsLocked"),
             (sel!(recvSessionEvent:), "com.apple.screenIsUnlocked"),

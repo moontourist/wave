@@ -655,10 +655,12 @@ pub struct BorderSettings {
     /// follows this curve.
     #[serde(default = "default_border_radius")]
     pub radius: f64,
-    /// The focused window's outline color, as `#rrggbb` or `#rrggbbaa`.
+    /// The focused window's outline color, as `#rrggbb` or `#rrggbbaa`, or `system` for the
+    /// macOS accent color.
     #[serde(default = "default_border_active_color")]
     pub active_color: String,
-    /// The other windows' outline color, as `#rrggbb` or `#rrggbbaa`.
+    /// The other windows' outline color, as `#rrggbb` or `#rrggbbaa`, or `system` for the color
+    /// macOS draws window edges in, which follows light and dark mode and Increase Contrast.
     #[serde(default = "default_border_inactive_color")]
     pub inactive_color: String,
     /// Outline unfocused windows too. When off, a window's outline fades out as it loses focus.
@@ -681,10 +683,8 @@ impl Default for BorderSettings {
 
 fn default_border_width() -> f64 { 2.0 }
 fn default_border_radius() -> f64 { 12.0 }
-/// Kanagawa springBlue.
-fn default_border_active_color() -> String { "#7fb4ca".into() }
-/// Kanagawa sumiInk4.
-fn default_border_inactive_color() -> String { "#2a2a37".into() }
+fn default_border_active_color() -> String { crate::sys::system_settings::SYSTEM_COLOR.into() }
+fn default_border_inactive_color() -> String { crate::sys::system_settings::SYSTEM_COLOR.into() }
 
 impl BorderSettings {
     pub fn validate(&self) -> Vec<String> {
@@ -702,9 +702,11 @@ impl BorderSettings {
             ("active_color", &self.active_color),
             ("inactive_color", &self.inactive_color),
         ] {
-            if parse_hex_color(color).is_none() {
+            if color != crate::sys::system_settings::SYSTEM_COLOR
+                && parse_hex_color(color).is_none()
+            {
                 issues.push(format!(
-                    "ui.borders.{key} must be #rrggbb or #rrggbbaa, got {color:?}"
+                    "ui.borders.{key} must be #rrggbb, #rrggbbaa or system, got {color:?}"
                 ));
             }
         }

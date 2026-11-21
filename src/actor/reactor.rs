@@ -414,6 +414,9 @@ pub enum Event {
 
     #[serde(skip)]
     ConfigUpdated(Config),
+
+    /// A macOS setting wave follows changed; see [`crate::sys::system_settings`].
+    SystemSettingsChanged,
 }
 
 /// The AX-side observation that caused an app actor to discard its handle.
@@ -2528,6 +2531,8 @@ impl Reactor {
                     EventOutcome::no_change()
                 });
             }
+            // The border scene reads the new settings after every event.
+            Event::SystemSettingsChanged => return Ok(EventOutcome::no_change()),
             Event::ConfigUpdated(new_cfg) => {
                 if new_cfg.virtual_workspaces.mode == crate::common::config::WorkspaceMode::Global
                     && !crate::sys::screen::displays_have_separate_spaces()
@@ -6433,6 +6438,7 @@ impl Reactor {
                 settings: settings.ui.borders.clone(),
                 fade: Duration::try_from_secs_f64(settings.animation_duration).unwrap_or_default(),
                 curve: pop_in::bezier(settings.animation_easing),
+                system: crate::sys::system_settings::current(),
             }
         });
         if scene == self.border_scene {

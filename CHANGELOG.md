@@ -6,6 +6,7 @@ All notable changes to wave are listed here. The format follows [Keep a Changelo
 
 ### Added
 - Window borders, built in (`[settings.ui.borders]`). Every window gets an outline that moves and resizes with it on the same animation frame. The focused window's outline is `active_color` and the rest are `inactive_color`; when focus moves they fade between the two, like Hyprland's. `inactive = false` shows only the focused window's outline. Each border costs about 16 KB.
+- wave follows the Mac's look. Border colors default to `system`: the focused window's outline is the accent color, and the others are the edge color macOS draws its own windows with, which follows light and dark mode and grows stronger under Increase Contrast. The drop preview takes the accent color too. Under Reduce Transparency the drop preview and the Overview's controls lose their blur. Changes apply at once, without a restart.
 - `scripts/stress.sh` opens a burst of Ghostty windows and measures how fast wave tiles them, its input lag and where its threads spend the time.
 
 ### Changed

@@ -77,7 +77,9 @@ dispatchr = { git = "https://github.com/drewcrawford/dispatchr" }
 nix = { version = "0.30.1", features = ["process", "user"] }
 objc2 = { version = "0.6.2", default-features = false, features = ["exception"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+	"NSAccessibility",
 	"NSAlert",
+	"NSAppearance",
 	"NSApplication",
 	"NSAttributedString",
 	"NSColor",
@@ -99,6 +101,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
 	"NSView",
 	"NSWindow",
 	"NSWorkspace",
+	"block2",
 	"libc",
 	"objc2-core-foundation",
 	"objc2-core-graphics",

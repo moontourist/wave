@@ -1,5 +1,3 @@
-use std::sync::LazyLock;
-
 use cgs::compositor::{
     CgsWindow, CgsWindowError, WindowSurface, WindowTransaction, backdrop_blur,
     with_disabled_actions,
@@ -12,13 +10,17 @@ use objc2_quartz_core::{CALayer, CATransaction};
 use crate::actor::drag::{DropTarget, preview_frame};
 use crate::layout_engine::WindowDropAction;
 use crate::sys::geometry::SameAs;
+use crate::sys::system_settings::{self, SystemSettings};
 
-static FILL: LazyLock<Retained<CGColor>> =
-    LazyLock::new(|| CGColor::new_generic_rgb(0.13, 0.62, 1.0, 0.18).into());
-static BORDER: LazyLock<Retained<CGColor>> =
-    LazyLock::new(|| CGColor::new_generic_rgb(0.13, 0.62, 1.0, 0.95).into());
-static STACK_FILL: LazyLock<Retained<CGColor>> =
-    LazyLock::new(|| CGColor::new_generic_rgb(0.34, 0.64, 1.0, 0.16).into());
+/// The preview's colors: the macOS accent color at these opacities.
+const FILL_ALPHA: f64 = 0.18;
+const BORDER_ALPHA: f64 = 0.95;
+const STACK_FILL_ALPHA: f64 = 0.16;
+
+fn accent(system: &SystemSettings, alpha: f64) -> Retained<CGColor> {
+    let [r, g, b, _] = system.accent;
+    CGColor::new_generic_rgb(r, g, b, alpha).into()
+}
 
 const PREVIEW_CORNER_RADIUS: f64 = 12.0;
 const PREVIEW_BLUR_RADIUS: f64 = 6.0;
@@ -61,7 +63,13 @@ impl DragPreview {
         window.set_tags(1 << 3)?;
 
         let root = CALayer::layer();
-        let backdrop = backdrop_blur(PREVIEW_BLUR_RADIUS);
+        let system = system_settings::current();
+        let backdrop = (!system.reduce_transparency)
+            .then(|| backdrop_blur(PREVIEW_BLUR_RADIUS))
+            .flatten();
+        let fill = accent(&system, FILL_ALPHA);
+        let border = accent(&system, BORDER_ALPHA);
+        let stack_fill = accent(&system, STACK_FILL_ALPHA);
         let tint = CALayer::layer();
         let card = CALayer::layer();
         with_disabled_actions(|| {
@@ -74,7 +82,7 @@ impl DragPreview {
             root.setMasksToBounds(true);
             root.setOpacity(0.0);
             root.setCornerRadius(PREVIEW_CORNER_RADIUS);
-            root.setBorderColor(Some(&BORDER));
+            root.setBorderColor(Some(&border));
             root.setBorderWidth(2.0);
 
             if let Some(backdrop) = &backdrop {
@@ -83,7 +91,7 @@ impl DragPreview {
             }
 
             tint.setFrame(bounds);
-            tint.setBackgroundColor(Some(&FILL));
+            tint.setBackgroundColor(Some(&fill));
             root.addSublayer(&tint);
 
             card.setOpacity(if style == PreviewStyle::Stack {
@@ -93,8 +101,8 @@ impl DragPreview {
             });
             card.setFrame(Self::card_frame(frame.size));
             card.setCornerRadius(8.0);
-            card.setBackgroundColor(Some(&STACK_FILL));
-            card.setBorderColor(Some(&BORDER));
+            card.setBackgroundColor(Some(&stack_fill));
+            card.setBorderColor(Some(&border));
             card.setBorderWidth(1.0);
             root.addSublayer(&card);
         });
