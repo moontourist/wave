@@ -336,6 +336,10 @@ impl PresentedWindow {
                     self.from.size
                 };
                 let frame = contain_transition_frame(self.from, self.to, frame);
+                // Halfway, only a window whose size changes needs its size written: the write
+                // makes the app lay out again, which can cost a frame.
+                let set_size =
+                    set_size && (progress >= 1.0 || !self.from.size.same_as(self.to.size));
                 (frame, set_size, FrameSource::Ordinary, set_size)
             }
             Sample::Viewport {
@@ -1603,6 +1607,12 @@ impl ActiveAnimation {
     }
 
     fn send_frame(&mut self, now: Instant, frames: &mut FrameBatch) {
+        // The clock starts one frame before the first frame, not when the move was asked for:
+        // the first tick can come a frame or more later, and the first frame would then skip
+        // the start of the curve and jump.
+        if self.progress == 0.0 {
+            self.started = now.checked_sub(self.animation.interval).unwrap_or(now);
+        }
         let t = if self.animation.duration.is_zero() {
             1.0
         } else {
@@ -2113,24 +2123,32 @@ mod tests {
             );
             let mut manager = AnimationManager::new();
             manager.handle_message(Message::Replace(a));
-            active_mut(&mut manager).unwrap().started = start;
+            let active = active_mut(&mut manager).unwrap();
+            active.started = start;
+            active.next_sample = start + active.animation.interval;
             collect_requests(&mut rx);
             let mut frames = Vec::new();
-            for ms in [40, 150, 300] {
-                manager.tick_at(start + Duration::from_millis(ms));
+            // The first tick lands one frame in, so the clock stays where it started.
+            let first = Duration::from_secs_f64(1.0 / fps);
+            for at in [
+                first,
+                Duration::from_millis(150),
+                Duration::from_millis(300),
+            ] {
+                manager.tick_at(start + at);
                 frames.extend(collect_requests(&mut rx).into_iter().filter_map(|r| match r {
                     Observed::Frame { frame, .. } => Some(frame),
                     _ => None,
                 }));
                 // A duplicate wake must not advance time or replay a frame.
-                manager.tick_at(start + Duration::from_millis(ms));
+                manager.tick_at(start + at);
                 assert!(collect_requests(&mut rx).is_empty());
             }
             assert_eq!(frames.len(), 3);
             assert_eq!(frames[1].origin, CGPoint::new(50.0, 25.0));
             assert_eq!(frames[2], rect(100.0, 50.0, 20.0, 30.0));
             assert!(transition_state(&manager).is_none());
-            results.push(frames);
+            results.push(frames.split_off(1));
         }
         assert_eq!(results[0], results[1]);
     }

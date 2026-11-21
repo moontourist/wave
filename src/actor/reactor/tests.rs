@@ -5455,7 +5455,10 @@ fn changed_layout_retargets_window_already_at_new_position_during_animation() {
     ));
     manager.handle_message(rx.commands.try_recv().unwrap());
     apps.requests();
-    manager.tick_at(std::time::Instant::now() + std::time::Duration::from_secs(1));
+    // The first tick starts the move; the second, a second later, finishes it.
+    let now = std::time::Instant::now();
+    manager.tick_at(now + std::time::Duration::from_secs(1));
+    manager.tick_at(now + std::time::Duration::from_secs(2));
     let final_frame = apps
         .requests()
         .into_iter()
