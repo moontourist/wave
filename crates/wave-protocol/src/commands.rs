@@ -301,7 +301,10 @@ pub enum ConfigCommand {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum AnimationEasing {
+    /// A spring with no bounce, like macOS and iOS motion: windows settle within
+    /// `animation_duration`, and a move that is interrupted keeps its speed into the next.
     #[default]
+    Spring,
     EaseInOut,
     Linear,
     EaseInSine,

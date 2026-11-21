@@ -10,6 +10,7 @@ All notable changes to wave are listed here. The format follows [Keep a Changelo
 - `scripts/stress.sh` opens a burst of Ghostty windows and measures how fast wave tiles them, its input lag and where its threads spend the time.
 
 ### Changed
+- Windows move on a spring by default (`animation_easing = "spring"`), like macOS and iOS motion: no bounce, settled within `animation_duration`, and a move that is interrupted turns from where it is at its current speed instead of restarting from rest. A window takes its new size once it has covered half its distance. The old curves stay available.
 - A new window pops into its tile like Hyprland's "popin" instead of flying across the screen: its picture grows in from a little smaller as it fades in, with its border, while the neighbors slide aside, and both settle together. A closing window shrinks away with its border too.
 - During a burst of new windows, only the first pops in and the rest appear straight in their tiles, so each pop-in's preparation no longer delays the next window.
 - The bsp layout splits a new window's tile along its longer side, as Hyprland's dwindle does. A wide tile puts the new window beside it and a tall one below, so a 32:9 display fits three windows side by side before stacking.

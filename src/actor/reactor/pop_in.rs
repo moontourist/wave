@@ -435,6 +435,8 @@ fn wait_for_frame(wsid: WindowServerId, done: impl Fn(CGRect) -> bool) -> Option
 pub(super) fn bezier(easing: AnimationEasing) -> [f32; 4] {
     use AnimationEasing::*;
     match easing {
+        // Fitted to the spring from rest, within 0.022 everywhere.
+        Spring => [0.29, 0.5, 0.03, 1.0],
         Linear => [0.0, 0.0, 1.0, 1.0],
         EaseInSine => [0.12, 0.0, 0.39, 0.0],
         EaseOutSine => [0.61, 1.0, 0.88, 1.0],
@@ -934,6 +936,7 @@ mod tests {
     fn bezier_fits_match_the_layout_curves() {
         use AnimationEasing::*;
         for easing in [
+            Spring,
             EaseInOut,
             Linear,
             EaseInSine,

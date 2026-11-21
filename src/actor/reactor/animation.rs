@@ -225,6 +225,35 @@ struct PresentedWindow {
     fixed: bool,
     leased: bool,
     announced: bool,
+    /// Spring motion's speed, carried into the next transition when this one is interrupted.
+    velocity: Velocity,
+}
+
+/// A window origin's speed, in points per second, under spring motion.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Velocity {
+    /// At the start of the current transition.
+    start: CGPoint,
+    /// At the last sample.
+    now: CGPoint,
+}
+
+/// ω·T for spring motion: a critically damped spring with angular frequency ω has covered 99.9%
+/// of its distance, from rest, after T, so a transition of duration T ends within a point of its
+/// target before the last frame places it exactly.
+const SPRING_SETTLE: f64 = 9.23;
+
+/// The fraction of a spring transition's time at which it has covered half its distance from
+/// rest. Windows switch to their final size there, as curves do at half their time.
+const SPRING_HALF: f64 = 0.1817;
+
+/// Where a critically damped spring with angular frequency `omega` is, and how fast it moves,
+/// `t` seconds after leaving `from` at speed `v0` toward `to`.
+fn spring(from: f64, v0: f64, to: f64, omega: f64, t: f64) -> (f64, f64) {
+    let c1 = from - to;
+    let c2 = v0 + omega * c1;
+    let decay = (-omega * t).exp();
+    (to + (c1 + c2 * t) * decay, (c2 - omega * (c1 + c2 * t)) * decay)
 }
 
 #[derive(Clone, Copy)]
@@ -233,6 +262,10 @@ enum Sample<'a> {
         progress: f64,
         eased: f64,
         set_size: bool,
+        /// When the size switches from the start's to the end's, as a fraction of the time.
+        half: f64,
+        /// Spring motion: the spring's angular frequency, and the seconds since the start.
+        spring: Option<(f64, f64)>,
     },
     Viewport {
         presentation: &'a ViewportPresentation,
@@ -278,9 +311,26 @@ impl PresentedWindow {
 
     fn sample(&mut self, sample: Sample<'_>) -> Option<Frame> {
         let (frame, set_size, source, force) = match sample {
-            Sample::Transition { progress, eased, set_size } => {
+            Sample::Transition {
+                progress,
+                eased,
+                set_size,
+                half,
+                spring: motion,
+            } => {
                 let mut frame = interpolate_frame(self.from, self.to, eased);
-                frame.size = if progress >= 0.5 {
+                if let Some((omega, elapsed)) = motion {
+                    let (start, v0) = (self.from.origin, self.velocity.start);
+                    let (x, vx) = spring(start.x, v0.x, self.to.origin.x, omega, elapsed);
+                    let (y, vy) = spring(start.y, v0.y, self.to.origin.y, omega, elapsed);
+                    frame.origin = if progress >= 1.0 {
+                        self.to.origin
+                    } else {
+                        CGPoint::new(x, y)
+                    };
+                    self.velocity.now = CGPoint::new(vx, vy);
+                }
+                frame.size = if progress >= half {
                     self.to.size
                 } else {
                     self.from.size
@@ -701,6 +751,7 @@ impl Reactor {
                     control.frame(wid, window.frame_monotonic)
                 });
                 Some(PresentedWindow {
+                    velocity: Velocity::default(),
                     handle: app.handle.with_scrolling_bounds(bound),
                     wid,
                     wsid: window.info.sys_id,
@@ -1522,6 +1573,10 @@ impl ActiveAnimation {
                 window.from = old.frame;
                 window.frame = old.frame;
                 window.leased = old.leased;
+                window.velocity = Velocity {
+                    start: old.velocity.now,
+                    now: old.velocity.now,
+                };
             } else {
                 window.begin();
             }
@@ -1529,6 +1584,7 @@ impl ActiveAnimation {
         for mut old in self.animation.windows {
             if !next.handled_windows.contains(&old.wid) {
                 old.from = old.frame;
+                old.velocity.start = old.velocity.now;
                 next.windows.push(old);
             } else if !next.windows.iter().any(|w| w.wid == old.wid) {
                 old.cancel(None);
@@ -1584,6 +1640,7 @@ impl Animation {
         txid: TransactionId,
     ) {
         self.windows.push(PresentedWindow {
+            velocity: Velocity::default(),
             handle: handle.clone(),
             wid,
             wsid: None,
@@ -1632,12 +1689,18 @@ impl Animation {
     }
 
     fn stage_frame(&mut self, t: f64, previous: f64, frames: &mut FrameBatch) {
+        let duration = self.duration.as_secs_f64();
+        let spring = (self.easing == AnimationEasing::Spring && duration > 0.0)
+            .then(|| (SPRING_SETTLE / duration, t * duration));
+        let half = if spring.is_some() { SPRING_HALF } else { 0.5 };
         stage_windows(
             &mut self.windows,
             Sample::Transition {
                 progress: t,
                 eased: ease(self.easing, t),
-                set_size: (previous < 0.5 && t >= 0.5) || t == 1.0,
+                set_size: (previous < half && t >= half) || t == 1.0,
+                half,
+                spring,
             },
             frames,
         );
@@ -1652,7 +1715,7 @@ impl Animation {
 
 #[cfg(test)]
 fn get_frame(a: CGRect, b: CGRect, t: f64) -> CGRect {
-    interpolate_frame(a, b, ease(AnimationEasing::default(), t))
+    interpolate_frame(a, b, ease(AnimationEasing::EaseInOut, t))
 }
 
 fn interpolate_frame(a: CGRect, b: CGRect, s: f64) -> CGRect {
@@ -1712,6 +1775,10 @@ pub(super) fn ease(easing: AnimationEasing, t: f64) -> f64 {
         }
     };
     match easing {
+        Spring => {
+            let from_rest = |t: f64| spring(0.0, 0.0, 1.0, SPRING_SETTLE, t).0;
+            from_rest(t) / from_rest(1.0)
+        }
         Linear => t,
         EaseInSine => sine(t),
         EaseOutSine => ease_out(sine),
@@ -1769,13 +1836,15 @@ mod tests {
         Animation::new(
             settings.animation_fps,
             settings.animation_duration,
-            settings.animation_easing,
+            // The sampling and replacement tests check timing, not the curve.
+            AnimationEasing::EaseInOut,
         )
     }
 
-    const ALL_EASINGS: [AnimationEasing; 23] = {
+    const ALL_EASINGS: [AnimationEasing; 24] = {
         use AnimationEasing::*;
         [
+            Spring,
             EaseInOut,
             Linear,
             EaseInSine,
@@ -1836,7 +1905,7 @@ mod tests {
     }
 
     #[test]
-    fn default_easing_is_the_original_circular_curve() {
+    fn ease_in_out_is_the_original_circular_curve() {
         for step in 0..=20 {
             let t = step as f64 / 20.0;
             let original = if t < 0.5 {
@@ -1844,8 +1913,57 @@ mod tests {
             } else {
                 ((1.0 - (-2.0 * t + 2.0).powi(2)).sqrt() + 1.0) / 2.0
             };
-            assert!((ease(AnimationEasing::default(), t) - original).abs() < 1e-12);
+            assert!((ease(AnimationEasing::EaseInOut, t) - original).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn spring_is_the_default_and_settles_on_its_target_without_bouncing() {
+        assert_eq!(AnimationEasing::default(), AnimationEasing::Spring);
+        let omega = SPRING_SETTLE / 0.25;
+        let (end, speed) = spring(0.0, 0.0, 800.0, omega, 0.25);
+        assert!((end - 800.0).abs() < 1.0, "{end}");
+        assert!(speed.abs() < 30.0, "{speed}");
+        let mut previous = 0.0;
+        for step in 1..=100_u32 {
+            let (x, _) = spring(0.0, 0.0, 800.0, omega, 0.25 * f64::from(step) / 100.0);
+            assert!(x >= previous && x <= 800.0, "bounced at step {step}: {x}");
+            previous = x;
+        }
+        let (half, _) = spring(0.0, 0.0, 1.0, SPRING_SETTLE, SPRING_HALF);
+        assert!((half - 0.5).abs() < 1e-3, "{half}");
+    }
+
+    #[test]
+    fn an_interrupted_spring_keeps_its_speed_and_place() {
+        let omega = SPRING_SETTLE / 0.25;
+        let (x, v) = spring(0.0, 0.0, 800.0, omega, 0.05);
+        // Retarget the other way: the new spring starts where and as fast as the old one was.
+        let (x2, v2) = spring(x, v, -400.0, omega, 0.0);
+        assert!((x2 - x).abs() < 1e-9 && (v2 - v).abs() < 1e-9);
+        // And still heads toward the old target for a moment, instead of reversing at once.
+        let (x3, _) = spring(x, v, -400.0, omega, 0.004);
+        assert!(x3 > x, "{x} -> {x3}");
+    }
+
+    #[test]
+    fn spring_transitions_carry_velocity_into_the_replacement() {
+        let (handle, _rx) = AppThreadHandle::channel();
+        let wid = WindowId::new(1, 1);
+        let from = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(400.0, 300.0));
+        let to = CGRect::new(CGPoint::new(800.0, 0.0), CGSize::new(400.0, 300.0));
+        let mut first = Animation::new(60.0, 0.25, AnimationEasing::Spring);
+        first.add_window(&handle, wid, from, to, TransactionId::default());
+        let mut active = ActiveAnimation::start(first).expect("one window");
+        let mut frames = FrameBatch::default();
+        active.animation.stage_frame(0.2, 0.0, &mut frames);
+        let moving = active.animation.windows[0].velocity.now;
+        assert!(moving.x > 0.0, "{moving:?}");
+
+        let mut next = Animation::new(60.0, 0.25, AnimationEasing::Spring);
+        next.add_window(&handle, wid, from, from, TransactionId::default());
+        let replaced = active.replace_with(next);
+        assert_eq!(replaced.animation.windows[0].velocity.start, moving);
     }
 
     fn animation(handle: &AppThreadHandle, wid: WindowId, from: CGRect, to: CGRect) -> Animation {
@@ -1985,7 +2103,7 @@ mod tests {
         for fps in [60.0, 120.0] {
             let (tx, mut rx) = crate::actor::channel();
             let handle = AppThreadHandle::new_for_test(tx);
-            let mut a = Animation::new(fps, 0.3, AnimationEasing::default());
+            let mut a = Animation::new(fps, 0.3, AnimationEasing::EaseInOut);
             a.add_window(
                 &handle,
                 WindowId::new(1, 1),
@@ -2173,6 +2291,7 @@ mod tests {
                         let frame =
                             control.frame(wid, native.iter().find(|(id, _)| *id == wid).unwrap().1);
                         PresentedWindow {
+                            velocity: Velocity::default(),
                             handle: handle.clone(),
                             wid,
                             wsid: None,
@@ -2397,6 +2516,7 @@ mod tests {
             presentation: system.presentation(layout).unwrap().0,
             movement: None,
             windows: vec![PresentedWindow {
+                velocity: Velocity::default(),
                 handle: handle.clone(),
                 wid,
                 wsid: Some(wsid),
@@ -2506,6 +2626,7 @@ mod tests {
             let mut base_frame = frames[0].1;
             base_frame.origin.x += 0.5;
             c.windows.push(PresentedWindow {
+                velocity: Velocity::default(),
                 handle,
                 wid,
                 wsid: None,

@@ -51,7 +51,7 @@ Rust, using macOS's private SkyLight APIs for speed and Core Animation for the o
 
 ## Roadmap
 Done:
-- [x] Animations that follow your easing curve and display refresh rate, and animate windows opening and closing
+- [x] Spring animations like macOS's, at your display's refresh rate, with windows that pop in when they open and shrink away when they close
 - [x] No panics outside tests, and every `unsafe` block documented and doing one thing
 - [x] wave's own name, identity and config folder
 - [x] Memory given back: about 17 MB idle and 20 MB after using the overview, down from 153 MB
