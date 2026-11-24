@@ -4,9 +4,11 @@
 
 A tiling window manager for macOS, with smooth animations and a codebase that stays up when something goes wrong.
 
+wave is built on [rift](https://github.com/acsandmann/rift) by acsandmann, which includes code from glide-wm by tmandry. Licensed under Apache 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
 ## What it does
 - **Many layouts.** Tiling (like i3), binary space partitioning (like bspwm), master-stack (like dwm), scrolling columns (like niri), stacks and floating windows.
-- **Smooth motion.** Windows ease into place on the curve you pick (`animation_easing`, such as `ease_out_cubic`), at your slowest display's refresh rate (`animation_fps = 0.0`). With `window_open_close_animation`, new windows fly into their tile and closed ones shrink away with their neighbors.
+- **Smooth motion.** Windows move on a spring like macOS's (`animation_easing = "spring"`, or another curve you pick), at your slowest display's refresh rate (`animation_fps = 0.0`). With `window_open_close_animation`, new windows fly into their tile and closed ones shrink away with their neighbors.
 - **No SIP changes.** Works with System Integrity Protection on, and with "Displays have separate Spaces" turned on.
 - **Workspaces you can see.** A niri-style overview for dragging windows between workspaces, and trackpad swipes between them like native macOS.
 - **Menu bar menu.** Switch workspaces and layouts, and save or restore layouts.
@@ -54,7 +56,7 @@ Done:
 - [x] Spring animations like macOS's, at your display's refresh rate, with windows that pop in when they open and shrink away when they close
 - [x] No panics outside tests, and every `unsafe` block documented and doing one thing
 - [x] wave's own name, identity and config folder
-- [x] Memory given back: about 17 MB idle and 20 MB after using the overview, down from 153 MB
+- [x] Small memory use: about 17 MB idle and 20 MB after using the overview
 - [x] Window borders, built in: an outline on every window that moves on the same animation frame as its window, fading between focused and unfocused colors as focus moves. Borders follow windows you drag or that move themselves, and sit under their window, so an overlapping window covers them
 - [x] New windows pop into their tile like Hyprland's, with their border, while the neighbors slide aside
 
@@ -63,6 +65,3 @@ Next:
 - [ ] **Accordion on any tile.** Fold a group of windows into one tile in any layout, not only the stack layout.
 
 Every feature is held to a memory budget: wave idles at about 17 MB and returns there after the overview, moving windows adds nothing measurable, and new features are measured against that.
-
-## Credits
-wave is a modified version of [rift](https://github.com/acsandmann/rift) by acsandmann, which includes code from glide-wm by tmandry. Licensed under Apache 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE).
