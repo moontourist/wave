@@ -34,7 +34,7 @@ wave's first release. It starts from [rift](https://github.com/acsandmann/rift) 
 
 ### Changed
 - Renamed to wave: the binaries are `wave` and `wave-cli`, the config lives in `~/.config/wave/`, and the service is `com.moontourist.wave`.
-- The overview takes its desktop background snapshot when it opens and frees it when it closes, and the service tells macOS to return freed large blocks right away (`MallocLargeCache=0`). wave idles at about 17 MB and returns to about 20 MB after the overview, down from 153 MB on a 7680×2160 display.
+- The overview takes its desktop background snapshot when it opens and frees it when it closes, and the service tells macOS to return freed large blocks right away (`MallocLargeCache=0`). On a 7680×2160 display, wave idles at about 17 MB and returns to about 20 MB after the overview.
 
 ### Fixed
 - `wave service restart` no longer leaves the service stopped when the service file has changed.
